@@ -213,3 +213,7 @@ sample.*
 *.glb
 datasets
 results
+
+papers
+my-docs
+experiments/
