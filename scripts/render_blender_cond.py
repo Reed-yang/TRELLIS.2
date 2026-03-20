@@ -155,18 +155,83 @@ def pick_best_view(renders_dir, uid):
     return fallback if os.path.exists(fallback) else None
 
 
+def render_from_manifest(manifest_path, output_dir, num_views=16, rank=0, world_size=1):
+    """
+    Render conditioning images for all assets in a manifest.
+    Each asset gets num_views Blender CYCLES renders at 1024x1024.
+    Supports multi-process parallelism via rank/world_size sharding.
+    """
+    with open(manifest_path) as f:
+        items = json.load(f)
+
+    # Shard for parallel execution
+    if world_size > 1:
+        start = len(items) * rank // world_size
+        end = len(items) * (rank + 1) // world_size
+        items = items[start:end]
+
+    print(f"Rendering {len(items)} assets (rank {rank}/{world_size}), {num_views} views each")
+
+    for item in tqdm(items, desc="Blender Rendering"):
+        uid = item['uid']
+        mesh_path = item['mesh_path']
+        asset_dir = os.path.join(output_dir, uid)
+
+        # Skip if already rendered (check last view exists)
+        if os.path.exists(os.path.join(asset_dir, f"{num_views-1:04d}.png")):
+            continue
+
+        os.makedirs(asset_dir, exist_ok=True)
+
+        # Call existing Blender subprocess
+        cmd = [
+            BLENDER_PATH, '--background', '--python', BLENDER_SCRIPT,
+            '--', mesh_path, asset_dir,
+            '--num_views', str(num_views),
+            '--resolution', '1024',
+        ]
+        try:
+            call(cmd, stdout=DEVNULL, stderr=DEVNULL, timeout=300)
+        except Exception as e:
+            print(f"  Render failed for {uid}: {e}")
+
+
+def update_manifest_with_renders(manifest_path, output_dir, num_views=16):
+    """Update manifest.json with renders_dir and num_views fields."""
+    with open(manifest_path) as f:
+        items = json.load(f)
+    for item in items:
+        item['renders_dir'] = os.path.join(os.path.abspath(output_dir), item['uid'])
+        item['num_views'] = num_views
+    with open(manifest_path, 'w') as f:
+        json.dump(items, f, indent=2)
+    print(f"Updated {len(items)} entries in {manifest_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Render Blender conditioning images for pilot meshes")
-    parser.add_argument("--manifest", type=str, required=True,
+    parser.add_argument("--manifest", type=str,
                         help="Path to pilot data manifest.json")
     parser.add_argument("--output_dir", type=str,
                         default="experiments/gap_measurement_blender",
                         help="Output directory for experiment")
+    parser.add_argument("--render_output", type=str,
+                        default="experiments/component_eval/renders_cond",
+                        help="Output directory for manifest-based batch rendering")
     parser.add_argument("--num_views", type=int, default=16,
                         help="Number of views per model (default: 16, matches training)")
     parser.add_argument("--resolution", type=int, default=1024,
                         help="Render resolution (default: 1024, matches training)")
+    parser.add_argument("--rank", type=int, default=0,
+                        help="Process rank for multi-process parallelism")
+    parser.add_argument("--world_size", type=int, default=1,
+                        help="Total number of processes for parallelism")
     args = parser.parse_args()
+
+    # Manifest-based batch rendering mode (component eval pipeline)
+    if args.manifest:
+        render_from_manifest(args.manifest, args.render_output, args.num_views, args.rank, args.world_size)
+        return
 
     # Verify Blender is installed
     if not os.path.exists(BLENDER_PATH):
