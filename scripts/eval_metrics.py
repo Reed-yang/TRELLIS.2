@@ -137,6 +137,15 @@ def render_normal_maps(trellis_mesh, nviews=8, resolution=512):
         List of [3, H, W] float tensors (normal maps in [0, 1])
     """
     from trellis2.utils.render_utils import render_snapshot
+    from trellis2.representations import Mesh as TrellisMesh, MeshWithVoxel
+
+    # PbrMeshRenderer (used for MeshWithVoxel) doesn't support return_types;
+    # convert to plain Mesh to use the simpler MeshRenderer for normal maps.
+    if isinstance(trellis_mesh, MeshWithVoxel):
+        trellis_mesh = TrellisMesh(
+            vertices=trellis_mesh.vertices,
+            faces=trellis_mesh.faces,
+        )
 
     result = render_snapshot(
         trellis_mesh,

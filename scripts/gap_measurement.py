@@ -176,12 +176,50 @@ def vae_reconstruct(mesh_path, encoder, decoder):
 _pipeline = None
 
 
+def _patch_gated_models():
+    """Redirect gated HF models (DINOv3, RMBG) to local pretrained paths."""
+    pretrained_dir = os.path.join(os.path.dirname(__file__), '..', 'pretrained')
+    from trellis2.modules.image_feature_extractor import DinoV3FeatureExtractor
+    from trellis2.pipelines.rembg.BiRefNet import BiRefNet
+
+    original_dinov3_init = DinoV3FeatureExtractor.__init__
+    original_birefnet_init = BiRefNet.__init__
+
+    def patched_dinov3_init(self, model_name, image_size=512):
+        if "dinov3" in model_name:
+            local_path = os.path.join(pretrained_dir, "dinov3")
+            if os.path.exists(local_path):
+                model_name = local_path
+        original_dinov3_init(self, model_name, image_size)
+
+    def patched_birefnet_init(self, model_name="ZhengPeng7/BiRefNet"):
+        from transformers import AutoModelForImageSegmentation
+        from torchvision import transforms
+        if "RMBG" in model_name or "BiRefNet" in model_name:
+            local_path = os.path.join(pretrained_dir, "rmbg2")
+            if os.path.exists(local_path):
+                model_name = local_path
+        self.model = AutoModelForImageSegmentation.from_pretrained(
+            model_name, trust_remote_code=True, low_cpu_mem_usage=False
+        )
+        self.model.eval()
+        self.transform_image = transforms.Compose([
+            transforms.Resize((1024, 1024)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+
+    DinoV3FeatureExtractor.__init__ = patched_dinov3_init
+    BiRefNet.__init__ = patched_birefnet_init
+
+
 def load_pipeline():
     """Load pretrained Trellis2 image-to-3D pipeline (singleton)."""
     global _pipeline
     if _pipeline is not None:
         return _pipeline
 
+    _patch_gated_models()
     from trellis2.pipelines import Trellis2ImageTo3DPipeline
 
     # Try local path first
