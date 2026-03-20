@@ -26,6 +26,7 @@ from scripts.eval_metrics import (
     chamfer_distance,
     f_score,
     normal_consistency,
+    align_points_and_normals,
     render_normal_maps,
     compute_rendering_metrics,
 )
@@ -294,11 +295,13 @@ def evaluate_single(gt_mesh_path, recon_mesh, gen_mesh, gt_trimesh=None):
         result["vae_psnr"] = float('nan')
         result["vae_ssim"] = float('nan')
 
-    # Path B metrics
+    # Path B metrics (with 24-rotation alignment)
     if gen_mesh is not None:
         gen_trimesh = trellis_mesh_to_trimesh(gen_mesh)
         gen_points, gen_normals = sample_points_and_normals(gen_trimesh, NUM_SAMPLE_POINTS)
         gen_points, gen_normals = gen_points.cuda(), gen_normals.cuda()
+        # Align DiT output to GT coordinate system (DiT uses its own canonical axes)
+        gen_points, gen_normals = align_points_and_normals(gen_points, gen_normals, gt_points)
         result["dit_cd"] = chamfer_distance(gen_points, gt_points)
         result["dit_fscore"] = f_score(gen_points, gt_points, threshold=F_SCORE_THRESHOLD)
         result["dit_nc"] = normal_consistency(gen_points, gen_normals, gt_points, gt_normals)
@@ -412,6 +415,10 @@ def main():
                         help="Max number of samples to evaluate")
     parser.add_argument("--grid_size", type=int, default=512,
                         help="O-Voxel grid resolution")
+    parser.add_argument("--rank", type=int, default=0,
+                        help="Worker rank for multi-GPU (0-indexed)")
+    parser.add_argument("--world_size", type=int, default=1,
+                        help="Total number of workers for multi-GPU")
     args = parser.parse_args()
 
     global GRID_SIZE
@@ -422,13 +429,17 @@ def main():
     os.makedirs(os.path.join(args.output_dir, "dit_generations"), exist_ok=True)
     os.makedirs(os.path.join(args.output_dir, "rendered_refs"), exist_ok=True)
 
-    # Load manifest
+    # Load manifest and shard for multi-GPU
     with open(args.manifest) as f:
         manifest = json.load(f)
     if args.max_samples:
         manifest = manifest[:args.max_samples]
+    if args.world_size > 1:
+        start = len(manifest) * args.rank // args.world_size
+        end = len(manifest) * (args.rank + 1) // args.world_size
+        manifest = manifest[start:end]
 
-    print(f"Evaluating {len(manifest)} samples...")
+    print(f"Evaluating {len(manifest)} samples (rank {args.rank}/{args.world_size})...")
 
     # Load models
     encoder, decoder = None, None
@@ -438,7 +449,8 @@ def main():
 
     # Process each sample
     all_results = []
-    csv_path = os.path.join(args.output_dir, "per_sample.csv")
+    csv_suffix = f"_rank{args.rank}" if args.world_size > 1 else ""
+    csv_path = os.path.join(args.output_dir, f"per_sample{csv_suffix}.csv")
     fieldnames = ["uid", "category",
                   "vae_cd", "vae_fscore", "vae_nc", "vae_psnr", "vae_ssim",
                   "dit_cd", "dit_fscore", "dit_nc", "dit_psnr", "dit_ssim",
@@ -517,12 +529,15 @@ def main():
             torch.cuda.empty_cache()
 
     # Generate summary
-    summary_path = os.path.join(args.output_dir, "summary.md")
-    generate_summary(all_results, summary_path)
-
-    # Print quick stats
-    print(f"\nResults saved to {csv_path}")
-    print(f"Summary saved to {summary_path}")
+    # Generate summary (only on single-GPU mode; multi-GPU needs merge first)
+    if args.world_size == 1:
+        summary_path = os.path.join(args.output_dir, "summary.md")
+        generate_summary(all_results, summary_path)
+        print(f"\nResults saved to {csv_path}")
+        print(f"Summary saved to {summary_path}")
+    else:
+        print(f"\nResults saved to {csv_path}")
+        print(f"Rank {args.rank} done. Merge CSVs and run summary separately.")
     vae_successes = sum(1 for r in all_results if not np.isnan(r.get("vae_cd", float('nan'))))
     dit_successes = sum(1 for r in all_results if not np.isnan(r.get("dit_cd", float('nan'))))
     print(f"Path A successes: {vae_successes}/{len(all_results)}")

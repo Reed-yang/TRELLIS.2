@@ -43,6 +43,86 @@ def trellis_mesh_to_trimesh(trellis_mesh):
 
 
 # ---------------------------------------------------------------------------
+# 24 axis-aligned rotation alignment
+# ---------------------------------------------------------------------------
+
+def _build_24_rotations(device='cuda'):
+    """
+    Build all 24 axis-aligned rotation matrices (proper rotations of cube).
+    Returns: [24, 3, 3] tensor on device.
+    """
+    # 6 permutations of axes × 4 sign combinations with det=+1 = 24 rotations
+    import itertools
+    rots = []
+    for perm in itertools.permutations(range(3)):
+        for signs in itertools.product([-1, 1], repeat=3):
+            R = torch.zeros(3, 3)
+            for i, (p, s) in enumerate(zip(perm, signs)):
+                R[i, p] = s
+            if torch.det(R) > 0:  # proper rotation only
+                rots.append(R)
+    return torch.stack(rots).to(device)  # [24, 3, 3]
+
+_ROTATIONS_24 = None
+
+def get_24_rotations(device='cuda'):
+    global _ROTATIONS_24
+    if _ROTATIONS_24 is None or _ROTATIONS_24.device != torch.device(device):
+        _ROTATIONS_24 = _build_24_rotations(device)
+    return _ROTATIONS_24
+
+
+def find_best_rotation_24(pred_points, gt_points, chunk_size=2048):
+    """
+    Find the best axis-aligned rotation to align pred_points to gt_points.
+    Tests all 24 rotations, picks the one with minimum CD.
+
+    Args:
+        pred_points: [N, 3] tensor on GPU
+        gt_points: [M, 3] tensor on GPU
+
+    Returns:
+        best_R: [3, 3] rotation matrix
+        best_cd: scalar float (CD value with best rotation)
+    """
+    rots = get_24_rotations(pred_points.device)  # [24, 3, 3]
+
+    # Apply all 24 rotations at once: [24, N, 3]
+    rotated = torch.einsum('rij,nj->rni', rots, pred_points)
+
+    # Compute CD for each rotation (use subset for speed: first 2048 points)
+    n_quick = min(2048, len(pred_points), len(gt_points))
+    gt_sub = gt_points[:n_quick]
+
+    best_cd = float('inf')
+    best_idx = 0
+    for r in range(24):
+        pred_sub = rotated[r, :n_quick]
+        d1 = torch.cdist(pred_sub, gt_sub).min(dim=1)[0]
+        d2 = torch.cdist(gt_sub, pred_sub).min(dim=1)[0]
+        cd = ((d1 ** 2).mean() + (d2 ** 2).mean()).item() / 2
+        if cd < best_cd:
+            best_cd = cd
+            best_idx = r
+
+    return rots[best_idx], best_cd
+
+
+def align_points_and_normals(pred_points, pred_normals, gt_points):
+    """
+    Align predicted points/normals to GT using best of 24 axis-aligned rotations.
+
+    Returns:
+        aligned_points: [N, 3]
+        aligned_normals: [N, 3]
+    """
+    best_R, _ = find_best_rotation_24(pred_points, gt_points)
+    aligned_points = pred_points @ best_R.T
+    aligned_normals = pred_normals @ best_R.T
+    return aligned_points, aligned_normals
+
+
+# ---------------------------------------------------------------------------
 # Geometric metrics
 # ---------------------------------------------------------------------------
 
