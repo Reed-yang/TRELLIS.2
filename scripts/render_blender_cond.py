@@ -8,6 +8,7 @@ Produces images identical to the DiT training distribution.
 import os
 import sys
 import json
+import math
 import argparse
 import numpy as np
 from subprocess import call, DEVNULL
@@ -111,13 +112,47 @@ def render_single_mesh(mesh_path, uid, output_root, num_views=16, resolution=102
 
 def pick_best_view(renders_dir, uid):
     """
-    Pick the first rendered view as conditioning image.
-    Returns path to the selected PNG, or None if not found.
+    Pick the best front-facing view from rendered views using camera parameters.
+    Scoring: prefer low |elevation|, azimuth near 0° or 180°, FOV in [30°, 50°].
+    Falls back to 000.png if transforms.json is missing.
     """
-    view_path = os.path.join(renders_dir, uid, '000.png')
-    if os.path.exists(view_path):
-        return view_path
-    return None
+    transforms_path = os.path.join(renders_dir, uid, 'transforms.json')
+    if not os.path.exists(transforms_path):
+        fallback = os.path.join(renders_dir, uid, '000.png')
+        return fallback if os.path.exists(fallback) else None
+
+    with open(transforms_path) as f:
+        data = json.load(f)
+
+    best_view = None
+    best_score = float('inf')
+
+    for frame in data.get('frames', []):
+        m = frame['transform_matrix']
+        cam_pos = [m[0][3], m[1][3], m[2][3]]
+        r = math.sqrt(sum(c**2 for c in cam_pos))
+        if r < 1e-6:
+            continue
+
+        elev_deg = math.degrees(math.asin(cam_pos[2] / r))
+        azim_deg = math.degrees(math.atan2(cam_pos[1], cam_pos[0]))
+        fov_deg = math.degrees(frame.get('camera_angle_x', 0.7))
+
+        # Prefer: |elevation| small, azimuth near 0° or ±180°, FOV near 40°
+        azim_front = min(abs(azim_deg), abs(abs(azim_deg) - 180))
+        score = abs(elev_deg) * 1.0 + azim_front * 0.5 + abs(fov_deg - 40) * 0.3
+
+        if score < best_score:
+            best_score = score
+            best_view = frame['file_path']
+
+    if best_view:
+        path = os.path.join(renders_dir, uid, best_view)
+        if os.path.exists(path):
+            return path
+
+    fallback = os.path.join(renders_dir, uid, '000.png')
+    return fallback if os.path.exists(fallback) else None
 
 
 def main():
