@@ -123,6 +123,63 @@ def align_points_and_normals(pred_points, pred_normals, gt_points):
 
 
 # ---------------------------------------------------------------------------
+# ICP refinement (after 24-rotation coarse alignment)
+# ---------------------------------------------------------------------------
+
+def icp_refine(pred_points, gt_points, initial_R, max_iterations=50, threshold=1e-8):
+    """
+    Refine alignment using ICP after 24-rotation coarse alignment.
+    Rigid transform only (rotation + translation, no scale).
+    """
+    import open3d as o3d
+    pred_rotated = (pred_points @ initial_R.T).cpu().numpy()
+    gt_np = gt_points.cpu().numpy()
+    pcd_pred = o3d.geometry.PointCloud()
+    pcd_pred.points = o3d.utility.Vector3dVector(pred_rotated)
+    pcd_gt = o3d.geometry.PointCloud()
+    pcd_gt.points = o3d.utility.Vector3dVector(gt_np)
+    reg = o3d.pipelines.registration.registration_icp(
+        pcd_pred, pcd_gt,
+        max_correspondence_distance=0.1,
+        init=np.eye(4),
+        estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+        criteria=o3d.pipelines.registration.ICPConvergenceCriteria(
+            max_iteration=max_iterations, relative_fitness=threshold, relative_rmse=threshold,
+        ),
+    )
+    return reg.transformation
+
+
+def find_best_rotation_24_with_icp(pred_points, gt_points, chunk_size=2048):
+    """24-rotation search + ICP refinement. Returns (transform [4,4] numpy, best_cd float).
+
+    The returned transform is the composed transformation that maps
+    original pred_points to gt_points: first apply the coarse rotation,
+    then apply the ICP refinement.
+    """
+    best_R, _ = find_best_rotation_24(pred_points, gt_points, chunk_size)
+    icp_transform = icp_refine(pred_points, gt_points, best_R)
+    # Build the coarse rotation as a 4x4 matrix
+    coarse_4x4 = np.eye(4)
+    coarse_4x4[:3, :3] = best_R.cpu().numpy()
+    # Compose: icp_transform operates on rotated points, so full = icp @ coarse
+    transform = icp_transform @ coarse_4x4
+    pred_np = pred_points.cpu().numpy()
+    pred_homo = np.hstack([pred_np, np.ones((len(pred_np), 1))])
+    pred_transformed = (transform @ pred_homo.T).T[:, :3]
+    pred_t = torch.from_numpy(pred_transformed).float().to(pred_points.device)
+    cd = chamfer_distance(pred_t, gt_points)
+    return transform, cd
+
+
+def apply_transform_to_points(points, normals, transform):
+    """Apply a [4,4] rigid transform to points and normals."""
+    R = torch.from_numpy(transform[:3, :3].copy()).float().to(points.device)
+    t = torch.from_numpy(transform[:3, 3].copy()).float().to(points.device)
+    return points @ R.T + t, normals @ R.T
+
+
+# ---------------------------------------------------------------------------
 # Geometric metrics
 # ---------------------------------------------------------------------------
 
@@ -174,6 +231,23 @@ def f_score(points1, points2, threshold=0.01, chunk_size=2048):
     if denom < 1e-8:
         return 0.0
     return (2 * precision * recall / denom).item()
+
+
+F_SCORE_THRESHOLDS = [0.005, 0.01, 0.05, 0.1, 0.2]
+
+def f_score_multi(points1, points2, thresholds=None, chunk_size=2048):
+    """Compute F-score at multiple thresholds in one pass. Returns dict {threshold: value}."""
+    if thresholds is None:
+        thresholds = F_SCORE_THRESHOLDS
+    d1 = _chunked_min_dists(points1, points2, chunk_size)
+    d2 = _chunked_min_dists(points2, points1, chunk_size)
+    results = {}
+    for tau in thresholds:
+        precision = (d1 < tau).float().mean()
+        recall = (d2 < tau).float().mean()
+        denom = precision + recall
+        results[tau] = (2 * precision * recall / denom).item() if denom > 1e-8 else 0.0
+    return results
 
 
 def normal_consistency(points1, normals1, points2, normals2, chunk_size=2048):
@@ -239,6 +313,45 @@ def render_normal_maps(trellis_mesh, nviews=8, resolution=512):
         t = torch.from_numpy(nmap).float() / 255.0  # [H, W, 3]
         normal_maps.append(t.permute(2, 0, 1))  # [3, H, W]
     return normal_maps
+
+
+def render_normal_maps_paper_config(trellis_mesh, resolution=512):
+    """
+    Render normal maps matching TRELLIS.2 paper config:
+    4 views, pitch 30deg, FoV 6deg, yaw 30/120/210/300 deg, radius 10.
+    """
+    from trellis2.utils.render_utils import render_snapshot
+    from trellis2.representations import Mesh as TrellisMesh, MeshWithVoxel
+    if isinstance(trellis_mesh, MeshWithVoxel):
+        trellis_mesh = TrellisMesh(vertices=trellis_mesh.vertices, faces=trellis_mesh.faces)
+    result = render_snapshot(
+        trellis_mesh, resolution=resolution, nviews=4,
+        r=10, fov=6,
+        offset=(30 / 180 * np.pi, 30 / 180 * np.pi),
+        return_types=["normal"],
+    )
+    normal_maps = []
+    for nmap in result["normal"]:
+        t = torch.from_numpy(nmap).float() / 255.0
+        normal_maps.append(t.permute(2, 0, 1))
+    return normal_maps
+
+
+_lpips_model = None
+
+def compute_lpips(normal_maps_pred, normal_maps_gt):
+    """Compute LPIPS between predicted and GT normal maps. Returns float (lower is better)."""
+    global _lpips_model
+    if _lpips_model is None:
+        import lpips
+        _lpips_model = lpips.LPIPS(net='alex').cuda().eval()
+    vals = []
+    for pred, gt in zip(normal_maps_pred, normal_maps_gt):
+        pred_t = (pred.unsqueeze(0).cuda() * 2 - 1)
+        gt_t = (gt.unsqueeze(0).cuda() * 2 - 1)
+        with torch.no_grad():
+            vals.append(_lpips_model(pred_t, gt_t).item())
+    return float(np.mean(vals))
 
 
 def compute_rendering_metrics(normal_maps_pred, normal_maps_gt):
