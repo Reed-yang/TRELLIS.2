@@ -300,10 +300,17 @@ Download:
             continue
 
         # Generate a stable UID from the relative path
+        # Use parent directory name (e.g., "airplane_000") since mesh files are often
+        # named generically (e.g., "mesh.obj")
         rel_path = os.path.relpath(mesh_path, args.data_dir)
-        uid = Path(rel_path).stem
-        # Make uid unique by prepending category
-        uid = f"{category}__{uid}"
+        rel_parts = Path(rel_path).parts
+        if len(rel_parts) >= 2:
+            uid = rel_parts[-2]  # e.g., "airplane_000"
+        else:
+            uid = Path(rel_path).stem
+        # Ensure uniqueness by prepending category if not already included
+        if not uid.startswith(category):
+            uid = f"{category}__{uid}"
 
         entries.append({
             "uid": uid,
