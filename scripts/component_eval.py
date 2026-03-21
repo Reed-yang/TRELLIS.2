@@ -51,6 +51,18 @@ from scripts.eval_metrics import (
 GRID_SIZE = 512
 
 
+def _load_done_uids(csv_path):
+    """Load UIDs already processed from an existing CSV (for resume support)."""
+    done = set()
+    if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get("uid"):
+                    done.add(row["uid"])
+    return done
+
+
 # ---------------------------------------------------------------------------
 # Phase A: VAE Reconstruction Baseline
 # ---------------------------------------------------------------------------
@@ -73,15 +85,25 @@ def run_phase_a(manifest, output_dir, rank=0, world_size=1):
     csv_suffix = f"_rank{rank}" if world_size > 1 else ""
     csv_path = os.path.join(results_dir, f"per_sample{csv_suffix}.csv")
 
+    # Resume support: skip already-processed UIDs
+    done_uids = _load_done_uids(csv_path)
+    if done_uids:
+        print(f"Resuming: {len(done_uids)} already done, {len(manifest) - len(done_uids)} remaining")
+
     print("Loading SC-VAE encoder + decoder...")
     encoder, decoder = load_vae_models()
 
-    with open(csv_path, 'w', newline='') as csvfile:
+    # Append mode if resuming, write mode if fresh
+    mode = 'a' if done_uids else 'w'
+    with open(csv_path, mode, newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
+        if not done_uids:
+            writer.writeheader()
 
         for item in tqdm(manifest, desc="Phase A"):
             uid = item["uid"]
+            if uid in done_uids:
+                continue
             mesh_path = item["mesh_path"]
             category = item.get("category", "unknown")
             tier = item.get("tier", "unknown")
@@ -209,15 +231,24 @@ def run_phase_b(manifest, output_dir, rank=0, world_size=1):
     csv_suffix = f"_rank{rank}" if world_size > 1 else ""
     csv_path = os.path.join(results_dir, f"per_sample{csv_suffix}.csv")
 
+    # Resume support: skip already-processed UIDs
+    done_uids = _load_done_uids(csv_path)
+    if done_uids:
+        print(f"Resuming: {len(done_uids)} already done, {len(manifest) - len(done_uids)} remaining")
+
     # Load pipeline
     pipeline = load_pipeline()
 
-    with open(csv_path, 'w', newline='') as csvfile:
+    mode = 'a' if done_uids else 'w'
+    with open(csv_path, mode, newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
+        if not done_uids:
+            writer.writeheader()
 
         for item in tqdm(manifest, desc="Phase B"):
             uid = item["uid"]
+            if uid in done_uids:
+                continue
             mesh_path = item["mesh_path"]
             category = item.get("category", "unknown")
             tier = item.get("tier", "unknown")
@@ -702,12 +733,21 @@ def run_phase_c(manifest, output_dir, phase_b_csv, rank=0, world_size=1):
         except (ValueError, KeyError):
             pass
 
-    with open(csv_path, 'w', newline='') as csvfile:
+    # Resume support: skip already-processed UIDs
+    done_uids = _load_done_uids(csv_path)
+    if done_uids:
+        print(f"Resuming: {len(done_uids)} already done, {len(selected_manifest) - len(done_uids)} remaining")
+
+    mode = 'a' if done_uids else 'w'
+    with open(csv_path, mode, newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
+        if not done_uids:
+            writer.writeheader()
 
         for item in tqdm(selected_manifest, desc="Phase C"):
             uid = item["uid"]
+            if uid in done_uids:
+                continue
             mesh_path = item["mesh_path"]
             category = item.get("category", "unknown")
             tier = item.get("tier", "unknown")
