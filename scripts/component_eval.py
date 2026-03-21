@@ -52,14 +52,23 @@ GRID_SIZE = 512
 
 
 def _load_done_uids(csv_path):
-    """Load UIDs already processed from an existing CSV (for resume support)."""
+    """Load UIDs already processed from ALL CSV files in the same directory (for resume support).
+
+    Scans all per_sample*.csv files, not just the current rank's file,
+    so resume works correctly even when world_size changes between runs.
+    """
     done = set()
-    if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
-        with open(csv_path, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row.get("uid"):
-                    done.add(row["uid"])
+    results_dir = os.path.dirname(csv_path)
+    if not os.path.exists(results_dir):
+        return done
+    import glob
+    for f_path in glob.glob(os.path.join(results_dir, "per_sample*.csv")):
+        if os.path.getsize(f_path) > 0:
+            with open(f_path, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row.get("uid"):
+                        done.add(row["uid"])
     return done
 
 
