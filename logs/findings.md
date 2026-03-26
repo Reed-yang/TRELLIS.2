@@ -77,17 +77,108 @@
 
 ---
 
-## Methodology Notes
+---
 
-### Evaluation Protocol
-- **Test set:** 30 Objaverse models from diverse LVIS categories (pilot set, not standard benchmark)
+## Component Evaluation
+
+### Finding 8: OBJ Files Lack PBR Material Information
+**Date:** 2026-03-21
+**Impact:** PBR filtering cannot be done on OBJ files alone
+**Description:** All 4000 Toys4k OBJ files pass any OBJ-based material check because OBJ format does not encode PBR properties (metallic, roughness textures). The paper's Toys4k-PBR subset (~473) is defined by Blender material node trees.
+**Solution:** Created `filter_pbr_blender.py` and `pbr_strict_filter.py` to parse `.blend` files. Strict filter (all 3 PBR inputs texture-linked in Principled BSDF) yields 590 assets. Tested 3 strictness levels: strict=590, loose=790, partial=597.
+**Status:** Resolved. Using strict=590 as test set.
+
+---
+
+### Finding 9: GPU Memory Contention Causes False OOM and Evaluation Errors
+**Date:** 2026-03-21 ~ 2026-03-22
+**Impact:** **Critical** — Multiple processes per GPU cause 5x slowdown and false "all 16 views failed" errors
+**Description:** Running >1 component_eval process on the same 80GB GPU causes: (1) sampling speed drops from 20 it/s to 4 it/s, (2) CUDA OOM errors even for small meshes, (3) false errors where all 16 DiT generations fail. All 109 Phase A "OOM" samples and all 23 Phase B "error" samples completed successfully on dedicated single-process GPUs.
+**Lesson:** Never share GPU between evaluation processes. Use 1 process per GPU, balance load via LPT scheduling.
+**Status:** Resolved.
+
+---
+
+### Finding 10: fill_holes Post-processing Has Negligible Impact
+**Date:** 2026-03-22
+**Impact:** Answers component eval question #3 — fill_holes is NOT a meaningful contributor
+**Description:** Phase B simultaneously evaluated with/without fill_holes. Results: CD identical, NC delta -0.0004, only 50.5% of samples improved by fill_holes. F-score also essentially unchanged across all thresholds.
+**Implication:** Post-processing optimization (P1d) is low priority; gap is entirely in DiT generation quality.
+**Status:** Confirmed.
+
+---
+
+### Finding 11: DiT Quality Degrades Systematically with Object Complexity
+**Date:** 2026-03-22
+**Impact:** Identifies where DiT improvement efforts should focus
+**Description:** By-tier analysis on 590 PBR assets shows clear degradation: NC 0.913→0.870→0.819 (Tier 1→2→3), LPIPS 0.077→0.108→0.115. Worst cases are consistently complex shapes (balls with texture, trees with fine branches).
+**Implication:** DiT struggles most with complex geometry — structure prediction may be the bottleneck stage.
+
+---
+
+### Finding 12: Blender CPU Rendering Outperforms GPU for Simple Scenes
+**Date:** 2026-03-21
+**Impact:** Informational — guides future rendering strategy
+**Description:** Blender CYCLES GPU rendering (7.2s/view) is slower than CPU (5.4s/view) for Toys4k scenes due to ~1.5s CUDA kernel initialization overhead per Blender subprocess. With 112 CPU cores available, distributed CPU rendering across 6 Slurm nodes (24 concurrent processes) achieved ~26 assets/min, completing 4000 assets in ~2.5 hours.
+
+---
+
+## O-Voxel Representation Fidelity Test (Sketchfab-Hard)
+
+### Finding 13: flexible_dual_grid_to_mesh Requires CUDA Tensors
+**Date:** 2026-03-26
+**Impact:** **Critical** — O-Voxel decode returns all-zero face indices on CPU
+**Description:** `o_voxel.convert.flexible_dual_grid_to_mesh()` internally uses `_C.hashmap_insert_3d_idx_as_val_cuda()` for face index computation. When called with CPU tensors, the hashmap doesn't populate correctly, resulting in all face indices being 0 (degenerate mesh). All O-Voxel examples in the codebase pass `.cuda()` tensors.
+**Solution:** Always pass CUDA tensors to `flexible_dual_grid_to_mesh()`.
+**Status:** Resolved.
+
+---
+
+### Finding 14: O-Voxel Resolution Sweet Spot at 512-1536
+**Date:** 2026-03-26
+**Impact:** Guides resolution selection for evaluation benchmarks
+**Description:** Testing 3 hard Sketchfab models (helmet 324K faces, bugatti 169K, spacesuit 200K) across 512-2048:
+- **CD** is near-identical at 512-1536 (0.000005-0.000013), with catastrophic degradation at 2048
+- **2048 failure**: helmet CD 160x worse, spacesuit CD 58x worse than 1536. Bugatti unaffected.
+- **NC is uniformly low for helmet** (~0.62 across all resolutions) — chainmail topology defeats normal consistency
+- **SC-VAE (Layer B) improves NC** over raw O-Voxel: helmet 0.62→0.78 at 512, spacesuit 0.66→0.97
+**Implication:** 512-1024 is the practical operating range. Higher resolutions provide diminishing returns and can degrade quality (2048 overflow behavior).
+
+---
+
+### Finding 15: O-Voxel Causes Severe Mesh Fragmentation
+**Date:** 2026-03-26
+**Impact:** **Serious** — topology is fundamentally altered by O-Voxel representation
+**Description:** Topology analysis reveals massive fragmentation:
+- **Helmet**: GT 42K components → 97K-545K recon components (2.3-12.8x increase)
+- **Spacesuit**: GT 285 → 2.5K-56K components (9-198x increase)
+- **Bugatti**: GT 3K → 3.2K-8.4M components (similar at low res, explodes at 2048)
+- **Area ratio**: helmet recon has 1.37-5.89x GT surface area; bugatti has 0.86-1.88x
+- **Boundary edges**: recon has fewer boundary edges than GT for bugatti (8K vs 123K at 512), suggesting open surfaces are being sealed
+**Implication:** O-Voxel fundamentally changes mesh topology. The representation creates many disconnected fragments while also sealing some open surfaces. This is intrinsic to the voxel-based approach and cannot be fixed by resolution alone.
+
+---
+
+### Finding 16: SC-VAE Compression Has Minimal Geometric Impact but Improves Normals
+**Date:** 2026-03-26
+**Impact:** Positive — SC-VAE is not a bottleneck for geometric quality
+**Description:** Comparing Layer A (O-Voxel roundtrip) vs Layer B (SC-VAE roundtrip):
+- **CD**: Nearly identical between layers (e.g., helmet@1024: 0.000013 both)
+- **NC**: SC-VAE significantly IMPROVES normals — helmet 0.62→0.81, spacesuit 0.66→0.97
+- **Topology**: SC-VAE produces more components and boundary edges than raw O-Voxel
+**Interpretation:** The SC-VAE decoder's learned mesh extraction produces more consistent surface normals than the deterministic `flexible_dual_grid_to_mesh`, despite creating more topological fragments. The 16x compression adds negligible geometric error.
+
+---
+
+## Methodology Notes (Updated)
+
+### Component Evaluation Protocol
+- **Test set:** 590 Toys4k-PBR assets (strict PBR filter: all 3 Principled BSDF inputs texture-linked)
+- **Complexity stratification:** 3 tiers (face count + edge complexity), 197/240/153 per tier
 - **Resolution:** 512³ O-Voxel grid
-- **Point sampling:** 10,000 points per mesh (trimesh.sample.sample_surface)
-- **Alignment:** 24 axis-aligned rotation search before DiT metrics
-- **F-score threshold:** τ = 0.01 in [-0.5, 0.5] normalized space
-- **Rendering metrics:** 8-view normal maps via NVDiffRast, PSNR/SSIM
-
-### Caveats
-1. Pilot set (30 models) is small and not the paper's standard test set (Toys4K + Sketchfab Featured)
-2. PSNR/SSIM rendering metrics do not apply rotation alignment (only geometric metrics do)
-3. Blender conditioning images use random viewpoints — a fixed canonical viewpoint may give different results
+- **Point sampling:** 100K points (Phase B/C), 1M points (Phase A CD)
+- **Alignment:** 24 axis-aligned rotation + ICP refinement
+- **F-score thresholds:** τ = {0.005, 0.01, 0.05, 0.1, 0.2}
+- **Rendering metrics:** 4-view paper config + 8-view coverage, PSNR/SSIM/LPIPS
+- **Conditioning:** 16 Blender CYCLES views per asset (Hammersley distribution, FoV 10-70°)
+- **DiT evaluation:** Best-of-16 views (lowest CD) as upper bound
