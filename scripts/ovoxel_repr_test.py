@@ -268,9 +268,23 @@ def _worker_ovoxel_roundtrip(gt_mesh, resolution):
     )
     decode_time = time.time() - t1
 
+    # Post-processing: clean mesh using cumesh (same pipeline as to_glb)
+    import cumesh
+    t2 = time.time()
+    cm = cumesh.CuMesh()
+    cm.init(out_verts, out_faces)
+    cm.fill_holes(max_hole_perimeter=3e-2)
+    cm.remove_duplicate_faces()
+    cm.repair_non_manifold_edges()
+    cm.remove_small_connected_components(1e-5)
+    cm.fill_holes(max_hole_perimeter=3e-2)
+    cm.unify_face_orientations()
+    clean_verts, clean_faces = cm.read()
+    postproc_time = time.time() - t2
+
     recon_mesh = trimesh.Trimesh(
-        vertices=out_verts.detach().cpu().numpy(),
-        faces=out_faces.detach().cpu().numpy(),
+        vertices=clean_verts.detach().cpu().numpy(),
+        faces=clean_faces.detach().cpu().numpy(),
         process=False,
     )
 
@@ -278,8 +292,11 @@ def _worker_ovoxel_roundtrip(gt_mesh, resolution):
         "n_voxels": int(voxel_indices.shape[0]),
         "encode_time": round(encode_time, 2),
         "decode_time": round(decode_time, 2),
-        "out_verts": int(out_verts.shape[0]),
-        "out_faces": int(out_faces.shape[0]),
+        "postproc_time": round(postproc_time, 2),
+        "raw_verts": int(out_verts.shape[0]),
+        "raw_faces": int(out_faces.shape[0]),
+        "out_verts": int(clean_verts.shape[0]),
+        "out_faces": int(clean_faces.shape[0]),
     }
     return recon_mesh, meta
 
