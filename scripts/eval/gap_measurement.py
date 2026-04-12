@@ -2,14 +2,14 @@
 Gap Measurement: Quantify quality gap between SC-VAE reconstruction and DiT generation.
 
 Usage:
-    python scripts/gap_measurement.py --manifest experiments/gap_measurement/pilot_data/manifest.json
-    python scripts/gap_measurement.py --manifest ... --path_a_only   # VAE reconstruction only
-    python scripts/gap_measurement.py --manifest ... --path_b_only   # DiT generation only
+    python scripts/eval/gap_measurement.py --manifest experiments/gap_measurement/pilot_data/manifest.json
+    python scripts/eval/gap_measurement.py --manifest ... --path_a_only   # VAE reconstruction only
+    python scripts/eval/gap_measurement.py --manifest ... --path_b_only   # DiT generation only
 """
 
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import json
 import argparse
@@ -20,7 +20,7 @@ import trimesh
 from tqdm import tqdm
 from PIL import Image
 
-from scripts.eval_metrics import (
+from scripts.eval.eval_metrics import (
     sample_points_and_normals,
     trellis_mesh_to_trimesh,
     chamfer_distance,
@@ -179,7 +179,7 @@ _pipeline = None
 
 def _patch_gated_models():
     """Redirect gated HF models (DINOv3, RMBG) to local pretrained paths."""
-    pretrained_dir = os.path.join(os.path.dirname(__file__), '..', 'pretrained')
+    pretrained_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'pretrained')
     from trellis2.modules.image_feature_extractor import DinoV3FeatureExtractor
     from trellis2.pipelines.rembg.BiRefNet import BiRefNet
 

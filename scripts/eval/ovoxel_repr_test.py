@@ -8,15 +8,15 @@ Each (model, resolution) job runs in a subprocess with its own GPU to avoid
 CUDA context corruption from O-Voxel internal GPU operations.
 
 Usage:
-    python scripts/ovoxel_repr_test.py --layer a
-    python scripts/ovoxel_repr_test.py --layer b
-    python scripts/ovoxel_repr_test.py --layer all
-    python scripts/ovoxel_repr_test.py --layer a --num-gpus 8
+    python scripts/eval/ovoxel_repr_test.py --layer a
+    python scripts/eval/ovoxel_repr_test.py --layer b
+    python scripts/eval/ovoxel_repr_test.py --layer all
+    python scripts/eval/ovoxel_repr_test.py --layer a --num-gpus 8
 """
 
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import json
 import time
@@ -174,7 +174,7 @@ def _run_single_job(model_id, resolution, layer, gpu_id):
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, env=env,
-            timeout=600, cwd=os.path.join(os.path.dirname(__file__), '..'),
+            timeout=600, cwd=os.path.join(os.path.dirname(__file__), '..', '..'),
         )
         # Parse JSON result from stdout (last line)
         for line in reversed(result.stdout.strip().split('\n')):
@@ -305,8 +305,8 @@ def _worker_scvae_roundtrip(gt_mesh, resolution):
     """SC-VAE roundtrip in worker subprocess."""
     import o_voxel
     from trellis2.modules.sparse import SparseTensor
-    from scripts.eval_metrics import trellis_mesh_to_trimesh
-    from scripts.gap_measurement import load_vae_models
+    from scripts.eval.eval_metrics import trellis_mesh_to_trimesh
+    from scripts.eval.gap_measurement import load_vae_models
 
     vertices = torch.from_numpy(gt_mesh.vertices.copy()).float()
     faces = torch.from_numpy(gt_mesh.faces.copy()).long()
@@ -396,7 +396,7 @@ def _compute_topo_metrics(mesh):
 
 def _worker_compute_metrics(gt_mesh, recon_mesh):
     """Compute geometric + topology metrics in worker subprocess."""
-    from scripts.eval_metrics import (
+    from scripts.eval.eval_metrics import (
         sample_points_and_normals, chamfer_distance,
         f_score_multi, normal_consistency,
     )

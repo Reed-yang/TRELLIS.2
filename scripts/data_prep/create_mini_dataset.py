@@ -7,7 +7,7 @@ Creates 20 samples with:
 - metadata.csv: in all required directories
 
 Usage:
-    python scripts/create_mini_dataset.py
+    python scripts/data_prep/create_mini_dataset.py
 """
 
 import os
@@ -21,7 +21,7 @@ from PIL import Image
 from pathlib import Path
 
 # Project root
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 NUM_SAMPLES = 20

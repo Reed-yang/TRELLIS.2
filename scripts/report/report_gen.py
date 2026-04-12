@@ -5,10 +5,10 @@ Generates markdown summary reports for Phase A (VAE), Phase B (DiT),
 and Phase C (stage attribution) evaluation results.
 
 Usage:
-    python scripts/report_gen.py --phase a --csv results/phase_a.csv
-    python scripts/report_gen.py --phase b --csv results/phase_b.csv --phase_a_csv results/phase_a.csv
-    python scripts/report_gen.py --phase c --csv results/phase_c.csv
-    python scripts/report_gen.py --phase a --csv results/phase_a.csv --output_dir reports/
+    python scripts/report/report_gen.py --phase a --csv results/phase_a.csv
+    python scripts/report/report_gen.py --phase b --csv results/phase_b.csv --phase_a_csv results/phase_a.csv
+    python scripts/report/report_gen.py --phase c --csv results/phase_c.csv
+    python scripts/report/report_gen.py --phase a --csv results/phase_a.csv --output_dir reports/
 """
 
 import argparse
@@ -26,9 +26,11 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 def _fmt(val, decimals=4):
-    """Format a float for markdown tables."""
+    """Format a float for markdown tables. Uses scientific notation for very small values."""
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return "N/A"
+    if isinstance(val, (int, float)) and val != 0 and abs(val) < 0.001:
+        return f"{val:.2e}"
     return f"{val:.{decimals}f}"
 
 
@@ -267,23 +269,22 @@ def _phase_b_summary(df, output_dir, phase_a_df=None):
             "lpips": "lpips",
         }
 
-        lines.append("| Metric | Phase A Mean | Phase B Mean | Ratio (B/A) |")
-        lines.append("|--------|-------------|-------------|-------------|")
+        lines.append("| Metric | Phase A Mean | Phase A Median | Phase B Mean | Phase B Median | Ratio (Mean) | Ratio (Median) |")
+        lines.append("|--------|-------------|---------------|-------------|---------------|-------------|----------------|")
 
         for b_metric, a_metric in gap_mapping.items():
             if b_metric not in valid.columns or a_metric not in a_valid.columns:
                 continue
-            a_mean = a_valid[a_metric].dropna().mean()
-            b_mean = valid[b_metric].dropna().mean()
-            if a_mean != 0 and not np.isnan(a_mean):
-                ratio = b_mean / a_mean
-                lines.append(
-                    f"| {b_metric} | {_fmt(a_mean)} | {_fmt(b_mean)} | {_fmt(ratio, 2)}x |"
-                )
-            else:
-                lines.append(
-                    f"| {b_metric} | {_fmt(a_mean)} | {_fmt(b_mean)} | N/A |"
-                )
+            a_series = a_valid[a_metric].dropna()
+            b_series = valid[b_metric].dropna()
+            a_mean, a_med = a_series.mean(), a_series.median()
+            b_mean, b_med = b_series.mean(), b_series.median()
+            r_mean = f"{b_mean / a_mean:.2f}x" if a_mean != 0 and not np.isnan(a_mean) else "N/A"
+            r_med = f"{b_med / a_med:.2f}x" if a_med != 0 and not np.isnan(a_med) else "N/A"
+            lines.append(
+                f"| {b_metric} | {_fmt(a_mean)} | {_fmt(a_med)} | "
+                f"{_fmt(b_mean)} | {_fmt(b_med)} | {r_mean} | {r_med} |"
+            )
 
         lines.append("")
 
@@ -717,10 +718,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python scripts/report_gen.py --phase a --csv results/phase_a.csv
-  python scripts/report_gen.py --phase b --csv results/phase_b.csv --phase_a_csv results/phase_a.csv
-  python scripts/report_gen.py --phase c --csv results/phase_c.csv
-  python scripts/report_gen.py --phase a --csv results/phase_a.csv --output_dir reports/
+  python scripts/report/report_gen.py --phase a --csv results/phase_a.csv
+  python scripts/report/report_gen.py --phase b --csv results/phase_b.csv --phase_a_csv results/phase_a.csv
+  python scripts/report/report_gen.py --phase c --csv results/phase_c.csv
+  python scripts/report/report_gen.py --phase a --csv results/phase_a.csv --output_dir reports/
         """,
     )
     parser.add_argument(

@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import torch
 import pytest
 
-from scripts.eval_metrics import chamfer_distance, f_score, normal_consistency
+from scripts.eval.eval_metrics import chamfer_distance, f_score, normal_consistency
 
 
 class TestChamferDistance:

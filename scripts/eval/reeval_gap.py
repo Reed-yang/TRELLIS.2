@@ -1,10 +1,10 @@
-# scripts/reeval_gap.py
+# scripts/eval/reeval_gap.py
 """
 Recompute gap measurement metrics with 24-rotation alignment from saved OBJ files.
 Also generates aligned preview images.
 
 Usage:
-    python scripts/reeval_gap.py \
+    python scripts/eval/reeval_gap.py \
         --manifest experiments/gap_measurement/pilot_data/manifest.json \
         --vae_dir experiments/gap_measurement_blender/results/vae_reconstructions \
         --dit_dir experiments/gap_measurement_blender/results/dit_generations \
@@ -14,7 +14,7 @@ Usage:
 
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import json
 import csv
@@ -26,7 +26,7 @@ import trimesh
 from PIL import Image
 from tqdm import tqdm
 
-from scripts.eval_metrics import (
+from scripts.eval.eval_metrics import (
     sample_points_and_normals,
     trellis_mesh_to_trimesh,
     chamfer_distance,

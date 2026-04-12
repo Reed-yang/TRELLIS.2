@@ -6,15 +6,15 @@ Phase B: DiT generation best-of-16 views (with/without fill_holes)
 Phase C: GT injection stage breakdown (5 experimental conditions)
 
 Usage:
-    python scripts/component_eval.py --phase a --manifest experiments/component_eval/test_set/manifest.json
-    python scripts/component_eval.py --phase b --manifest ... --rank 0 --world_size 8
-    python scripts/component_eval.py --phase c --manifest ... --phase_b_csv experiments/component_eval/phase_b/results/per_sample.csv
-    python scripts/component_eval.py --phase merge --manifest ... --output_dir experiments/component_eval
+    python scripts/eval/component_eval.py --phase a --manifest experiments/component_eval/test_set/manifest.json
+    python scripts/eval/component_eval.py --phase b --manifest ... --rank 0 --world_size 8
+    python scripts/eval/component_eval.py --phase c --manifest ... --phase_b_csv experiments/component_eval/phase_b/results/per_sample.csv
+    python scripts/eval/component_eval.py --phase merge --manifest ... --output_dir experiments/component_eval
 """
 
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import json
 import argparse
@@ -26,7 +26,7 @@ import trimesh
 from tqdm import tqdm
 from PIL import Image
 
-from scripts.gap_measurement import (
+from scripts.eval.gap_measurement import (
     load_and_normalize_mesh,
     trimesh_to_trellis_mesh,
     load_vae_models,
@@ -34,7 +34,7 @@ from scripts.gap_measurement import (
     load_pipeline,
     _patch_gated_models,
 )
-from scripts.eval_metrics import (
+from scripts.eval.eval_metrics import (
     sample_points_and_normals,
     trellis_mesh_to_trimesh,
     chamfer_distance,
@@ -943,16 +943,16 @@ def main():
         epilog="""
 Examples:
   Phase A (VAE reconstruction):
-    python scripts/component_eval.py --phase a --manifest manifest.json
+    python scripts/eval/component_eval.py --phase a --manifest manifest.json
 
   Phase B (DiT best-of-16, multi-GPU):
-    python scripts/component_eval.py --phase b --manifest manifest.json --rank 0 --world_size 8
+    python scripts/eval/component_eval.py --phase b --manifest manifest.json --rank 0 --world_size 8
 
   Phase C (GT injection):
-    python scripts/component_eval.py --phase c --manifest manifest.json --phase_b_csv phase_b/results/per_sample.csv
+    python scripts/eval/component_eval.py --phase c --manifest manifest.json --phase_b_csv phase_b/results/per_sample.csv
 
   Merge rank files:
-    python scripts/component_eval.py --phase merge --output_dir experiments/component_eval
+    python scripts/eval/component_eval.py --phase merge --output_dir experiments/component_eval
         """,
     )
     parser.add_argument("--phase", type=str, required=True,

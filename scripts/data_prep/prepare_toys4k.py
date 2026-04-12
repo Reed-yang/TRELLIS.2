@@ -11,7 +11,7 @@ The dataset contains ~3,229 toy assets; after PBR filtering ~473 remain.
 
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import json
 import argparse
@@ -214,13 +214,13 @@ def main():
         epilog="""
 Examples:
   # Process pre-downloaded Toys4k data
-  python scripts/prepare_toys4k.py --data_dir /path/to/toys4k
+  python scripts/data_prep/prepare_toys4k.py --data_dir /path/to/toys4k
 
   # Skip PBR filter (include all meshes, useful for testing)
-  python scripts/prepare_toys4k.py --data_dir /path/to/toys4k --skip_pbr_filter
+  python scripts/data_prep/prepare_toys4k.py --data_dir /path/to/toys4k --skip_pbr_filter
 
   # Custom output directory
-  python scripts/prepare_toys4k.py --data_dir /path/to/toys4k --output_dir /path/to/output
+  python scripts/data_prep/prepare_toys4k.py --data_dir /path/to/toys4k --output_dir /path/to/output
 
 Download:
   The Toys4k dataset (~3,229 toy assets) can be obtained from:

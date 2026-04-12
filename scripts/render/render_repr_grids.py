@@ -10,7 +10,7 @@ Uses per-model camera parameters to handle extreme aspect ratios.
 
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import torch
 import numpy as np

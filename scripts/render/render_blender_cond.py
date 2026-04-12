@@ -1,4 +1,4 @@
-# scripts/render_blender_cond.py
+# scripts/render/render_blender_cond.py
 """
 Render Blender CYCLES conditioning images for pilot meshes.
 Calls the existing data_toolkit/blender_script/render_cond.py via Blender subprocess.
@@ -17,7 +17,7 @@ from PIL import Image
 
 # Blender path (same as data_toolkit/render_cond.py)
 BLENDER_PATH = '/tmp/blender-3.0.1-linux-x64/blender'
-BLENDER_SCRIPT = os.path.join(os.path.dirname(__file__), '..', 'data_toolkit', 'blender_script', 'render_cond.py')
+BLENDER_SCRIPT = os.path.join(os.path.dirname(__file__), '..', '..', 'data_toolkit', 'blender_script', 'render_cond.py')
 
 # Camera distribution functions (copied from data_toolkit/utils.py to avoid import issues)
 PRIMES = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53]
@@ -183,12 +183,16 @@ def render_from_manifest(manifest_path, output_dir, num_views=16, rank=0, world_
 
         os.makedirs(asset_dir, exist_ok=True)
 
-        # Call existing Blender subprocess
+        # Build camera views and call Blender with correct args
+        cond_views = build_cond_views(num_views)
         cmd = [
-            BLENDER_PATH, '--background', '--python', BLENDER_SCRIPT,
-            '--', mesh_path, asset_dir,
-            '--num_views', str(num_views),
-            '--resolution', '1024',
+            BLENDER_PATH, '-b', '-P', os.path.realpath(BLENDER_SCRIPT),
+            '--',
+            '--object', os.path.realpath(mesh_path),
+            '--cond_views', json.dumps(cond_views),
+            '--cond_resolution', '1024',
+            '--cond_output_folder', asset_dir,
+            '--engine', 'CYCLES',
         ]
         try:
             call(cmd, stdout=DEVNULL, stderr=DEVNULL, timeout=300)
