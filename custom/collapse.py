@@ -181,146 +181,152 @@ def get_surrounding_cubes(g_edge):
     elif axis == 'z':
         return [(nx, ny, nz), (nx-1, ny, nz), (nx-1, ny-1, nz), (nx, ny-1, nz)]
 
-def process_shared_edge_geometry(grid_2x2_lists):
-    """
-    Processes a 2x2 grid of cubes (4 lists of dicts) sharing an edge to resolve 
-    multi-cube intersection points and create connecting triangles.
+# def process_shared_edge_geometry(grid_2x2_lists):
+#     """
+#     Processes a 2x2 grid of cubes (4 lists of dicts) sharing an edge to resolve 
+#     multi-cube intersection points and create connecting triangles.
     
-    Args:
-        resolution (int): Grid resolution (used to calculate physical coordinates).
-        grid_2x2_lists (list of lists of dict): 4 lists of dictionaries representing the 4 cubes.
+#     Args:
+#         resolution (int): Grid resolution (used to calculate physical coordinates).
+#         grid_2x2_lists (list of lists of dict): 4 lists of dictionaries representing the 4 cubes.
         
-    Returns:
-        tuple: (new_vertices, triangles)
-    """
-    # 1. Deduce the base cube index and edge direction
-    valid_indices = []
-    for cube_list in grid_2x2_lists:
-        if cube_list and 'cube_indices' in cube_list[0]:
-            valid_indices.append(cube_list[0]['cube_indices'])
+#     Returns:
+#         tuple: (new_vertices, triangles)
+#     """
+#     # 1. Deduce the base cube index and edge direction
+#     valid_indices = []
+#     for cube_list in grid_2x2_lists:
+#         if cube_list and 'cube_indices' in cube_list[0]:
+#             valid_indices.append(cube_list[0]['cube_indices'])
             
-    if not valid_indices:
-        return [], []
+#     if not valid_indices:
+#         return [], []
         
-    min_idx = [min(idx[i] for idx in valid_indices) for i in range(3)]
-    max_idx = [max(idx[i] for idx in valid_indices) for i in range(3)]
+#     min_idx = [min(idx[i] for idx in valid_indices) for i in range(3)]
+#     max_idx = [max(idx[i] for idx in valid_indices) for i in range(3)]
     
-    # The axis where the minimum index equals the maximum index is the shared edge axis
-    edge_axis = -1
-    for i in range(3):
-        if min_idx[i] == max_idx[i]:
-            edge_axis = i
-            break
+#     # The axis where the minimum index equals the maximum index is the shared edge axis
+#     edge_axis = -1
+#     for i in range(3):
+#         if min_idx[i] == max_idx[i]:
+#             edge_axis = i
+#             break
             
-    if edge_axis == -1:
-        # Fallback if topology is malformed, guess Z
-        edge_axis = 2 
+#     if edge_axis == -1:
+#         # Fallback if topology is malformed, guess Z
+#         edge_axis = 2 
 
-    # Determine local edge for a specific relative position mapping to your strict constants
-    def get_local_edge(dx, dy, dz):
-        if edge_axis == 2:    # Z-aligned
-            if dx == 0 and dy == 0: return 10 # Back-Right
-            if dx == 1 and dy == 0: return 11 # Back-Left
-            if dx == 0 and dy == 1: return 9  # Front-Right
-            if dx == 1 and dy == 1: return 8  # Front-Left
-        elif edge_axis == 0:  # X-aligned
-            if dy == 0 and dz == 0: return 6  # Top-Back
-            if dy == 1 and dz == 0: return 4  # Top-Front
-            if dy == 0 and dz == 1: return 2  # Bottom-Back
-            if dy == 1 and dz == 1: return 0  # Bottom-Front
-        elif edge_axis == 1:  # Y-aligned
-            if dx == 0 and dz == 0: return 5  # Top-Right
-            if dx == 1 and dz == 0: return 7  # Top-Left
-            if dx == 0 and dz == 1: return 1  # Bottom-Right
-            if dx == 1 and dz == 1: return 3  # Bottom-Left
-        return -1
+#     # Determine local edge for a specific relative position mapping to your strict constants
+#     def get_local_edge(dx, dy, dz):
+#         if edge_axis == 2:    # Z-aligned
+#             if dx == 0 and dy == 0: return 10 # Back-Right
+#             if dx == 1 and dy == 0: return 11 # Back-Left
+#             if dx == 0 and dy == 1: return 9  # Front-Right
+#             if dx == 1 and dy == 1: return 8  # Front-Left
+#         elif edge_axis == 0:  # X-aligned
+#             if dy == 0 and dz == 0: return 6  # Top-Back
+#             if dy == 1 and dz == 0: return 4  # Top-Front
+#             if dy == 0 and dz == 1: return 2  # Bottom-Back
+#             if dy == 1 and dz == 1: return 0  # Bottom-Front
+#         elif edge_axis == 1:  # Y-aligned
+#             if dx == 0 and dz == 0: return 5  # Top-Right
+#             if dx == 1 and dz == 0: return 7  # Top-Left
+#             if dx == 0 and dz == 1: return 1  # Bottom-Right
+#             if dx == 1 and dz == 1: return 3  # Bottom-Left
+#         return -1
 
-    # 2. Extract points registered to the shared edge
-    cube_points = {}
-    for cube_list in grid_2x2_lists:
-        if not cube_list:
-            continue
-        idx = cube_list[0]['cube_indices']
-        dx = idx[0] - min_idx[0]
-        dy = idx[1] - min_idx[1]
-        dz = idx[2] - min_idx[2]
+#     # 2. Extract points registered to the shared edge
+#     cube_points = {}
+#     for cube_list in grid_2x2_lists:
+#         if not cube_list:
+#             continue
+#         idx = cube_list[0]['cube_indices']
+#         dx = idx[0] - min_idx[0]
+#         dy = idx[1] - min_idx[1]
+#         dz = idx[2] - min_idx[2]
         
-        local_edge = get_local_edge(dx, dy, dz)
+#         local_edge = get_local_edge(dx, dy, dz)
         
-        pts = []
-        for d in cube_list:
-            for loop in d.get('structured_loops', []):
-                if local_edge in loop.get('original_cube_edges', []):
-                    pts.append(loop['mesh_point'])
+#         pts = []
+#         for d in cube_list:
+#             for loop in d.get('structured_loops', []):
+#                 if local_edge in loop.get('original_cube_edges', []):
+#                     pts.append(loop['mesh_point'])
                     
-        # Sort points by the edge axis to align multiple intersections (ranks)
-        pts.sort(key=lambda pt: pt[edge_axis])
+#         # Sort points by the edge axis to align multiple intersections (ranks)
+#         pts.sort(key=lambda pt: pt[edge_axis])
         
-        # Store points keyed by relative position
-        if edge_axis == 2:   key = (dx, dy)
-        elif edge_axis == 0: key = (dy, dz)
-        elif edge_axis == 1: key = (dx, dz)
-        cube_points[key] = pts
+#         # Store points keyed by relative position
+#         if edge_axis == 2:   key = (dx, dy)
+#         elif edge_axis == 0: key = (dy, dz)
+#         elif edge_axis == 1: key = (dx, dz)
+#         cube_points[key] = pts
 
-    # 3. Create vertices and triangles per rank
-    new_vertices = []
-    triangles = []
+#     # 3. Create vertices and triangles per rank
+#     new_vertices = []
+#     triangles = []
     
-    max_rank = 0
-    if cube_points:
-        max_rank = max(len(pts) for pts in cube_points.values())
+#     max_rank = 0
+#     if cube_points:
+#         max_rank = max(len(pts) for pts in cube_points.values())
         
-    # Standard neighbor cycle for up to 4 connecting triangles
-    neighbors = [(0, 0), (1, 0), (1, 1), (0, 1)]
+#     # Standard neighbor cycle for up to 4 connecting triangles
+#     neighbors = [(0, 0), (1, 0), (1, 1), (0, 1)]
     
-    for rank in range(max_rank):
-        rank_pts = []
-        pt_map = {}
+#     for rank in range(max_rank):
+#         rank_pts = []
+#         pt_map = {}
         
-        for uv in neighbors:
-            if uv in cube_points and rank < len(cube_points[uv]):
-                pt = cube_points[uv][rank]
-                rank_pts.append(pt)
-                pt_map[uv] = pt
+#         for uv in neighbors:
+#             if uv in cube_points and rank < len(cube_points[uv]):
+#                 pt = cube_points[uv][rank]
+#                 rank_pts.append(pt)
+#                 pt_map[uv] = pt
                 
-        if not rank_pts:
-            continue
+#         if not rank_pts:
+#             continue
             
-        # Average the coordinates of the valid points for this rank
-        avg_x = sum(p[0] for p in rank_pts) / len(rank_pts)
-        avg_y = sum(p[1] for p in rank_pts) / len(rank_pts)
-        avg_z = sum(p[2] for p in rank_pts) / len(rank_pts)
+#         # Average the coordinates of the valid points for this rank
+#         avg_x = sum(p[0] for p in rank_pts) / len(rank_pts)
+#         avg_y = sum(p[1] for p in rank_pts) / len(rank_pts)
+#         avg_z = sum(p[2] for p in rank_pts) / len(rank_pts)
         
-        proj_pt = (avg_x, avg_y, avg_z)
+#         proj_pt = (avg_x, avg_y, avg_z)
         
-        # # Project to the shared edge by locking the non-varying axes based on cube width (1.0/resolution)
-        # if edge_axis == 0:
-        #     proj_pt = (avg_x, (min_idx[1] + 1) / resolution, (min_idx[2] + 1) / resolution)
-        # elif edge_axis == 1:
-        #     proj_pt = ((min_idx[0] + 1) / resolution, avg_y, (min_idx[2] + 1) / resolution)
-        # else: # edge_axis == 2
-        #     proj_pt = ((min_idx[0] + 1) / resolution, (min_idx[1] + 1) / resolution, avg_z)
+#         # # Project to the shared edge by locking the non-varying axes based on cube width (1.0/resolution)
+#         # if edge_axis == 0:
+#         #     proj_pt = (avg_x, (min_idx[1] + 1) / resolution, (min_idx[2] + 1) / resolution)
+#         # elif edge_axis == 1:
+#         #     proj_pt = ((min_idx[0] + 1) / resolution, avg_y, (min_idx[2] + 1) / resolution)
+#         # else: # edge_axis == 2
+#         #     proj_pt = ((min_idx[0] + 1) / resolution, (min_idx[1] + 1) / resolution, avg_z)
             
-        new_vertices.append(proj_pt)
+#         new_vertices.append(proj_pt)
         
-        # # Generate up to 4 triangles using adjacent neighboring points
-        for i in range(4):
-            uv1 = neighbors[i]
-            uv2 = neighbors[(i + 1) % 4]
-            if uv1 in pt_map and uv2 in pt_map:
-                triangles.append((proj_pt, pt_map[uv1], pt_map[uv2]))
+#         # # Generate up to 4 triangles using adjacent neighboring points
+#         for i in range(4):
+#             uv1 = neighbors[i]
+#             uv2 = neighbors[(i + 1) % 4]
+#             if uv1 in pt_map and uv2 in pt_map:
+#                 triangles.append((proj_pt, pt_map[uv1], pt_map[uv2]))
         
-        # add triangle only if 4 points are present
-        # if len(rank_pts) == 4:
-        #     triangles.append((proj_pt, pt_map[neighbors[0]], pt_map[neighbors[1]]))
-        #     triangles.append((proj_pt, pt_map[neighbors[1]], pt_map[neighbors[2]]))
-        #     triangles.append((proj_pt, pt_map[neighbors[2]], pt_map[neighbors[3]]))
-        #     triangles.append((proj_pt, pt_map[neighbors[3]], pt_map[neighbors[0]]))
+#         # add triangle only if 4 points are present
+#         # if len(rank_pts) == 4:
+#         #     triangles.append((proj_pt, pt_map[neighbors[0]], pt_map[neighbors[1]]))
+#         #     triangles.append((proj_pt, pt_map[neighbors[1]], pt_map[neighbors[2]]))
+#         #     triangles.append((proj_pt, pt_map[neighbors[2]], pt_map[neighbors[3]]))
+#         #     triangles.append((proj_pt, pt_map[neighbors[3]], pt_map[neighbors[0]]))
 
 
 
-    return new_vertices, triangles
+#     return new_vertices, triangles
 
+
+def mark_exception(cube_data_list):
+    """
+    Marks the cubes that are exceptions to the collapse point algorithm.
+    """
+    return [{'exception': True, 'cube_indices': cube_data['cube_indices'], 'sorted_loops': [{'component_point': cube_data['component_points'][0]}]} for cube_data in cube_data_list]
 
 
 # def process_shared_edge_geometry(grid_2x2_lists):
@@ -335,7 +341,6 @@ def process_shared_edge_geometry(grid_2x2_lists):
 #     Returns:
 #         tuple: (new_vertices, triangles)
 #     """
-#     print('Processing shared edge geometry...', grid_2x2_lists)
 #     # 1. Deduce the base cube index and edge direction
 #     valid_indices = []
 #     for cube_list in grid_2x2_lists:
@@ -409,9 +414,18 @@ def process_shared_edge_geometry(grid_2x2_lists):
 #                 for i, edge in enumerate(edges):
 #                     if edge == local_edge:
 #                         rank = ranks[i]
+                        
+#                         # Normalize rank orientation to the global positive axis
+#                         # Edges 2, 6 (-X) and 3, 7 (-Y) go in the negative direction.
+#                         if local_edge in [2, 6, 3, 7]:
+#                             W = d.get('edge_weights', [0]*18)[local_edge]
+#                             normalized_rank = (W - 1) - rank
+#                         else:
+#                             normalized_rank = rank
+                            
 #                         pt = loop_data.get('component_point')
 #                         if pt is not None:
-#                             points_by_rank[rank][uv] = pt
+#                             points_by_rank[normalized_rank][uv] = pt
 
 #     # 3. Create vertices and triangles per rank group
 #     new_vertices = []
@@ -434,7 +448,7 @@ def process_shared_edge_geometry(grid_2x2_lists):
 #         proj_pt = (avg_x, avg_y, avg_z)
 #         new_vertices.append(proj_pt)
         
-#         # Generate up to 4 triangles using adjacent neighboring points for this rank
+#         # # Generate up to 4 triangles using adjacent neighboring points for this rank
 #         # for i in range(4):
 #         #     uv1 = neighbors[i]
 #         #     uv2 = neighbors[(i + 1) % 4]
@@ -451,213 +465,398 @@ def process_shared_edge_geometry(grid_2x2_lists):
 #     return new_vertices, triangles
 
 
-
-
-# import math
-
-# def cross_product(v1, v2):
-#     """Computes the cross product of two 3D vectors."""
-#     return (
-#         v1[1] * v2[2] - v1[2] * v2[1],
-#         v1[2] * v2[0] - v1[0] * v2[2],
-#         v1[0] * v2[1] - v1[1] * v2[0]
-#     )
-
-# def dot_product(v1, v2):
-#     """Computes the dot product of two 3D vectors."""
-#     return sum(a * b for a, b in zip(v1, v2))
-
-# def normalize(v):
-#     """Returns the normalized version of a 3D vector."""
-#     mag = math.sqrt(sum(a * a for a in v))
-#     return tuple(a / mag for a in v) if mag > 1e-8 else (0.0, 0.0, 1.0)
-
-# def sub_vec(v1, v2):
-#     """Subtracts 3D vector v2 from v1."""
-#     return tuple(a - b for a, b in zip(v1, v2))
-
-
-# def sort_and_pair_points(P0, P1, P2, P3):
+# def process_shared_edge_geometry(grid_2x2_lists):
 #     """
-#     Sorts and pairs K points from 4 adjacent cubes by their geometric normal
-#     to form non-intersecting parallel quad faces.
-#     """
-#     K = len(P0)
-#     if K == 0:
-#         return [], [], [], []
+#     Processes a 2x2 grid of cubes (4 lists of dicts) sharing an edge to resolve 
+#     multi-cube intersection points and create connecting triangles.
+#     Vertices are strictly connected based on pre-calculated topological ranks.
+#     Exception cubes ignore loops and inject their first component point into 
+#     any matching neighboring rank groups.
     
-#     # Initial estimate of the normal using the first set of points
-#     p0, p1, p2, p3 = P0[0], P1[0], P2[0], P3[0]
-    
-#     # Using diagonals of the ordered quad: d1 (P0->P2) and d2 (P1->P3)
-#     d1 = sub_vec(p2, p0)
-#     d2 = sub_vec(p3, p1)
-#     normal = normalize(cross_product(d1, d2))
-    
-#     # Iterate to stabilize the normal and prevent quad intersections
-#     # Sorting by normal inherently orders parallel layers without intersections
-#     for _ in range(5):
-#         # Sort each cube's points by their rank (projection along the current normal)
-#         P0_s = sorted(P0, key=lambda p: dot_product(p, normal))
-#         P1_s = sorted(P1, key=lambda p: dot_product(p, normal))
-#         P2_s = sorted(P2, key=lambda p: dot_product(p, normal))
-#         P3_s = sorted(P3, key=lambda p: dot_product(p, normal))
+#     Args:
+#         grid_2x2_lists (list of lists of dict): 4 lists of dictionaries representing the 4 cubes.
         
-#         # Re-estimate the average normal across all K paired quads
-#         avg_normal = [0.0, 0.0, 0.0]
-#         for i in range(K):
-#             v0, v1, v2, v3 = P0_s[i], P1_s[i], P2_s[i], P3_s[i]
-#             nd1 = sub_vec(v2, v0)
-#             nd2 = sub_vec(v3, v1)
-#             n = cross_product(nd1, nd2)
-#             avg_normal = [a + b for a, b in zip(avg_normal, n)]
+#     Returns:
+#         tuple: (new_vertices, triangles)
+#     """
+#     # 1. Deduce the base cube index and edge direction
+#     valid_indices = []
+#     for cube_list in grid_2x2_lists:
+#         if cube_list and 'cube_indices' in cube_list[0]:
+#             valid_indices.append(cube_list[0]['cube_indices'])
             
-#         new_normal = normalize(avg_normal)
+#     if not valid_indices:
+#         return [], []
         
-#         # If the normal direction has converged, stop iterating
-#         if dot_product(normal, new_normal) > 0.9999:
-#             normal = new_normal
+#     min_idx = [min(idx[i] for idx in valid_indices) for i in range(3)]
+#     max_idx = [max(idx[i] for idx in valid_indices) for i in range(3)]
+    
+#     # The axis where the minimum index equals the maximum index is the shared edge axis
+#     edge_axis = -1
+#     for i in range(3):
+#         if min_idx[i] == max_idx[i]:
+#             edge_axis = i
 #             break
             
-#         normal = new_normal
+#     if edge_axis == -1:
+#         # Fallback if topology is malformed, guess Z
+#         edge_axis = 2 
+
+#     # Determine local edge for a specific relative position mapping to strict constants
+#     def get_local_edge(dx, dy, dz):
+#         if edge_axis == 2:    # Z-aligned
+#             if dx == 0 and dy == 0: return 10 # Back-Right
+#             if dx == 1 and dy == 0: return 11 # Back-Left
+#             if dx == 0 and dy == 1: return 9  # Front-Right
+#             if dx == 1 and dy == 1: return 8  # Front-Left
+#         elif edge_axis == 0:  # X-aligned
+#             if dy == 0 and dz == 0: return 6  # Top-Back
+#             if dy == 1 and dz == 0: return 4  # Top-Front
+#             if dy == 0 and dz == 1: return 2  # Bottom-Back
+#             if dy == 1 and dz == 1: return 0  # Bottom-Front
+#         elif edge_axis == 1:  # Y-aligned
+#             if dx == 0 and dz == 0: return 5  # Top-Right
+#             if dx == 1 and dz == 0: return 7  # Top-Left
+#             if dx == 0 and dz == 1: return 1  # Bottom-Right
+#             if dx == 1 and dz == 1: return 3  # Bottom-Left
+#         return -1
+
+#     # 2. Extract points and organize them by their pre-calculated rank
+#     # Structure: points_by_rank[rank][relative_uv_tuple] = point
+#     points_by_rank = collections.defaultdict(dict)
+    
+#     # Keep track of exception points that need to act as wildcards (uv -> point)
+#     exception_points = {}
+    
+#     for cube_list in grid_2x2_lists:
+#         if not cube_list:
+#             continue
+#         idx = cube_list[0]['cube_indices']
+#         dx = idx[0] - min_idx[0]
+#         dy = idx[1] - min_idx[1]
+#         dz = idx[2] - min_idx[2]
         
-#     return P0_s, P1_s, P2_s, P3_s
-
-
-# def get_global_edge(cx, cy, cz, local_edge_idx):
-#     """
-#     Translates a local edge index to a globally consistent identifier 
-#     represented by its sorted 3D coordinate endpoints.
-#     """
-#     v_offsets = {
-#         0: (0, 0, 0), 1: (1, 0, 0), 2: (1, 1, 0), 3: (0, 1, 0),
-#         4: (0, 0, 1), 5: (1, 0, 1), 6: (1, 1, 1), 7: (0, 1, 1)
-#     }
-    
-#     # Map edge index to its local vertex indices
-#     edge_to_v = {
-#         0: (0, 1),   1: (1, 2),   2: (2, 3),   3: (3, 0),    # Bottom edges
-#         4: (4, 5),   5: (5, 6),   6: (6, 7),   7: (7, 4),    # Top edges
-#         8: (0, 4),   9: (1, 5),   10: (2, 6),  11: (3, 7),   # Vertical edges
-#         12: (0, 2),  13: (4, 6),  14: (1, 4),  15: (1, 6),   # Diagonals (Bottom, Top, Front, Right)
-#         16: (2, 7),  17: (0, 7)                              # Diagonals (Back, Left)
-#     }
-    
-#     v1_idx, v2_idx = edge_to_v[local_edge_idx]
-#     v1_off, v2_off = v_offsets[v1_idx], v_offsets[v2_idx]
-    
-#     v1_g = (cx + v1_off[0], cy + v1_off[1], cz + v1_off[2])
-#     v2_g = (cx + v2_off[0], cy + v2_off[1], cz + v2_off[2])
-    
-#     # Return as a sorted tuple to guarantee A->B is equivalent to B->A
-#     return tuple(sorted((v1_g, v2_g)))
-
-
-# def process_shared_edge_geometry(cubes):
-#     """
-#     Main entry point. Processes a list of 4 dictionary representations of cubes 
-#     sharing a common edge to build quadrilateral connecting faces.
-#     """
-#     if len(cubes) != 4:
-#         return [], []
-
-#     cubes = [c[0] for c in cubes]
-#     for c in cubes:
-#         if len(c['structured_loops']) == 0:
-#             return [], []
-
-#     # 1. Identify which spatial dimensions vary to dynamically determine the shared edge
-#     min_c = [min(c['cube_indices'][i] for c in cubes) for i in range(3)]
-#     max_c = [max(c['cube_indices'][i] for c in cubes) for i in range(3)]
-#     varying_dims = [i for i in range(3) if min_c[i] != max_c[i]]
-#     center = [sum(c['cube_indices'][i] for c in cubes) / 4.0 for i in range(3)]
-
-#     # 2. Order the 4 cubes in a geometric cycle around the shared edge
-#     def get_angle(c):
-#         if len(varying_dims) == 2:
-#             d1, d2 = varying_dims
-#             dy = c['cube_indices'][d2] - center[d2]
-#             dx = c['cube_indices'][d1] - center[d1]
-#             return math.atan2(dy, dx)
-#         return 0
-
-#     ordered_cubes = sorted(cubes, key=get_angle)
-
-#     # 3. Translate loops into globally consistent edge representations
-#     groups_by_cube = []
-#     for c in ordered_cubes:
-#         cx, cy, cz = c['cube_indices']
-#         groups = {}
-#         for loop_dict in c['structured_loops']:
-#             # Construct a frozenset signature of the exact global edges intersected
-#             global_edges = set()
-#             for e in loop_dict['loop']:
-#                 global_edges.add(get_global_edge(cx, cy, cz, e))
+#         local_edge = get_local_edge(dx, dy, dz)
+#         if local_edge == -1:
+#             continue
             
-#             key = frozenset(global_edges)
-#             if key not in groups:
-#                 groups[key] = []
-#             groups[key].append({'mesh_point': loop_dict['mesh_point'], 'global_edges': key})
-            
-#         groups_by_cube.append(list(groups.values()))
-
-#     # Helper to determine if two structural layers connect across a shared face
-#     def groups_connect(gA, gB):
-#         edgesA = gA[0]['global_edges']
-#         edgesB = gB[0]['global_edges']
-#         return len(edgesA.intersection(edgesB)) > 0
-
-#     # 4. Find all 4-cycles of connected layers wrapping around the shared grid edge
-#     quad_sets = []
-#     for g0 in groups_by_cube[0]:
-#         for g1 in groups_by_cube[1]:
-#             if not groups_connect(g0, g1): continue
-#             for g2 in groups_by_cube[2]:
-#                 if not groups_connect(g1, g2): continue
-#                 for g3 in groups_by_cube[3]:
-#                     if not groups_connect(g2, g3): continue
-                    
-#                     # Ensure the cycle completes seamlessly
-#                     if not groups_connect(g3, g0): continue
-                    
-#                     P0 = [l['mesh_point'] for l in g0]
-#                     P1 = [l['mesh_point'] for l in g1]
-#                     P2 = [l['mesh_point'] for l in g2]
-#                     P3 = [l['mesh_point'] for l in g3]
-                    
-#                     # Ensure perfectly matched bundles of K points
-#                     K = len(P0)
-#                     if K > 0 and len(P1) == K and len(P2) == K and len(P3) == K:
-#                         quad_sets.append((P0, P1, P2, P3))
-
-#     # 5. Generate vertices and faces by pairing ranks
-#     all_vertices = []
-#     all_faces = []
-
-#     for P0, P1, P2, P3 in quad_sets:
-#         # Sort out intersections among parallel layered quads
-#         P0_s, P1_s, P2_s, P3_s = sort_and_pair_points(P0, P1, P2, P3)
-#         K = len(P0_s)
+#         # Determine relative 2D coordinate for quad corners around the edge
+#         if edge_axis == 2:   uv = (dx, dy)
+#         elif edge_axis == 0: uv = (dy, dz)
+#         elif edge_axis == 1: uv = (dx, dz)
         
-#         for i in range(K):
-#             start_idx = len(all_vertices)
+#         for d in cube_list:
+#             # ---> NEW CHECK: Handle Exception Cubes <---
+#             if d.get('exception') is True:
+#                 pt = None
+#                 # Safely attempt to extract the first component point
+#                 if d.get('sorted_loops') and len(d['sorted_loops']) > 0:
+#                     pt = d['sorted_loops'][0].get('component_point')
+#                 elif d.get('component_points') and len(d['component_points']) > 0:
+#                     pt = d['component_points'][0]
+#                 elif d.get('component_point'):
+#                     pt = d.get('component_point')
+                
+#                 if pt is not None:
+#                     exception_points[uv] = pt
+                
+#                 # Continue early to ignore the regular loops in this exception cube
+#                 continue
+#             # -------------------------------------------
+                
+#             for loop_data in d.get('sorted_loops', []):
+#                 edges = loop_data.get('loop', [])
+#                 ranks = loop_data.get('rank', [])
+                
+#                 # Check if this loop intersects the shared local edge
+#                 # Use enumerate to capture cases where a single loop crosses the same edge multiple times
+#                 for i, edge in enumerate(edges):
+#                     if edge == local_edge:
+#                         rank = ranks[i]
+                        
+#                         # Normalize rank orientation to the global positive axis
+#                         # Edges 2, 6 (-X) and 3, 7 (-Y) go in the negative direction.
+#                         if local_edge in [2, 6, 3, 7]:
+#                             W = d.get('edge_weights', [0]*18)[local_edge]
+#                             normalized_rank = (W - 1) - rank
+#                         else:
+#                             normalized_rank = rank
+                            
+#                         pt = loop_data.get('component_point')
+#                         if pt is not None:
+#                             points_by_rank[normalized_rank][uv] = pt
+
+#     # ---> DISTRIBUTE EXCEPTIONS: Act as wildcards for neighboring ranks <---
+#     # This fulfills the goal of connecting to "any neighbors".
+#     for rank, pt_map in points_by_rank.items():
+#         for uv, exc_pt in exception_points.items():
+#             if uv not in pt_map:
+#                 pt_map[uv] = exc_pt
+
+#     # Fallback: if there are no typical loops crossing this edge at all, but we 
+#     # have multiple exception points, group them in a default rank (Rank 0) so they connect.
+#     if not points_by_rank and len(exception_points) > 0:
+#         points_by_rank[0] = exception_points
+
+#     # 3. Create vertices and triangles per rank group
+#     new_vertices = []
+#     triangles = []
+    
+#     # Standard neighbor cycle for up to 4 connecting triangles
+#     neighbors = [(0, 0), (1, 0), (1, 1), (0, 1)]
+    
+#     for rank, pt_map in sorted(points_by_rank.items()):
+#         rank_pts = list(pt_map.values())
+        
+#         if not rank_pts:
+#             continue
             
-#             all_vertices.extend([
-#                 P0_s[i],
-#                 P1_s[i],
-#                 P2_s[i],
-#                 P3_s[i]
-#             ])
+#         # Average the coordinates of the valid points matching this specific rank
+#         avg_x = sum(p[0] for p in rank_pts) / len(rank_pts)
+#         avg_y = sum(p[1] for p in rank_pts) / len(rank_pts)
+#         avg_z = sum(p[2] for p in rank_pts) / len(rank_pts)
+        
+#         proj_pt = (avg_x, avg_y, avg_z)
+#         new_vertices.append(proj_pt)
+        
+#         # Only create triangles when there are 4 points forming a complete quad around the edge
+#         if len(rank_pts) == 4:
+#             # We connect the newly created averaged (projection) point to the neighboring perimeter points
+#             triangles.append((proj_pt, pt_map[neighbors[0]], pt_map[neighbors[1]]))
+#             triangles.append((proj_pt, pt_map[neighbors[1]], pt_map[neighbors[2]]))
+#             triangles.append((proj_pt, pt_map[neighbors[2]], pt_map[neighbors[3]]))
+#             triangles.append((proj_pt, pt_map[neighbors[3]], pt_map[neighbors[0]]))
+
+#         # # Generate up to 4 triangles using adjacent neighboring points for this rank
+#         # for i in range(4):
+#         #     uv1 = neighbors[i]
+#         #     uv2 = neighbors[(i + 1) % 4]
+#         #     if uv1 in pt_map and uv2 in pt_map:
+#         #         triangles.append((proj_pt, pt_map[uv1], pt_map[uv2]))
+
+#     return new_vertices, triangles
+
+
+
+def process_shared_edge_geometry(grid_2x2_lists):
+    """
+    Processes a 2x2 grid of cubes (4 lists of dicts) sharing an edge to resolve 
+    multi-cube intersection points and create connecting triangles.
+    Vertices are strictly connected based on pre-calculated topological ranks.
+    Exception cubes ignore loops and inject their first component point into 
+    any matching neighboring rank groups.
+    
+    Args:
+        grid_2x2_lists (list of lists of dict): 4 lists of dictionaries representing the 4 cubes.
+        
+    Returns:
+        tuple: (new_vertices, triangles)
+    """
+    # 1. Deduce the base cube index and edge direction
+    valid_indices = []
+    for cube_list in grid_2x2_lists:
+        if cube_list and 'cube_indices' in cube_list[0]:
+            valid_indices.append(cube_list[0]['cube_indices'])
             
-#             # # Form quad faces out of the successfully ordered 4-points
-#             # all_faces.append([start_idx, start_idx + 1, start_idx + 2, start_idx + 3])
+    if not valid_indices:
+        return [], []
+        
+    min_idx = [min(idx[i] for idx in valid_indices) for i in range(3)]
+    max_idx = [max(idx[i] for idx in valid_indices) for i in range(3)]
+    
+    # The axis where the minimum index equals the maximum index is the shared edge axis
+    edge_axis = -1
+    for i in range(3):
+        if min_idx[i] == max_idx[i]:
+            edge_axis = i
+            break
+            
+    if edge_axis == -1:
+        # Fallback if topology is malformed, guess Z
+        edge_axis = 2 
 
-#             # form 2 triangles
-#             all_faces.append([P0_s[i], P1_s[i], P2_s[i]])
-#             all_faces.append([P0_s[i], P2_s[i], P3_s[i]])
+    # Determine local edge for a specific relative position mapping to strict constants
+    def get_local_edge(dx, dy, dz):
+        if edge_axis == 2:    # Z-aligned
+            if dx == 0 and dy == 0: return 10 # Back-Right
+            if dx == 1 and dy == 0: return 11 # Back-Left
+            if dx == 0 and dy == 1: return 9  # Front-Right
+            if dx == 1 and dy == 1: return 8  # Front-Left
+        elif edge_axis == 0:  # X-aligned
+            if dy == 0 and dz == 0: return 6  # Top-Back
+            if dy == 1 and dz == 0: return 4  # Top-Front
+            if dy == 0 and dz == 1: return 2  # Bottom-Back
+            if dy == 1 and dz == 1: return 0  # Bottom-Front
+        elif edge_axis == 1:  # Y-aligned
+            if dx == 0 and dz == 0: return 5  # Top-Right
+            if dx == 1 and dz == 0: return 7  # Top-Left
+            if dx == 0 and dz == 1: return 1  # Bottom-Right
+            if dx == 1 and dz == 1: return 3  # Bottom-Left
+        return -1
 
-#     return all_vertices, all_faces
+    # 2. Extract points and organize them by their pre-calculated rank
+    # Structure: points_by_rank[rank][relative_uv_tuple] = point
+    points_by_rank = collections.defaultdict(dict)
+    
+    # Keep track of exception points that need to act as wildcards (uv -> point)
+    exception_points = {}
+    cube_by_uv = {}
+    shared_edge_weight = 0
+    
+    for cube_list in grid_2x2_lists:
+        if not cube_list:
+            continue
+        idx = cube_list[0]['cube_indices']
+        dx = idx[0] - min_idx[0]
+        dy = idx[1] - min_idx[1]
+        dz = idx[2] - min_idx[2]
+        
+        local_edge = get_local_edge(dx, dy, dz)
+        if local_edge == -1:
+            continue
+            
+        # Determine relative 2D coordinate for quad corners around the edge
+        if edge_axis == 2:   uv = (dx, dy)
+        elif edge_axis == 0: uv = (dy, dz)
+        elif edge_axis == 1: uv = (dx, dz)
+        
+        cube_by_uv[uv] = cube_list
+        
+        for d in cube_list:
+            # Track max shared edge weight for condition evaluation
+            w = d.get('edge_weights', [0]*18)[local_edge]
+            if w > 0:
+                shared_edge_weight = max(shared_edge_weight, w)
 
+            # ---> NEW CHECK: Handle Exception Cubes <---
+            if d.get('exception') is True:
+                pt = None
+                # Safely attempt to extract the first component point
+                if d.get('sorted_loops') and len(d['sorted_loops']) > 0:
+                    pt = d['sorted_loops'][0].get('component_point')
+                elif d.get('component_points') and len(d['component_points']) > 0:
+                    pt = d['component_points'][0]
+                elif d.get('component_point'):
+                    pt = d.get('component_point')
+                
+                if pt is not None:
+                    exception_points[uv] = pt
+                
+                # Continue early to ignore the regular loops in this exception cube
+                continue
+            # -------------------------------------------
+                
+            for loop_data in d.get('sorted_loops', []):
+                edges = loop_data.get('loop', [])
+                ranks = loop_data.get('rank', [])
+                
+                # Check if this loop intersects the shared local edge
+                # Use enumerate to capture cases where a single loop crosses the same edge multiple times
+                for i, edge in enumerate(edges):
+                    if edge == local_edge:
+                        rank = ranks[i]
+                        
+                        # Normalize rank orientation to the global positive axis
+                        # Edges 2, 6 (-X) and 3, 7 (-Y) go in the negative direction.
+                        if local_edge in [2, 6, 3, 7]:
+                            W = d.get('edge_weights', [0]*18)[local_edge]
+                            normalized_rank = (W - 1) - rank
+                        else:
+                            normalized_rank = rank
+                            
+                        pt = loop_data.get('component_point')
+                        if pt is not None:
+                            points_by_rank[normalized_rank][uv] = pt
+
+    # ---> NEW: Conditional Promotion of Disconnected Cubes to Exceptions <---
+    all_have_components = len(cube_by_uv) == 4 and all(
+        any(d.get('num_components', 0) > 0 for d in cl) for cl in cube_by_uv.values()
+    )
+    all_incomplete = all(len(pt_map) < 4 for pt_map in points_by_rank.values())
+
+    if all_have_components and shared_edge_weight > 0 and all_incomplete:
+        neighbors_pairs = [((0, 0), (1, 0)), ((1, 0), (1, 1)), ((1, 1), (0, 1)), ((0, 1), (0, 0))]
+        new_exception_uvs = set()
+        
+        for uv1, uv2 in neighbors_pairs:
+            connected = False
+            for pt_map in points_by_rank.values():
+                if uv1 in pt_map and uv2 in pt_map:
+                    connected = True
+                    break
+            if not connected:
+                # Pair doesn't connect, flag both as exceptions
+                if uv1 in cube_by_uv: new_exception_uvs.add(uv1)
+                if uv2 in cube_by_uv: new_exception_uvs.add(uv2)
+
+        for uv in new_exception_uvs:
+            if uv not in exception_points:
+                pt = None
+                # Safely attempt to extract the first component point
+                for d in cube_by_uv[uv]:
+                    if d.get('sorted_loops') and len(d['sorted_loops']) > 0:
+                        pt = d['sorted_loops'][0].get('component_point')
+                    elif d.get('component_points') and len(d['component_points']) > 0:
+                        pt = d['component_points'][0]
+                    elif d.get('component_point'):
+                        pt = d.get('component_point')
+                    if pt is not None:
+                        break
+                
+                if pt is not None:
+                    exception_points[uv] = pt
+                
+                # Remove this uv's regular loop points so it only acts as an exception wildcard
+                for pt_map in points_by_rank.values():
+                    pt_map.pop(uv, None)
+                    
+        # Cleanup any ranks that became completely empty after popping
+        empty_ranks = [r for r, pm in points_by_rank.items() if not pm]
+        for r in empty_ranks:
+            del points_by_rank[r]
+
+    # ---> DISTRIBUTE EXCEPTIONS: Act as wildcards for neighboring ranks <---
+    # This fulfills the goal of connecting to "any neighbors".
+    for rank, pt_map in points_by_rank.items():
+        for uv, exc_pt in exception_points.items():
+            if uv not in pt_map:
+                pt_map[uv] = exc_pt
+
+    # Fallback: if there are no typical loops crossing this edge at all, but we 
+    # have multiple exception points, group them in a default rank (Rank 0) so they connect.
+    if not points_by_rank and len(exception_points) > 0:
+        points_by_rank[0] = exception_points
+
+    # 3. Create vertices and triangles per rank group
+    new_vertices = []
+    triangles = []
+    
+    # Standard neighbor cycle for up to 4 connecting triangles
+    neighbors = [(0, 0), (1, 0), (1, 1), (0, 1)]
+    
+    for rank, pt_map in sorted(points_by_rank.items()):
+        rank_pts = list(pt_map.values())
+        
+        if not rank_pts:
+            continue
+            
+        # Average the coordinates of the valid points matching this specific rank
+        avg_x = sum(p[0] for p in rank_pts) / len(rank_pts)
+        avg_y = sum(p[1] for p in rank_pts) / len(rank_pts)
+        avg_z = sum(p[2] for p in rank_pts) / len(rank_pts)
+        
+        proj_pt = (avg_x, avg_y, avg_z)
+        new_vertices.append(proj_pt)
+        
+        # Only create triangles when there are 4 points forming a complete quad around the edge
+        if len(rank_pts) == 4:
+            # We connect the newly created averaged (projection) point to the neighboring perimeter points
+            triangles.append((proj_pt, pt_map[neighbors[0]], pt_map[neighbors[1]]))
+            triangles.append((proj_pt, pt_map[neighbors[1]], pt_map[neighbors[2]]))
+            triangles.append((proj_pt, pt_map[neighbors[2]], pt_map[neighbors[3]]))
+            triangles.append((proj_pt, pt_map[neighbors[3]], pt_map[neighbors[0]]))
+
+    return new_vertices, triangles
 
 
 def merge_close_vertices_and_faces(vertices, faces, tolerance_decimals=5):
@@ -751,27 +950,30 @@ def generate_global_mesh(resolution, cube_data_list, output_filepath="output_mes
         # CRITICAL MEMORY FIX: Strip down dictionary data to strictly what is needed 
         # to avoid RAM saturation from massive underlying geometry lists.
         loops = []
-        for loop in data.get('structured_loops', []):
-            loops.append({
-                'mesh_point': loop.get('mesh_point'),
-                'original_cube_edges': loop.get('original_cube_edges', []),
-                'loop': loop.get('loop', [])
-            })
-        # for loop in data.get('sorted_loops', []):
+        # for loop in data.get('structured_loops', []):
         #     loops.append({
-        #         'component_point': loop.get('component_point'),
-        #         'rank': loop.get('rank', []),
+        #         'mesh_point': loop.get('mesh_point'),
+        #         'original_cube_edges': loop.get('original_cube_edges', []),
         #         'loop': loop.get('loop', [])
         #     })
+        for loop in data.get('sorted_loops', []):
+            loops.append({
+                'component_point': loop.get('component_point'),
+                'rank': loop.get('rank', []),
+                'loop': loop.get('loop', [])
+            })
             
-        pruned_data = {
-            'cube_indices': idx,
-            'structured_loops': loops
-        }
         # pruned_data = {
         #     'cube_indices': idx,
-        #     'sorted_loops': loops
+        #     'structured_loops': loops
         # }
+        pruned_data = {
+            'cube_indices': idx,
+            'sorted_loops': loops,
+            'edge_weights': data.get('edge_weights', [0]*18),
+            'exception': data.get('exception', False),
+            'num_components': data.get('num_components', 0),
+        }
         
         if idx not in cube_map:
             cube_map[idx] = []

@@ -6,7 +6,7 @@ from tqdm import tqdm
 import collections
 import numpy as np
 import trimesh
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 # Hardcoded topology based on the specific triangulated cube description
 # Map of edge indices to their corresponding (vertex_a, vertex_b)
@@ -280,22 +280,36 @@ def extract_loops_with_uturns(cubes_data: List[Dict]) -> Tuple[List[Dict], List[
                 # Discard topologies violating global tracing consistency
                 print(e)
                 continue
-                
+        
+        # prune out backward u turn, i.e. 3 same face indices
+        unique_solutions = list(unique_solutions.values())
+        unique_solutions = [[loop[::2] for loop in sol] for sol in unique_solutions]
+        uniq_sol = []
+        for sol in unique_solutions:
+            is_valid = True
+            for loop in sol:
+                if any(count >= 3 for count in Counter(loop).values()):
+                    is_valid = False
+                    break
+            if is_valid:
+                uniq_sol.append(sol)
+        unique_solutions = uniq_sol
+
         # 3. Stratify the outcomes based on degree of ambiguity
         num_sols = len(unique_solutions)
         if num_sols == 0:
             unsolvable_uturn.append(cube)
         elif num_sols == 1:
             c = cube.copy()
-            c['loops'] = list(unique_solutions.values())[0]
-            c['loops'] = [loop[::2] for loop in c['loops']]
+            c['loops'] = unique_solutions[0]
+            # c['loops'] = [loop[::2] for loop in c['loops']]
             c['num_loops'] = len(c['loops'])
             solved_uturn.append(c)
         else:
             c = cube.copy()
             # Store the matrix of solutions when mapping is ambiguous
-            c['loops'] = list(unique_solutions.values())
-            c['loops'] = [loop[::2] for loop in c['loops']]
+            c['loops'] = unique_solutions
+            # c['loops'] = [loop[::2] for loop in c['loops']]
             ambiguous_uturn.append(c)
             
     return solved_uturn, ambiguous_uturn, unsolvable_uturn
@@ -529,10 +543,12 @@ def extract_loops_with_boundaries(cube_dicts: List[Dict]) -> Tuple[List[Dict], L
             unsolvable_uturn.append(cube)
         elif len(all_loops_solutions) == 1:
             cube['loops'] = all_loops_solutions[0]
+            # cube['loops'] = [loop[1::2] for loop in cube['loops']]
             cube['num_loops'] = len(cube['loops'])
             solved_uturn.append(cube)
         else:
             cube['loops_solutions'] = all_loops_solutions
+            # cube['loops_solutions'] = [[loop[1::2] for loop in loop_solution] for loop_solution in cube['loops_solutions']]
             ambiguous_uturn.append(cube)
             
     return solved_uturn, ambiguous_uturn, unsolvable_uturn
