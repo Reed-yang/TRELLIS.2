@@ -420,7 +420,10 @@ def _combine_pngs_to_mp4(cache_dir: str, out_path: str, config: AnimConfig):
 def render_comparison_video_parallel(model: str, out_path: str, config: AnimConfig,
                                      num_workers: int = 16,
                                      resume: bool = True,
-                                     cache_root: str = DEFAULT_CACHE_ROOT) -> bool:
+                                     cache_root: str = DEFAULT_CACHE_ROOT,
+                                     frame_start: int = None,
+                                     frame_end: int = None,
+                                     assemble: bool = True) -> bool:
     """Parallel renderer: N worker processes slice frames concurrently (CPU),
     main process renders on GPU serially (avoids GPU contention), writes each
     completed frame as a PNG for resume. Final step assembles PNGs -> MP4.
@@ -432,10 +435,15 @@ def render_comparison_video_parallel(model: str, out_path: str, config: AnimConf
         num_workers: CPU worker processes for slicing.
         resume: if True, skip frames whose PNG is already cached.
         cache_root: directory under which per-model PNG caches live.
+        frame_start: inclusive start frame for this call (default 0). Used by
+            the multi-GPU driver to partition frames across GPU processes.
+        frame_end: exclusive end frame (default total_frames). Combined with
+            frame_start to restrict which frames this call renders.
+        assemble: if False, skip the final PNG -> MP4 assembly. Used during
+            multi-GPU partitioned runs where only the orchestrator assembles
+            the MP4 after all partial renders finish.
 
-    Returns True on success (MP4 written), False on fatal error (e.g. missing
-    mesh files). Per-frame errors are logged and rendered as blank frames so
-    the loop continues.
+    Returns True on success, False on fatal error (e.g. missing mesh files).
     """
     import multiprocessing as mp
     import trimesh
@@ -455,17 +463,24 @@ def render_comparison_video_parallel(model: str, out_path: str, config: AnimConf
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
 
-    # Figure out which frames still need to be rendered.
-    todo_frames = []
-    for frame_idx in range(config.total_frames):
-        png_path = os.path.join(cache_dir, f'{frame_idx:04d}.png')
-        if resume and os.path.exists(png_path):
-            continue
-        todo_frames.append(frame_idx)
+    # Resolve the frame range this call is responsible for.
+    fs = 0 if frame_start is None else max(0, int(frame_start))
+    fe = config.total_frames if frame_end is None else min(config.total_frames, int(frame_end))
+    if fs >= fe:
+        print(f'  [WARN] Empty frame range [{fs}, {fe}); nothing to do')
+        todo_frames = []
+    else:
+        todo_frames = []
+        for frame_idx in range(fs, fe):
+            png_path = os.path.join(cache_dir, f'{frame_idx:04d}.png')
+            if resume and os.path.exists(png_path):
+                continue
+            todo_frames.append(frame_idx)
 
-    print(f'  Rendering {model} (parallel): {len(todo_frames)}/{config.total_frames} frames '
+    print(f'  Rendering {model} (parallel): {len(todo_frames)}/{fe - fs} frames '
+          f'in range [{fs}, {fe}) '
           f'(R={len(mesh_r.faces)} C={len(mesh_c.faces)} V={len(mesh_v.faces)} faces, '
-          f'workers={num_workers}, resume={resume})')
+          f'workers={num_workers}, resume={resume}, assemble={assemble})')
 
     if todo_frames:
         # Pack mesh data as (verts, faces) numpy arrays for IPC-friendly pickling.
@@ -532,13 +547,20 @@ def render_comparison_video_parallel(model: str, out_path: str, config: AnimConf
         print(f'  Slice+render completed: {completed} frames in {elapsed:.1f}s '
               f'(avg {elapsed / max(completed, 1):.2f}s/frame)')
     else:
-        print(f'  [RESUME] all {config.total_frames} frames already cached')
+        if fe - fs == config.total_frames:
+            print(f'  [RESUME] all {config.total_frames} frames already cached')
+        else:
+            print(f'  [RESUME] all frames in [{fs}, {fe}) already cached')
 
-    # Final MP4 assembly from PNG cache.
-    t_mp4 = time.time()
-    _combine_pngs_to_mp4(cache_dir, out_path, config)
-    print(f'  MP4 assembled in {time.time() - t_mp4:.1f}s')
-    print(f'  [OK] wrote {out_path}')
+    # Final MP4 assembly from PNG cache. Skip when the caller is a partial
+    # multi-GPU renderer; in that case the orchestrator assembles the MP4.
+    if assemble:
+        t_mp4 = time.time()
+        _combine_pngs_to_mp4(cache_dir, out_path, config)
+        print(f'  MP4 assembled in {time.time() - t_mp4:.1f}s')
+        print(f'  [OK] wrote {out_path}')
+    else:
+        print(f'  [OK] partial render of [{fs}, {fe}) done; MP4 assembly skipped')
     return True
 
 
@@ -566,6 +588,16 @@ def parse_args():
                    help='Disable resume (regenerate every frame even if its PNG is cached).')
     p.add_argument('--cache-root', default=DEFAULT_CACHE_ROOT,
                    help='Root directory for per-frame PNG caches.')
+    p.add_argument('--frame-start', type=int, default=None,
+                   help='Inclusive start frame index for this call (multi-GPU partitioning). '
+                        'Default: 0 (process from the beginning).')
+    p.add_argument('--frame-end', type=int, default=None,
+                   help='Exclusive end frame index for this call (multi-GPU partitioning). '
+                        'Default: total_frames (process through the end).')
+    p.add_argument('--no-assemble', action='store_true',
+                   help='Skip MP4 assembly; render the assigned frame range and exit. '
+                        'Used by the multi-GPU driver; the orchestrator assembles the MP4 '
+                        'after all partitions finish.')
     return p.parse_args()
 
 
@@ -592,10 +624,16 @@ def main():
           + (f' (workers={args.workers}, resume={resume}, cache={args.cache_root})'
              if use_parallel else ''))
 
+    # Partial runs bypass the "MP4 already exists" early exit — the
+    # orchestrator only needs the PNG cache populated, and the assembly
+    # step is a cheap follow-up.
+    partial_mode = (args.frame_start is not None) or (args.frame_end is not None) or args.no_assemble
+    assemble = not args.no_assemble
+
     succeeded = 0
     for model in args.models:
         out_path = os.path.join(args.out_dir, f'{model}_comparison.mp4')
-        if os.path.exists(out_path) and not args.overwrite:
+        if (not partial_mode) and os.path.exists(out_path) and not args.overwrite:
             print(f'  [EXISTS] {out_path} (use --overwrite to regenerate)')
             succeeded += 1
             continue
@@ -606,6 +644,9 @@ def main():
                     num_workers=args.workers,
                     resume=resume,
                     cache_root=args.cache_root,
+                    frame_start=args.frame_start,
+                    frame_end=args.frame_end,
+                    assemble=assemble,
                 )
             else:
                 ok = render_comparison_video(model, out_path, config)
