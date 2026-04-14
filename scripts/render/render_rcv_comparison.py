@@ -192,6 +192,41 @@ def load_layer_meshes(model: str, mesh_resolution: int):
     return mesh_r, mesh_c, mesh_v, radius
 
 
+def slice_mesh_for_frame(mesh, slice_origin: np.ndarray):
+    """Slice `mesh` with a plane at `slice_origin` with normal SLICE_NORMAL,
+    keeping the half-space opposite to the reveal direction.
+
+    The reveal direction is from corner (-0.9, +0.9, +0.9) toward the origin,
+    i.e. along SLICE_NORMAL = (-1, +1, +1)/sqrt(3). We want to keep the side
+    that does NOT contain the corner (the "revealed" side), which is where
+    (v - origin) . SLICE_NORMAL < 0. trimesh's slice_faces_plane keeps the
+    side where (v - origin) . plane_normal > 0, so we pass -SLICE_NORMAL.
+
+    Uses slice_faces_plane instead of slice_mesh_plane to avoid a hard
+    dependency on shapely (which the cap=True code path requires).
+
+    Returns (sliced_mesh, was_empty: bool). When was_empty is True, the
+    caller receives the original mesh as a fallback.
+    """
+    import trimesh
+    import trimesh.intersections
+
+    try:
+        new_verts, new_faces, _ = trimesh.intersections.slice_faces_plane(
+            vertices=mesh.vertices,
+            faces=mesh.faces,
+            plane_normal=-SLICE_NORMAL,
+            plane_origin=slice_origin,
+        )
+    except Exception:
+        return mesh, True
+
+    if new_verts is None or len(new_verts) == 0 or len(new_faces) == 0:
+        return mesh, True
+    sliced = trimesh.Trimesh(vertices=new_verts, faces=new_faces, process=False)
+    return sliced, False
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--models', nargs='+', default=DEFAULT_MODELS,
@@ -280,8 +315,22 @@ def _self_test_phase_state():
         assert len(m.vertices) > 0 and len(m.faces) > 0, f'{name} empty mesh'
     assert radius > 0
 
+    # slice_mesh_for_frame at frame 0 (outer corner) and frame 216 (center).
+    sliced_full, empty_full = slice_mesh_for_frame(mesh_c, SLICE_OUTER)
+    assert not empty_full, 'frame 0 slice unexpectedly empty'
+    # Outer corner slice keeps (almost) the entire mesh.
+    assert len(sliced_full.faces) >= int(0.95 * len(mesh_c.faces)), (
+        f'frame 0 sliced faces {len(sliced_full.faces)} vs full {len(mesh_c.faces)}')
+
+    sliced_center, empty_center = slice_mesh_for_frame(mesh_c, SLICE_CENTER)
+    assert not empty_center, 'center slice unexpectedly empty'
+    # Center slice keeps noticeably fewer faces than the full mesh.
+    assert len(sliced_center.faces) < len(mesh_c.faces), (
+        f'center slice faces {len(sliced_center.faces)} vs full {len(mesh_c.faces)}')
+
     print('compute_phase_state self-test PASSED')
     print(f'load_layer_meshes: R={len(mesh_r.faces)} C={len(mesh_c.faces)} V={len(mesh_v.faces)} faces')
+    print(f'slice test: full={len(sliced_full.faces)} center={len(sliced_center.faces)}')
 
 
 if __name__ == '__main__':
