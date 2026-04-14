@@ -125,6 +125,73 @@ def compute_phase_state(frame_idx: int, config: AnimConfig) -> tuple:
     return slice_origin, math.radians(yaw_deg)
 
 
+def _align_to_reference(mesh, ref_center: np.ndarray, ref_extent: float):
+    """Translate + scale `mesh` so its bbox center matches ref_center and its
+    max bbox extent matches ref_extent. Returns a new Trimesh (does not mutate
+    the input)."""
+    import trimesh
+    bounds = mesh.bounds  # (2, 3)
+    center = (bounds[0] + bounds[1]) / 2.0
+    extent = (bounds[1] - bounds[0]).max()
+    if extent < 1e-9:
+        # Degenerate mesh, keep it alone.
+        return mesh
+    scale = ref_extent / extent
+    new_verts = (mesh.vertices - center) * scale + ref_center
+    return trimesh.Trimesh(vertices=new_verts, faces=mesh.faces, process=False)
+
+
+def load_layer_meshes(model: str, mesh_resolution: int):
+    """Load Layer R / C / V meshes for a model, aligned to shared bbox.
+
+    Returns (mesh_r, mesh_c, mesh_v, radius) where:
+        - all three meshes are trimesh.Trimesh objects in [-0.5, 0.5]^3
+        - radius is a camera radius that fits the unit bbox with 20% margin
+    Raises FileNotFoundError if any layer .ply is missing.
+    """
+    import trimesh
+    work_dir = os.path.join(MESH_ROOT, f'work_{model}_{mesh_resolution}')
+    paths = {
+        'R': os.path.join(work_dir, 'layer_r.ply'),
+        'C': os.path.join(work_dir, 'corep_recon.ply'),
+        'V': os.path.join(work_dir, 'layer_v.ply'),
+    }
+    for k, p in paths.items():
+        if not os.path.exists(p):
+            raise FileNotFoundError(f'Missing Layer {k} mesh for {model}: {p}')
+
+    raw_r = trimesh.load(paths['R'], process=False, force='mesh')
+    raw_c = trimesh.load(paths['C'], process=False, force='mesh')
+    raw_v = trimesh.load(paths['V'], process=False, force='mesh')
+
+    # Use Layer C bounds as the reference frame (CoReP uses a well-defined
+    # normalize_mesh step, so its bbox is most trustworthy).
+    c_bounds = raw_c.bounds
+    c_center = (c_bounds[0] + c_bounds[1]) / 2.0
+    c_extent = (c_bounds[1] - c_bounds[0]).max()
+
+    # Step 1: align R and V to C's bbox.
+    aligned_r = _align_to_reference(raw_r, c_center, c_extent)
+    aligned_c = raw_c  # already the reference
+    aligned_v = _align_to_reference(raw_v, c_center, c_extent)
+
+    # Step 2: normalize all three to [-0.5, 0.5]^3 (translate c_center -> 0,
+    # scale c_extent -> 1.0).
+    def _normalize(mesh):
+        new_verts = (mesh.vertices - c_center) / c_extent
+        return trimesh.Trimesh(vertices=new_verts, faces=mesh.faces, process=False)
+
+    mesh_r = _normalize(aligned_r)
+    mesh_c = _normalize(aligned_c)
+    mesh_v = _normalize(aligned_v)
+
+    # Camera radius: unit bbox corner distance is sqrt(3)/2 ~= 0.866,
+    # with 20% margin and FOV~40 degrees we want r such that tan(fov/2)*r > 0.6.
+    # Empirically r=1.8 places everything comfortably in frame at fov=40.
+    radius = 1.8
+    return mesh_r, mesh_c, mesh_v, radius
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--models', nargs='+', default=DEFAULT_MODELS,
@@ -202,7 +269,19 @@ def _self_test_phase_state():
     assert ease_in_out_quad(1.0) == 1.0
     assert abs(ease_in_out_quad(0.5) - 0.5) < 1e-9
 
+    # load_layer_meshes end-to-end on icosphere.
+    mesh_r, mesh_c, mesh_v, radius = load_layer_meshes('icosphere', 512)
+    for name, m in [('R', mesh_r), ('C', mesh_c), ('V', mesh_v)]:
+        bounds = m.bounds
+        center = (bounds[0] + bounds[1]) / 2.0
+        extent = (bounds[1] - bounds[0]).max()
+        assert np.all(np.abs(center) < 1e-3), f'{name} center {center}'
+        assert abs(extent - 1.0) < 1e-3, f'{name} extent {extent}'
+        assert len(m.vertices) > 0 and len(m.faces) > 0, f'{name} empty mesh'
+    assert radius > 0
+
     print('compute_phase_state self-test PASSED')
+    print(f'load_layer_meshes: R={len(mesh_r.faces)} C={len(mesh_c.faces)} V={len(mesh_v.faces)} faces')
 
 
 if __name__ == '__main__':
