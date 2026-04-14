@@ -24,8 +24,9 @@ import argparse
 import math
 import os
 import sys
+import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 
@@ -40,12 +41,22 @@ DEFAULT_MODELS = [
 
 MESH_ROOT = 'results/baseline_experiments/EXP6_corep_recon'
 DEFAULT_OUT_DIR = 'results/baseline_experiments/videos'
+DEFAULT_CACHE_ROOT = 'tmp/rcv_cache'
 
 LABELS = ['Layer R (O-Voxel)', 'Layer C (CoReP)', 'Layer V (O-Voxel + VAE)']
 
 SLICE_NORMAL = np.array([-1.0, 1.0, 1.0]) / math.sqrt(3.0)
 SLICE_OUTER = np.array([-0.9, 0.9, 0.9])
 SLICE_CENTER = np.array([0.0, 0.0, 0.0])
+
+
+# Module-level globals populated by worker init. Workers are forked child
+# processes used by render_comparison_video_parallel to overlap CPU-bound
+# mesh slicing across many cores while the main process serializes GPU
+# rendering. Storing the meshes once per worker (via initializer) avoids
+# paying the pickling cost on every task.
+_WORKER_MESHES = None
+_WORKER_CONFIG = None
 
 
 @dataclass
@@ -347,6 +358,188 @@ def render_comparison_video(model: str, out_path: str, config: AnimConfig) -> bo
     return True
 
 
+# -----------------------------------------------------------------------------
+# Parallel variant: CPU-parallel slicing + serial GPU rendering + PNG cache for
+# resume. See render_comparison_video_parallel for the main orchestration.
+# -----------------------------------------------------------------------------
+
+def _worker_init(mesh_data_tuple, config_dict):
+    """Initializer for forked worker processes. Called once per worker. Sets
+    module-level globals with the three trimesh objects (R, C, V) rebuilt from
+    the vertex/face arrays and the AnimConfig rebuilt from its dict."""
+    import trimesh
+    global _WORKER_MESHES, _WORKER_CONFIG
+    meshes = []
+    for verts, faces in mesh_data_tuple:
+        meshes.append(trimesh.Trimesh(vertices=verts, faces=faces, process=False))
+    _WORKER_MESHES = meshes  # [mesh_r, mesh_c, mesh_v]
+    _WORKER_CONFIG = AnimConfig(**config_dict)
+
+
+def _worker_slice_frame(frame_idx):
+    """Compute the slice origin for `frame_idx` and slice all three layers.
+    Returns lightweight numpy tuples so the result pickles cheaply back to the
+    main process. Runs in worker (no CUDA)."""
+    slice_origin, _ = compute_phase_state(frame_idx, _WORKER_CONFIG)
+    sliced_r, _ = slice_mesh_for_frame(_WORKER_MESHES[0], slice_origin)
+    sliced_c, _ = slice_mesh_for_frame(_WORKER_MESHES[1], slice_origin)
+    sliced_v, _ = slice_mesh_for_frame(_WORKER_MESHES[2], slice_origin)
+    return (
+        frame_idx,
+        (np.asarray(sliced_r.vertices, dtype=np.float32),
+         np.asarray(sliced_r.faces, dtype=np.int32)),
+        (np.asarray(sliced_c.vertices, dtype=np.float32),
+         np.asarray(sliced_c.faces, dtype=np.int32)),
+        (np.asarray(sliced_v.vertices, dtype=np.float32),
+         np.asarray(sliced_v.faces, dtype=np.int32)),
+    )
+
+
+def _combine_pngs_to_mp4(cache_dir: str, out_path: str, config: AnimConfig):
+    """Assemble a continuous PNG sequence 0000.png..NNNN.png into an MP4 via
+    imageio+ffmpeg. Missing frames (should not happen post-render) are filled
+    with white to keep the video time-synced."""
+    import imageio.v2 as imageio
+    from PIL import Image
+
+    with imageio.get_writer(
+        out_path, fps=config.fps, codec='libx264', quality=8,
+        macro_block_size=1,
+    ) as writer:
+        for frame_idx in range(config.total_frames):
+            png_path = os.path.join(cache_dir, f'{frame_idx:04d}.png')
+            if os.path.exists(png_path):
+                frame = np.asarray(Image.open(png_path).convert('RGB'))
+            else:
+                h = config.resolution + config.label_band_px
+                w = config.resolution * 3
+                frame = np.full((h, w, 3), 255, dtype=np.uint8)
+            writer.append_data(frame)
+
+
+def render_comparison_video_parallel(model: str, out_path: str, config: AnimConfig,
+                                     num_workers: int = 16,
+                                     resume: bool = True,
+                                     cache_root: str = DEFAULT_CACHE_ROOT) -> bool:
+    """Parallel renderer: N worker processes slice frames concurrently (CPU),
+    main process renders on GPU serially (avoids GPU contention), writes each
+    completed frame as a PNG for resume. Final step assembles PNGs -> MP4.
+
+    Args:
+        model: baseline model name (e.g. 'bowl').
+        out_path: final MP4 path.
+        config: AnimConfig.
+        num_workers: CPU worker processes for slicing.
+        resume: if True, skip frames whose PNG is already cached.
+        cache_root: directory under which per-model PNG caches live.
+
+    Returns True on success (MP4 written), False on fatal error (e.g. missing
+    mesh files). Per-frame errors are logged and rendered as blank frames so
+    the loop continues.
+    """
+    import multiprocessing as mp
+    import trimesh
+    from concurrent.futures import ProcessPoolExecutor
+    from PIL import Image
+
+    try:
+        mesh_r, mesh_c, mesh_v, radius = load_layer_meshes(model, config.mesh_resolution)
+    except FileNotFoundError as e:
+        print(f'  [SKIP] {model}: {e}')
+        return False
+
+    cache_dir = os.path.join(
+        cache_root,
+        f'{model}_mesh{config.mesh_resolution}_render{config.resolution}',
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+
+    # Figure out which frames still need to be rendered.
+    todo_frames = []
+    for frame_idx in range(config.total_frames):
+        png_path = os.path.join(cache_dir, f'{frame_idx:04d}.png')
+        if resume and os.path.exists(png_path):
+            continue
+        todo_frames.append(frame_idx)
+
+    print(f'  Rendering {model} (parallel): {len(todo_frames)}/{config.total_frames} frames '
+          f'(R={len(mesh_r.faces)} C={len(mesh_c.faces)} V={len(mesh_v.faces)} faces, '
+          f'workers={num_workers}, resume={resume})')
+
+    if todo_frames:
+        # Pack mesh data as (verts, faces) numpy arrays for IPC-friendly pickling.
+        mesh_data_tuple = (
+            (np.asarray(mesh_r.vertices, dtype=np.float32),
+             np.asarray(mesh_r.faces, dtype=np.int32)),
+            (np.asarray(mesh_c.vertices, dtype=np.float32),
+             np.asarray(mesh_c.faces, dtype=np.int32)),
+            (np.asarray(mesh_v.vertices, dtype=np.float32),
+             np.asarray(mesh_v.faces, dtype=np.int32)),
+        )
+        config_dict = asdict(config)
+
+        # Use 'fork' context so workers inherit already-imported numpy/trimesh.
+        # CRUCIAL: the main process MUST NOT have initialized CUDA yet when we
+        # fork. trellis2 imports are lazy inside render_single_mesh, so as long
+        # as we fork BEFORE the first render_single_mesh call, we are safe.
+        ctx = mp.get_context('fork')
+
+        t_start = time.time()
+        completed = 0
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            mp_context=ctx,
+            initializer=_worker_init,
+            initargs=(mesh_data_tuple, config_dict),
+        ) as pool:
+            # pool.map preserves the input order, which gives us in-order slice
+            # results without a manual reorder buffer. chunksize=1 maximizes
+            # load balancing at a small scheduling cost.
+            for result in pool.map(_worker_slice_frame, todo_frames, chunksize=1):
+                frame_idx, r_data, c_data, v_data = result
+                try:
+                    sr = trimesh.Trimesh(vertices=r_data[0], faces=r_data[1], process=False)
+                    sc = trimesh.Trimesh(vertices=c_data[0], faces=c_data[1], process=False)
+                    sv = trimesh.Trimesh(vertices=v_data[0], faces=v_data[1], process=False)
+                    _, yaw_rad = compute_phase_state(frame_idx, config)
+                    img_r = render_single_mesh(sr, yaw_rad, config, radius)
+                    img_c = render_single_mesh(sc, yaw_rad, config, radius)
+                    img_v = render_single_mesh(sv, yaw_rad, config, radius)
+                    frame = compose_frame(img_r, img_c, img_v, config)
+                except Exception:
+                    traceback.print_exc()
+                    h = config.resolution + config.label_band_px
+                    w = config.resolution * 3
+                    frame = np.full((h, w, 3), 255, dtype=np.uint8)
+
+                # Atomic-ish PNG write: write to a .tmp sibling first, then rename.
+                png_path = os.path.join(cache_dir, f'{frame_idx:04d}.png')
+                tmp_path = png_path + '.tmp'
+                Image.fromarray(frame).save(tmp_path)
+                os.replace(tmp_path, png_path)
+
+                completed += 1
+                if completed % 30 == 0 or completed == len(todo_frames):
+                    elapsed = time.time() - t_start
+                    rate = completed / elapsed if elapsed > 0 else 0.0
+                    print(f'    {completed}/{len(todo_frames)} '
+                          f'({elapsed:.1f}s, {rate:.2f} fps)')
+
+        elapsed = time.time() - t_start
+        print(f'  Slice+render completed: {completed} frames in {elapsed:.1f}s '
+              f'(avg {elapsed / max(completed, 1):.2f}s/frame)')
+    else:
+        print(f'  [RESUME] all {config.total_frames} frames already cached')
+
+    # Final MP4 assembly from PNG cache.
+    t_mp4 = time.time()
+    _combine_pngs_to_mp4(cache_dir, out_path, config)
+    print(f'  MP4 assembled in {time.time() - t_mp4:.1f}s')
+    print(f'  [OK] wrote {out_path}')
+    return True
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--models', nargs='+', default=DEFAULT_MODELS,
@@ -362,6 +555,15 @@ def parse_args():
     p.add_argument('--fov', type=float, default=40.0, help='Camera FOV in degrees.')
     p.add_argument('--out-dir', default=DEFAULT_OUT_DIR, help='Output directory for MP4 files.')
     p.add_argument('--overwrite', action='store_true', help='Re-render even if MP4 exists.')
+    p.add_argument('--serial', action='store_true',
+                   help='Use legacy serial renderer (no multiprocessing, no PNG cache, no resume). '
+                        'Default is parallel + PNG cache + resume.')
+    p.add_argument('--workers', type=int, default=16,
+                   help='Number of CPU worker processes for parallel slicing. Default: 16.')
+    p.add_argument('--no-resume', action='store_true',
+                   help='Disable resume (regenerate every frame even if its PNG is cached).')
+    p.add_argument('--cache-root', default=DEFAULT_CACHE_ROOT,
+                   help='Root directory for per-frame PNG caches.')
     return p.parse_args()
 
 
@@ -382,6 +584,12 @@ def main():
     print(f'Output dir: {args.out_dir}')
 
     os.makedirs(args.out_dir, exist_ok=True)
+    use_parallel = not args.serial
+    resume = not args.no_resume
+    print(f'Renderer: {"parallel" if use_parallel else "serial"}'
+          + (f' (workers={args.workers}, resume={resume}, cache={args.cache_root})'
+             if use_parallel else ''))
+
     succeeded = 0
     for model in args.models:
         out_path = os.path.join(args.out_dir, f'{model}_comparison.mp4')
@@ -390,7 +598,15 @@ def main():
             succeeded += 1
             continue
         try:
-            ok = render_comparison_video(model, out_path, config)
+            if use_parallel:
+                ok = render_comparison_video_parallel(
+                    model, out_path, config,
+                    num_workers=args.workers,
+                    resume=resume,
+                    cache_root=args.cache_root,
+                )
+            else:
+                ok = render_comparison_video(model, out_path, config)
             if ok:
                 succeeded += 1
         except Exception:
