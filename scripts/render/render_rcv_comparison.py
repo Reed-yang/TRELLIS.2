@@ -254,6 +254,48 @@ def render_single_mesh(mesh, yaw_rad: float, config: AnimConfig, radius: float) 
     return img
 
 
+def compose_frame(img_r: np.ndarray, img_c: np.ndarray, img_v: np.ndarray,
+                  config: AnimConfig) -> np.ndarray:
+    """Horizontally composite the three per-layer renders with a bottom label
+    band. Returns (H + band, W * 3, 3) uint8.
+
+    Layout:
+        [R image][C image][V image]   <- 768 x 768 each
+        [Layer R] [Layer C] [Layer V]  <- 60 px label band
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    W = config.resolution
+    H = config.resolution
+    band = config.label_band_px
+
+    canvas = Image.new('RGB', (W * 3, H + band), 'white')
+    canvas.paste(Image.fromarray(img_r), (0, 0))
+    canvas.paste(Image.fromarray(img_c), (W, 0))
+    canvas.paste(Image.fromarray(img_v), (W * 2, 0))
+
+    draw = ImageDraw.Draw(canvas)
+    try:
+        font = ImageFont.truetype('DejaVuSans-Bold.ttf', 28)
+    except OSError:
+        # Fallback to the default bitmap font if DejaVu is not installed.
+        font = ImageFont.load_default()
+
+    for i, label in enumerate(LABELS):
+        # Measure with textbbox for precise centering (supported on Pillow >= 8.0).
+        try:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+        except AttributeError:
+            text_w, text_h = draw.textsize(label, font=font)
+        x = W * i + (W - text_w) // 2
+        y = H + (band - text_h) // 2
+        draw.text((x, y), label, fill='black', font=font)
+
+    return np.asarray(canvas)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--models', nargs='+', default=DEFAULT_MODELS,
