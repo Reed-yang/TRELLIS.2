@@ -199,31 +199,30 @@ def slice_mesh_for_frame(mesh, slice_origin: np.ndarray):
     The reveal direction is from corner (-0.9, +0.9, +0.9) toward the origin,
     i.e. along SLICE_NORMAL = (-1, +1, +1)/sqrt(3). We want to keep the side
     that does NOT contain the corner (the "revealed" side), which is where
-    (v - origin) . SLICE_NORMAL < 0. trimesh's slice_faces_plane keeps the
+    (v - origin) . SLICE_NORMAL < 0. trimesh's slice_mesh_plane keeps the
     side where (v - origin) . plane_normal > 0, so we pass -SLICE_NORMAL.
 
-    Uses slice_faces_plane instead of slice_mesh_plane to avoid a hard
-    dependency on shapely (which the cap=True code path requires).
+    Uses cap=True to fill the exposed cross-section with a flat triangulated
+    cap, producing the solid cross-section look the design calls for. This
+    requires shapely + a polygon triangulation engine (mapbox-earcut).
 
     Returns (sliced_mesh, was_empty: bool). When was_empty is True, the
     caller receives the original mesh as a fallback.
     """
-    import trimesh
     import trimesh.intersections
 
     try:
-        new_verts, new_faces, _ = trimesh.intersections.slice_faces_plane(
-            vertices=mesh.vertices,
-            faces=mesh.faces,
+        sliced = trimesh.intersections.slice_mesh_plane(
+            mesh,
             plane_normal=-SLICE_NORMAL,
             plane_origin=slice_origin,
+            cap=True,
         )
     except Exception:
         return mesh, True
 
-    if new_verts is None or len(new_verts) == 0 or len(new_faces) == 0:
+    if sliced is None or len(sliced.vertices) == 0 or len(sliced.faces) == 0:
         return mesh, True
-    sliced = trimesh.Trimesh(vertices=new_verts, faces=new_faces, process=False)
     return sliced, False
 
 
