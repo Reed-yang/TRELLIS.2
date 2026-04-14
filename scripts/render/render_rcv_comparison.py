@@ -296,6 +296,57 @@ def compose_frame(img_r: np.ndarray, img_c: np.ndarray, img_v: np.ndarray,
     return np.asarray(canvas)
 
 
+def render_comparison_video(model: str, out_path: str, config: AnimConfig) -> bool:
+    """Render one comparison video for a single model. Returns True on success.
+    On any per-frame error, skip that frame with a blank placeholder and keep
+    going. On fatal error (e.g. missing meshes), log and return False."""
+    import imageio.v2 as imageio
+
+    try:
+        mesh_r, mesh_c, mesh_v, radius = load_layer_meshes(model, config.mesh_resolution)
+    except FileNotFoundError as e:
+        print(f'  [SKIP] {model}: {e}')
+        return False
+
+    print(f'  Rendering {model}: {config.total_frames} frames '
+          f'(R={len(mesh_r.faces)} C={len(mesh_c.faces)} V={len(mesh_v.faces)} faces)')
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+
+    writer = imageio.get_writer(
+        out_path, fps=config.fps, codec='libx264', quality=8,
+        macro_block_size=1,  # tolerate non-multiple-of-16 frame sizes
+    )
+    try:
+        for frame_idx in range(config.total_frames):
+            try:
+                slice_origin, yaw_rad = compute_phase_state(frame_idx, config)
+                sliced_r, _ = slice_mesh_for_frame(mesh_r, slice_origin)
+                sliced_c, _ = slice_mesh_for_frame(mesh_c, slice_origin)
+                sliced_v, _ = slice_mesh_for_frame(mesh_v, slice_origin)
+                img_r = render_single_mesh(sliced_r, yaw_rad, config, radius)
+                img_c = render_single_mesh(sliced_c, yaw_rad, config, radius)
+                img_v = render_single_mesh(sliced_v, yaw_rad, config, radius)
+                frame = compose_frame(img_r, img_c, img_v, config)
+            except Exception:
+                # Log the traceback but insert a blank frame so the video
+                # stays time-synced and the loop continues.
+                traceback.print_exc()
+                h = config.resolution + config.label_band_px
+                w = config.resolution * 3
+                frame = np.full((h, w, 3), 255, dtype=np.uint8)
+
+            writer.append_data(frame)
+
+            if frame_idx % 30 == 0:
+                print(f'    frame {frame_idx}/{config.total_frames}')
+    finally:
+        writer.close()
+
+    print(f'  [OK] wrote {out_path}')
+    return True
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--models', nargs='+', default=DEFAULT_MODELS,
@@ -329,6 +380,23 @@ def main():
     print(f'Total frames: {config.total_frames}')
     print(f'Phase boundaries (frame idx): {config.phase_boundaries}')
     print(f'Output dir: {args.out_dir}')
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    succeeded = 0
+    for model in args.models:
+        out_path = os.path.join(args.out_dir, f'{model}_comparison.mp4')
+        if os.path.exists(out_path) and not args.overwrite:
+            print(f'  [EXISTS] {out_path} (use --overwrite to regenerate)')
+            succeeded += 1
+            continue
+        try:
+            ok = render_comparison_video(model, out_path, config)
+            if ok:
+                succeeded += 1
+        except Exception:
+            traceback.print_exc()
+            print(f'  [FAIL] {model}')
+    print(f'\nDone: {succeeded}/{len(args.models)} videos rendered successfully')
 
 
 def _self_test_phase_state():
