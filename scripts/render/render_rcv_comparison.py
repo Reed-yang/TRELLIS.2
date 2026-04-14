@@ -226,6 +226,34 @@ def slice_mesh_for_frame(mesh, slice_origin: np.ndarray):
     return sliced, False
 
 
+def render_single_mesh(mesh, yaw_rad: float, config: AnimConfig, radius: float) -> np.ndarray:
+    """Render a single view of `mesh` and return a (H, W, 3) uint8 normal map.
+
+    `yaw_rad` and `pitch` are in radians internally (render_utils expects rad).
+    `radius` comes from load_layer_meshes.
+    """
+    import torch
+    from trellis2.utils import render_utils
+    from trellis2.representations import Mesh as TrellisMesh
+
+    device = 'cuda'
+    verts = torch.tensor(np.asarray(mesh.vertices), dtype=torch.float32, device=device)
+    faces = torch.tensor(np.asarray(mesh.faces), dtype=torch.int32, device=device)
+    t_mesh = TrellisMesh(vertices=verts, faces=faces)
+
+    pitch_rad = math.radians(config.pitch_deg)
+    extr, intr = render_utils.yaw_pitch_r_fov_to_extrinsics_intrinsics(
+        [yaw_rad], [pitch_rad], radius, config.fov_deg,
+    )
+    result = render_utils.render_frames(
+        t_mesh, extr, intr,
+        options={'resolution': config.resolution, 'bg_color': (1.0, 1.0, 1.0)},
+        verbose=False,
+    )
+    img = result['normal'][0]  # (H, W, 3) uint8
+    return img
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--models', nargs='+', default=DEFAULT_MODELS,
