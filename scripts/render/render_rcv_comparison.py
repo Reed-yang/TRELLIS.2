@@ -514,9 +514,11 @@ def render_comparison_video_parallel(model: str, out_path: str, config: AnimConf
                     frame = np.full((h, w, 3), 255, dtype=np.uint8)
 
                 # Atomic-ish PNG write: write to a .tmp sibling first, then rename.
+                # Pass format='PNG' explicitly so PIL does not try to infer
+                # from the .tmp extension.
                 png_path = os.path.join(cache_dir, f'{frame_idx:04d}.png')
                 tmp_path = png_path + '.tmp'
-                Image.fromarray(frame).save(tmp_path)
+                Image.fromarray(frame).save(tmp_path, format='PNG')
                 os.replace(tmp_path, png_path)
 
                 completed += 1
