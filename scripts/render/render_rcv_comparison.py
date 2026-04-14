@@ -74,6 +74,57 @@ class AnimConfig:
         ]
 
 
+def ease_in_out_quad(t: float) -> float:
+    """Smooth easing: 0 at t=0, 1 at t=1, zero derivative at both ends."""
+    if t < 0.5:
+        return 2.0 * t * t
+    return 1.0 - (-2.0 * t + 2.0) ** 2 / 2.0
+
+
+def compute_phase_state(frame_idx: int, config: AnimConfig) -> tuple:
+    """Return (slice_origin: np.ndarray[3], camera_yaw_rad: float) for a frame.
+
+    Yaw schedule (total 600 degrees over the whole video, linear per phase):
+        Phase 1: 0   ->  120 deg   (72 frames)
+        Phase 2: 120 ->  240 deg   (72 frames)
+        Phase 3: 240 ->  480 deg   (144 frames)
+        Phase 4: 480 ->  600 deg   (72 frames)
+    """
+    p1, p2, p3, p4 = config.phase_boundaries  # [72, 144, 288, 360] at 24fps/15s
+
+    if frame_idx < p1:
+        # Phase 1: full mesh, slice at outer corner (no-op).
+        phase = 1
+        progress = frame_idx / max(p1 - 1, 1)
+        slice_origin = SLICE_OUTER.copy()
+        yaw_deg = 0.0 + 120.0 * progress
+    elif frame_idx < p2:
+        # Phase 2: slice reveals from corner to center with easing.
+        phase = 2
+        local = frame_idx - p1
+        progress = local / max(p2 - p1 - 1, 1)
+        t = ease_in_out_quad(progress)
+        slice_origin = SLICE_OUTER * (1.0 - t) + SLICE_CENTER * t
+        yaw_deg = 120.0 + 120.0 * progress
+    elif frame_idx < p3:
+        # Phase 3: slice pinned at center, camera rotates.
+        phase = 3
+        local = frame_idx - p2
+        progress = local / max(p3 - p2 - 1, 1)
+        slice_origin = SLICE_CENTER.copy()
+        yaw_deg = 240.0 + 240.0 * progress
+    else:
+        # Phase 4: slice retracts from center to corner with easing.
+        phase = 4
+        local = frame_idx - p3
+        progress = local / max(p4 - p3 - 1, 1)
+        t = ease_in_out_quad(progress)
+        slice_origin = SLICE_CENTER * (1.0 - t) + SLICE_OUTER * t
+        yaw_deg = 480.0 + 120.0 * progress
+
+    return slice_origin, math.radians(yaw_deg)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--models', nargs='+', default=DEFAULT_MODELS,
@@ -109,5 +160,53 @@ def main():
     print(f'Output dir: {args.out_dir}')
 
 
+def _self_test_phase_state():
+    """Smoke test: verify key frames of compute_phase_state."""
+    cfg = AnimConfig()
+    assert cfg.total_frames == 360, f'expected 360 frames, got {cfg.total_frames}'
+    assert cfg.phase_boundaries == [72, 144, 288, 360], cfg.phase_boundaries
+
+    # Frame 0: phase 1 start, yaw 0, slice at outer.
+    origin, yaw = compute_phase_state(0, cfg)
+    assert np.allclose(origin, SLICE_OUTER), f'frame 0 origin: {origin}'
+    assert abs(yaw) < 1e-9, f'frame 0 yaw: {yaw}'
+
+    # Frame 72: phase 2 start (still outer, easing gives 0).
+    origin, yaw = compute_phase_state(72, cfg)
+    assert np.allclose(origin, SLICE_OUTER), f'frame 72 origin: {origin}'
+
+    # Frame 107: phase 2 midpoint -> easing 0.5 -> origin halfway.
+    origin, yaw = compute_phase_state(107, cfg)
+    midpoint = 0.5 * SLICE_OUTER + 0.5 * SLICE_CENTER
+    assert np.allclose(origin, midpoint, atol=0.05), f'frame 107 origin: {origin}, expected ~{midpoint}'
+
+    # Frame 144: phase 3 start, slice at center.
+    origin, yaw = compute_phase_state(144, cfg)
+    assert np.allclose(origin, SLICE_CENTER), f'frame 144 origin: {origin}'
+
+    # Frame 287: last frame of phase 3, still at center.
+    origin, yaw = compute_phase_state(287, cfg)
+    assert np.allclose(origin, SLICE_CENTER), f'frame 287 origin: {origin}'
+
+    # Frame 288: phase 4 start, still at center (easing 0).
+    origin, yaw = compute_phase_state(288, cfg)
+    assert np.allclose(origin, SLICE_CENTER), f'frame 288 origin: {origin}'
+
+    # Frame 359: last frame, back at outer corner.
+    origin, yaw = compute_phase_state(359, cfg)
+    assert np.allclose(origin, SLICE_OUTER, atol=1e-6), f'frame 359 origin: {origin}'
+    assert abs(math.degrees(yaw) - 600.0) < 1e-6, f'frame 359 yaw deg: {math.degrees(yaw)}'
+
+    # Easing sanity.
+    assert ease_in_out_quad(0.0) == 0.0
+    assert ease_in_out_quad(1.0) == 1.0
+    assert abs(ease_in_out_quad(0.5) - 0.5) < 1e-9
+
+    print('compute_phase_state self-test PASSED')
+
+
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == '--self-test':
+        _self_test_phase_state()
+    else:
+        main()
