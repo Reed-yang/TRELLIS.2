@@ -1,0 +1,3 @@
+# corep_fast Phase 0 additional dependencies
+# All other deps (torch, numpy, scipy, trimesh, orjson, pytest) are already in the project .venv.
+torch_scatter>=2.1.2
