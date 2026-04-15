@@ -385,10 +385,21 @@ def compute_edge_ownership(
 # Kernel 2: Shared-edge geometry processing
 # ---------------------------------------------------------------------------
 
+def _process_geometry_batch(grids: list) -> list[np.ndarray]:
+    """Process a batch of edge grids, returning non-None numpy arrays."""
+    results = []
+    for grid in grids:
+        r = _process_shared_edge_geometry(grid)
+        if r is not None:
+            results.append(r)
+    return results
+
+
 def process_shared_edges_batch(
     resolution: int,
     cube_data_list: list[dict],
     merge_decimals: int = 5,
+    num_workers: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Process all shared edges across all cubes and return (vertices, faces).
@@ -400,11 +411,14 @@ def process_shared_edges_batch(
         resolution: Grid resolution.
         cube_data_list: List of dicts from custom/ s7 output.
         merge_decimals: Vertex welding precision.
+        num_workers: Number of parallel workers for geometry processing.
+                     0 = auto (use os.cpu_count()), 1 = serial (no multiprocessing).
 
     Returns:
         vertices: (V, 3) float32 — welded vertex coordinates.
         faces: (F, 3) int32 — triangle faces (vertex indices).
     """
+    import os as _os
     if not cube_data_list:
         return (
             torch.zeros((0, 3), dtype=torch.float32),
@@ -431,11 +445,9 @@ def process_shared_edges_batch(
         else:
             cube_map[idx].append(data)
 
-    # 2. Enumerate owned edges (using the same task_generator logic as custom/)
-    # Collect triangle vertices as flat float arrays for efficient numpy conversion
-    tri_vertex_chunks: list[np.ndarray] = []  # each (K*3, 3) float64
+    # 2. Collect all edge tasks (grid inputs for geometry processing)
+    edge_tasks: list[list[list[dict]]] = []
 
-    # Pre-build empty sentinel dicts keyed by index to avoid re-creating
     _empty_sentinel_cache: dict[tuple, list[dict]] = {}
 
     def get_grid_input(indices_list):
@@ -454,7 +466,6 @@ def process_shared_edges_batch(
                 grid.append(sentinel)
         return grid, valid_count
 
-    # Use a set for fast membership testing
     cube_set = frozenset(cube_map.keys())
     R = resolution
 
@@ -480,26 +491,49 @@ def process_shared_edges_batch(
                     continue
                 neighbors = ((a-1, b-1, c), (a, b-1, c), (a-1, b, c), (a, b, c))
 
-            # Fast active neighbor check using frozenset
             active = [n for n in neighbors if n in cube_set]
             if not active or min(active) != idx:
                 continue
 
             grid, count = get_grid_input(neighbors)
             if count >= 2:
-                tri_verts = _process_shared_edge_geometry(grid)
-                if tri_verts is not None:
-                    tri_vertex_chunks.append(tri_verts)
+                edge_tasks.append(grid)
 
-    # 3. Vertex welding + face dedup using Torch
+    if not edge_tasks:
+        return (
+            torch.zeros((0, 3), dtype=torch.float32),
+            torch.zeros((0, 3), dtype=torch.int32),
+        )
+
+    # 3. Process geometry — serial or parallel
+    if num_workers == 0:
+        num_workers = min(_os.cpu_count() or 1, 32)
+
+    if num_workers <= 1 or len(edge_tasks) < 1000:
+        # Serial processing for small inputs or when explicitly requested
+        tri_vertex_chunks = []
+        for grid in edge_tasks:
+            r = _process_shared_edge_geometry(grid)
+            if r is not None:
+                tri_vertex_chunks.append(r)
+    else:
+        # Parallel processing using multiprocessing.Pool
+        from multiprocessing import Pool as _Pool
+        chunk_size = max(len(edge_tasks) // num_workers, 1)
+        batches = [edge_tasks[i:i+chunk_size]
+                    for i in range(0, len(edge_tasks), chunk_size)]
+        with _Pool(num_workers) as pool:
+            batch_results = pool.map(_process_geometry_batch, batches)
+        tri_vertex_chunks = [r for batch in batch_results for r in batch]
+
+    # 4. Vertex welding + face dedup using Torch
     if not tri_vertex_chunks:
         return (
             torch.zeros((0, 3), dtype=torch.float32),
             torch.zeros((0, 3), dtype=torch.int32),
         )
 
-    # Concatenate all triangle vertex data: each row is (T*3, 3)
-    all_tri_verts_np = np.concatenate(tri_vertex_chunks, axis=0)  # (Total*3, 3)
+    all_tri_verts_np = np.concatenate(tri_vertex_chunks, axis=0)
     return _weld_and_dedup(all_tri_verts_np, merge_decimals)
 
 
