@@ -21,6 +21,24 @@ def _ensure_custom_importable() -> None:
         sys.path.insert(0, custom_dir)
 
 
+def get_custom_norm_mesh(mesh_path: str) -> 'trimesh.Trimesh':
+    """Return the normalized mesh produced by custom/voxelize.normalize_mesh.
+
+    This is used by A/B tests so that the GPU pipeline operates on the exact
+    same vertex coordinates as the custom/ reference implementation.
+
+    Args:
+        mesh_path: Path to input PLY mesh.
+
+    Returns:
+        trimesh.Trimesh with vertices in custom/ normalized space.
+    """
+    _ensure_custom_importable()
+    from voxelize import normalize_mesh
+    mesh = trimesh.load(mesh_path)
+    return normalize_mesh(mesh)
+
+
 def run_custom_through_stage(
     mesh_path: str,
     resolution: int,
