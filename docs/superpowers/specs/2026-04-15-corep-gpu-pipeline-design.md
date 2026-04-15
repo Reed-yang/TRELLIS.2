@@ -28,8 +28,8 @@ All prior optimization work (Torch vectorization, Triton analysis, CuMesh evalua
 |----------|--------|-----------|
 | **Pipeline interface** | `corep_encode()` → CubeBatch, `corep_decode()` → mesh | CoReP voxel representation (CubeBatch) is a first-class output for VAE training |
 | **Verification** | Per-stage A/B against custom/ | Each GPU stage must match custom/ output exactly (integers) or within tolerance (floats) |
-| **Tech route** | PyTorch first, Triton replace hot paths later | PyTorch version is iteration-friendly; Triton is performance-optimized |
-| **Dual path** | `corep_fast/` (PyTorch) + `corep_triton/` (Triton) | Both long-term coexist; iteration happens on PyTorch, Triton tracks after |
+| **Tech route** | PyTorch full pipeline this stage; Triton deferred to next stage | PyTorch version is iteration-friendly; Triton planned but out of current scope |
+| **Dual path** | `corep_fast/` (PyTorch, this stage) + `corep_triton/` (Triton, next stage) | Interface and package structure prepared now; Triton implementation deferred |
 | **Stage grouping** | Phase-grouped (4 phases) | Merge s4a+s4b (shared clipping), merge s5+s6 (normal curve + U-Turn) |
 | **custom/ handling** | Unmodified, GT baseline only | Never modify; used exclusively for A/B correctness verification |
 
@@ -305,14 +305,10 @@ corep_fast/                              # PyTorch implementation (primary)
         ├── test_s7_ab.py                # A/B: GPU s7 vs custom/ collapse_point
         └── test_e2e_ab.py               # existing end-to-end mesh comparison
 
-corep_triton/                            # Triton implementation (future)
-├── __init__.py
-├── kernels/                             # Triton kernel source files
-│   ├── moller_trumbore.py               # s3 hot path
-│   ├── polygon_clip.py                  # s4 hot path
-│   └── normal_curve.py                  # s6 hot path
-└── stages/                              # Same signatures as corep_fast/stages/
-    └── (populated later when profiling identifies hot paths)
+corep_triton/                            # Triton implementation (NEXT STAGE, not this scope)
+├── __init__.py                          # Skeleton only — reserved for Triton stage
+├── kernels/                             # Placeholder directory
+└── stages/                              # Will mirror corep_fast/stages/ signatures
 ```
 
 ---
@@ -357,8 +353,8 @@ def assert_stage_match(gpu_batch: CubeBatch, custom_regs: list[dict], stage: str
 | Milestone | s1-s7 Time | s8 Time | e2e | vs Current |
 |-----------|-----------|---------|-----|-----------|
 | Current (custom/ + s8 Torch) | 77.2s | 4.0s | 81.2s | 1.0x |
-| **Phase 1: PyTorch s1-s7** | **~2-5s** | **~1s** | **~3-6s** | **14-27x** |
-| Phase 2: Triton hot paths | ~0.3-1s | ~0.03s | ~0.3-1s | 81-270x |
+| **This stage: PyTorch s1-s7** | **~2-5s** | **~1s** | **~3-6s** | **14-27x** |
+| Next stage: Triton hot paths (future) | ~0.3-1s | ~0.03s | ~0.3-1s | 81-270x |
 
 ### Per-stage estimates (PyTorch path, res=256)
 
