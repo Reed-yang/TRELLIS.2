@@ -2,6 +2,7 @@
 import os
 import tempfile
 
+import numpy as np
 import pytest
 import torch
 import trimesh
@@ -269,64 +270,68 @@ class TestProcessSharedEdgesBatch:
 # ---- Tests for _weld_and_dedup ----
 
 class TestWeldAndDedup:
+    @staticmethod
+    def _tris_to_np(*tris):
+        """Convert triangle vertex tuples to (T*3, 3) numpy array."""
+        rows = []
+        for tri in tris:
+            for pt in tri:
+                rows.append(list(pt))
+        if not rows:
+            return np.zeros((0, 3), dtype=np.float64)
+        return np.array(rows, dtype=np.float64)
+
     def test_basic_welding(self):
         """Vertices that round to the same value should be merged."""
-        verts = [
-            (0.100001, 0.200001, 0.300001),
-            (0.100002, 0.200002, 0.300002),  # same after rounding to 4 decimals
-            (0.5, 0.5, 0.5),
-        ]
-        tris = [
-            (verts[0], verts[1], verts[2]),
-        ]
-        v, f = _weld_and_dedup(verts, tris, merge_decimals=4)
-        # After welding, verts[0] and verts[1] merge → 2 unique vertices
+        v0 = (0.100001, 0.200001, 0.300001)
+        v1 = (0.100002, 0.200002, 0.300002)  # same after rounding to 4 decimals
+        v2 = (0.5, 0.5, 0.5)
+        arr = self._tris_to_np((v0, v1, v2))
+        v, f = _weld_and_dedup(arr, merge_decimals=4)
+        # After welding, v0 and v1 merge → 2 unique vertices
         assert v.shape[0] == 2
         # But the face becomes degenerate (v0==v1), so it's removed
         assert f.shape[0] == 0
 
     def test_non_degenerate_preserved(self):
         """Three distinct vertices form a valid triangle."""
-        verts = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
-        tris = [(verts[0], verts[1], verts[2])]
-        v, f = _weld_and_dedup(verts, tris, merge_decimals=5)
+        arr = self._tris_to_np(
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+        )
+        v, f = _weld_and_dedup(arr, merge_decimals=5)
         assert v.shape[0] == 3
         assert f.shape[0] == 1
 
     def test_duplicate_faces_removed(self):
         """Same triangle appearing twice should be deduplicated."""
-        verts = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
-        tris = [
-            (verts[0], verts[1], verts[2]),
-            (verts[1], verts[2], verts[0]),  # same triangle, rotated
-        ]
-        v, f = _weld_and_dedup(verts, tris, merge_decimals=5)
+        arr = self._tris_to_np(
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+            ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.0)),  # same, rotated
+        )
+        v, f = _weld_and_dedup(arr, merge_decimals=5)
         assert v.shape[0] == 3
         assert f.shape[0] == 1
 
     def test_different_faces_preserved(self):
         """Two distinct triangles should both be kept."""
-        verts = [
-            (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
-            (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0),
-        ]
-        tris = [
-            (verts[0], verts[1], verts[2]),
-            (verts[3], verts[4], verts[5]),
-        ]
-        v, f = _weld_and_dedup(verts, tris, merge_decimals=5)
+        arr = self._tris_to_np(
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        )
+        v, f = _weld_and_dedup(arr, merge_decimals=5)
         assert v.shape[0] == 4  # (0,0,0), (1,0,0), (0,1,0), (0,0,1)
         assert f.shape[0] == 2
 
     def test_empty_input(self):
-        v, f = _weld_and_dedup([], [], merge_decimals=5)
+        v, f = _weld_and_dedup(np.zeros((0, 3), dtype=np.float64), merge_decimals=5)
         assert v.shape == (0, 3)
         assert f.shape == (0, 3)
 
     def test_output_dtypes(self):
-        verts = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
-        tris = [(verts[0], verts[1], verts[2])]
-        v, f = _weld_and_dedup(verts, tris, merge_decimals=5)
+        arr = self._tris_to_np(
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+        )
+        v, f = _weld_and_dedup(arr, merge_decimals=5)
         assert v.dtype == torch.float32
         assert f.dtype == torch.int32
 

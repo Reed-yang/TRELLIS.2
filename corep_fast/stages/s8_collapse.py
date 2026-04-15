@@ -440,8 +440,8 @@ def process_shared_edges_batch(
         cube_map[idx].append(pruned)
 
     # 2. Enumerate owned edges (using the same task_generator logic as custom/)
-    all_verts: list[tuple] = []
-    all_tris: list[tuple[tuple, tuple, tuple]] = []
+    # Collect triangle vertices as flat float arrays for efficient numpy conversion
+    tri_vertex_chunks: list[np.ndarray] = []  # each (K*3, 3) float64
 
     def get_grid_input(indices_list):
         grid = []
@@ -485,35 +485,37 @@ def process_shared_edges_batch(
             if min(active_neighbors) == idx:
                 grid, count = get_grid_input(neighbors)
                 if count >= 2:
-                    verts, tris = _process_shared_edge_geometry(grid)
-                    all_verts.extend(verts)
-                    all_tris.extend(tris)
+                    tri_verts = _process_shared_edge_geometry(grid)
+                    if tri_verts is not None:
+                        tri_vertex_chunks.append(tri_verts)
 
     # 3. Vertex welding + face dedup using Torch
-    if not all_tris:
+    if not tri_vertex_chunks:
         return (
             torch.zeros((0, 3), dtype=torch.float32),
             torch.zeros((0, 3), dtype=torch.int32),
         )
 
-    return _weld_and_dedup(all_verts, all_tris, merge_decimals)
+    # Concatenate all triangle vertex data: each row is (T*3, 3)
+    all_tri_verts_np = np.concatenate(tri_vertex_chunks, axis=0)  # (Total*3, 3)
+    return _weld_and_dedup(all_tri_verts_np, merge_decimals)
 
 
 def _process_shared_edge_geometry(
     grid_2x2_lists: list[list[dict]],
-) -> tuple[list[tuple], list[tuple]]:
+) -> Optional[np.ndarray]:
     """
     Process a 2x2 grid of cubes sharing an edge.
 
     Replicates custom/collapse.py::process_shared_edge_geometry() exactly,
-    but returns raw vertex/triangle tuples for downstream Torch welding.
+    but returns triangle vertices as a flat numpy array for efficient welding.
 
     Args:
         grid_2x2_lists: 4 lists of dicts for the 4 neighbor positions.
 
     Returns:
-        (new_vertices, triangles) where each triangle is (pt0, pt1, pt2)
-        as coordinate tuples.
+        numpy array of shape (T*3, 3) float64 where T is number of triangles,
+        or None if no triangles produced. Each consecutive 3 rows form one triangle.
     """
     import collections
 
@@ -665,9 +667,8 @@ def _process_shared_edge_geometry(
     if not points_by_rank and len(exception_points) > 0:
         points_by_rank[0] = exception_points
 
-    # 5. Emit triangles
-    new_vertices = []
-    triangles = []
+    # 5. Emit triangles — collect as flat list of 9 floats per triangle
+    tri_flat: list[list[float]] = []
     neighbors = [(0,0), (1,0), (1,1), (0,1)]
 
     for rank, pt_map in sorted(points_by_rank.items()):
@@ -678,16 +679,30 @@ def _process_shared_edge_geometry(
         avg_x = sum(p[0] for p in rank_pts) / len(rank_pts)
         avg_y = sum(p[1] for p in rank_pts) / len(rank_pts)
         avg_z = sum(p[2] for p in rank_pts) / len(rank_pts)
-        proj_pt = (avg_x, avg_y, avg_z)
-        new_vertices.append(proj_pt)
+        proj_pt = [avg_x, avg_y, avg_z]
 
         if len(rank_pts) == 4:
-            triangles.append((proj_pt, pt_map[neighbors[0]], pt_map[neighbors[1]]))
-            triangles.append((proj_pt, pt_map[neighbors[1]], pt_map[neighbors[2]]))
-            triangles.append((proj_pt, pt_map[neighbors[2]], pt_map[neighbors[3]]))
-            triangles.append((proj_pt, pt_map[neighbors[3]], pt_map[neighbors[0]]))
+            p0 = pt_map[neighbors[0]]
+            p1 = pt_map[neighbors[1]]
+            p2 = pt_map[neighbors[2]]
+            p3 = pt_map[neighbors[3]]
+            # 4 fan triangles: proj→p0→p1, proj→p1→p2, proj→p2→p3, proj→p3→p0
+            tri_flat.append(proj_pt)
+            tri_flat.append(list(p0))
+            tri_flat.append(list(p1))
+            tri_flat.append(proj_pt)
+            tri_flat.append(list(p1))
+            tri_flat.append(list(p2))
+            tri_flat.append(proj_pt)
+            tri_flat.append(list(p2))
+            tri_flat.append(list(p3))
+            tri_flat.append(proj_pt)
+            tri_flat.append(list(p3))
+            tri_flat.append(list(p0))
 
-    return new_vertices, triangles
+    if not tri_flat:
+        return None
+    return np.array(tri_flat, dtype=np.float64)  # (T*3, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -695,8 +710,7 @@ def _process_shared_edge_geometry(
 # ---------------------------------------------------------------------------
 
 def _weld_and_dedup(
-    all_verts: list[tuple],
-    all_tris: list[tuple],
+    flat_tri_verts: np.ndarray,
     merge_decimals: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
@@ -706,29 +720,23 @@ def _weld_and_dedup(
     custom/collapse.py::generate_global_mesh() with O(N log N) sort-based dedup.
 
     Args:
-        all_verts: List of (x, y, z) coordinate tuples (unused directly — vertices
-                   are extracted from triangle tuples).
-        all_tris: List of ((x0,y0,z0), (x1,y1,z1), (x2,y2,z2)) triangle tuples.
+        flat_tri_verts: (T*3, 3) float64 numpy array — every 3 consecutive rows
+                       form one triangle's vertices.
         merge_decimals: Number of decimal places for vertex rounding.
 
     Returns:
         vertices: (V, 3) float32 — unique vertex coordinates.
         faces: (F, 3) int32 — triangle face indices.
     """
-    if not all_tris:
+    if flat_tri_verts.shape[0] == 0:
         return (
             torch.zeros((0, 3), dtype=torch.float32),
             torch.zeros((0, 3), dtype=torch.int32),
         )
 
-    # 1. Flatten all triangle vertices into (T*3, 3) tensor
-    T = len(all_tris)
-    flat_verts = torch.zeros((T * 3, 3), dtype=torch.float64)
-    for i, tri in enumerate(all_tris):
-        for j, pt in enumerate(tri):
-            flat_verts[i * 3 + j, 0] = pt[0]
-            flat_verts[i * 3 + j, 1] = pt[1]
-            flat_verts[i * 3 + j, 2] = pt[2]
+    # 1. Convert numpy to torch (zero-copy when possible)
+    flat_verts = torch.from_numpy(flat_tri_verts)  # (T*3, 3) float64
+    T = flat_verts.shape[0] // 3
 
     # 2. Round for welding
     scale = 10.0 ** merge_decimals
@@ -737,16 +745,16 @@ def _weld_and_dedup(
     # 3. Unique vertices via torch.unique on rounded coordinates
     unique_rounded, inverse_indices = torch.unique(rounded, dim=0, return_inverse=True)
 
-    # 4. Recover actual coordinates: take the first occurrence of each unique rounded vertex
+    # 4. Recover actual coordinates: first occurrence per unique vertex (vectorized)
     num_unique = unique_rounded.shape[0]
-    unique_verts = torch.zeros((num_unique, 3), dtype=torch.float32)
-    # Use scatter to fill with first-seen coordinates (order from inverse)
-    seen = torch.zeros(num_unique, dtype=torch.bool)
-    for i in range(flat_verts.shape[0]):
-        uid = int(inverse_indices[i].item())
-        if not seen[uid]:
-            unique_verts[uid] = flat_verts[i].float()
-            seen[uid] = True
+    # Scatter the original index for each vertex; keep the minimum (= first occurrence)
+    idx_arange = torch.arange(flat_verts.shape[0], dtype=torch.int64)
+    # For each unique vertex, find the first (smallest) original index
+    first_occur = torch.full((num_unique,), flat_verts.shape[0], dtype=torch.int64)
+    # scatter_reduce with 'amin' gives us the minimum index per unique vertex
+    first_occur.scatter_reduce_(0, inverse_indices, idx_arange, reduce='amin',
+                                include_self=True)
+    unique_verts = flat_verts[first_occur].float()  # (V, 3) float32
 
     # 5. Build face index array
     face_indices = inverse_indices.reshape(T, 3).to(torch.int32)
@@ -778,18 +786,14 @@ def _weld_and_dedup(
     # 8. Deduplicate canonical faces
     unique_canonical, unique_idx = torch.unique(canonical, dim=0, return_inverse=True)
 
-    # Keep only the first occurrence of each unique canonical face
-    # We want to preserve the original winding, so use the first occurrence index
+    # Keep only the first occurrence of each unique canonical face (vectorized)
     F_unique = unique_canonical.shape[0]
-    first_occurrence = torch.zeros(F_unique, dtype=torch.int64, device=face_long.device)
-    seen_face = torch.zeros(F_unique, dtype=torch.bool, device=face_long.device)
-    for i in range(face_indices.shape[0]):
-        uid = int(unique_idx[i].item())
-        if not seen_face[uid]:
-            first_occurrence[uid] = i
-            seen_face[uid] = True
+    face_arange = torch.arange(face_indices.shape[0], dtype=torch.int64)
+    first_face_occur = torch.full((F_unique,), face_indices.shape[0], dtype=torch.int64)
+    first_face_occur.scatter_reduce_(0, unique_idx, face_arange, reduce='amin',
+                                     include_self=True)
 
-    deduped_faces = face_indices[first_occurrence].to(torch.int32)
+    deduped_faces = face_indices[first_face_occur].to(torch.int32)
 
     return unique_verts, deduped_faces
 
@@ -829,13 +833,15 @@ def _write_ply_ascii(
         f.write("property list uchar int vertex_indices\n")
         f.write("end_header\n")
 
-        # Vertices
-        for i in range(V):
-            f.write(f"{verts_np[i, 0]} {verts_np[i, 1]} {verts_np[i, 2]}\n")
+        # Vertices — bulk write via numpy
+        if V > 0:
+            np.savetxt(f, verts_np, fmt='%g')
 
-        # Faces
-        for i in range(F):
-            f.write(f"3 {faces_np[i, 0]} {faces_np[i, 1]} {faces_np[i, 2]}\n")
+        # Faces — prepend "3" column and bulk write
+        if F > 0:
+            prefix = np.full((F, 1), 3, dtype=np.int32)
+            face_block = np.hstack([prefix, faces_np])
+            np.savetxt(f, face_block, fmt='%d')
 
 
 def s8_collapse_to_ply(
