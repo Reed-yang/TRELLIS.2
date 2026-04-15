@@ -411,83 +411,85 @@ def process_shared_edges_batch(
             torch.zeros((0, 3), dtype=torch.int32),
         )
 
-    # 1. Build cube_map: cube_indices_tuple → list[pruned_dict]
+    # 1. Build cube_map: cube_indices_tuple → list[dict]
+    #    Reuse original dicts to avoid deep copy overhead. Only normalize cube_indices.
     cube_map: dict[tuple, list[dict]] = {}
+    _empty_18 = [0] * 18
     for data in cube_data_list:
         idx = data.get('cube_indices')
         if idx is None:
             continue
         idx = tuple(idx) if not isinstance(idx, tuple) else idx
-
-        loops = []
-        for loop in data.get('sorted_loops', []):
-            loops.append({
-                'component_point': loop.get('component_point'),
-                'rank': loop.get('rank', []),
-                'loop': loop.get('loop', []),
-            })
-
-        pruned = {
-            'cube_indices': idx,
-            'sorted_loops': loops,
-            'edge_weights': data.get('edge_weights', [0] * 18),
-            'exception': data.get('exception', False),
-            'num_components': data.get('num_components', 0),
-        }
-
+        data['cube_indices'] = idx
+        # Ensure edge_weights and sorted_loops exist
+        if 'edge_weights' not in data:
+            data['edge_weights'] = _empty_18
+        if 'sorted_loops' not in data:
+            data['sorted_loops'] = []
         if idx not in cube_map:
-            cube_map[idx] = []
-        cube_map[idx].append(pruned)
+            cube_map[idx] = [data]
+        else:
+            cube_map[idx].append(data)
 
     # 2. Enumerate owned edges (using the same task_generator logic as custom/)
     # Collect triangle vertices as flat float arrays for efficient numpy conversion
     tri_vertex_chunks: list[np.ndarray] = []  # each (K*3, 3) float64
 
+    # Pre-build empty sentinel dicts keyed by index to avoid re-creating
+    _empty_sentinel_cache: dict[tuple, list[dict]] = {}
+
     def get_grid_input(indices_list):
         grid = []
         valid_count = 0
         for idx in indices_list:
-            if idx in cube_map:
-                grid.append(cube_map[idx])
+            entry = cube_map.get(idx)
+            if entry is not None:
+                grid.append(entry)
                 valid_count += 1
             else:
-                grid.append([{'cube_indices': idx, 'sorted_loops': []}])
+                sentinel = _empty_sentinel_cache.get(idx)
+                if sentinel is None:
+                    sentinel = [{'cube_indices': idx, 'sorted_loops': []}]
+                    _empty_sentinel_cache[idx] = sentinel
+                grid.append(sentinel)
         return grid, valid_count
+
+    # Use a set for fast membership testing
+    cube_set = frozenset(cube_map.keys())
+    R = resolution
 
     for idx in cube_map:
         x, y, z = idx
-        local_edges = [
+        local_edges = (
             ('X', x, y, z), ('X', x, y+1, z), ('X', x, y, z+1), ('X', x, y+1, z+1),
             ('Y', x, y, z), ('Y', x+1, y, z), ('Y', x, y, z+1), ('Y', x+1, y, z+1),
             ('Z', x, y, z), ('Z', x+1, y, z), ('Z', x, y+1, z), ('Z', x+1, y+1, z),
-        ]
+        )
 
         for axis, a, b, c in local_edges:
             if axis == 'X':
-                if not (0 <= a < resolution and 1 <= b < resolution and 1 <= c < resolution):
+                if not (0 <= a < R and 1 <= b < R and 1 <= c < R):
                     continue
-                neighbors = [(a, b-1, c-1), (a, b, c-1), (a, b-1, c), (a, b, c)]
+                neighbors = ((a, b-1, c-1), (a, b, c-1), (a, b-1, c), (a, b, c))
             elif axis == 'Y':
-                if not (1 <= a < resolution and 0 <= b < resolution and 1 <= c < resolution):
+                if not (1 <= a < R and 0 <= b < R and 1 <= c < R):
                     continue
-                neighbors = [(a-1, b, c-1), (a, b, c-1), (a-1, b, c), (a, b, c)]
-            elif axis == 'Z':
-                if not (1 <= a < resolution and 1 <= b < resolution and 0 <= c < resolution):
-                    continue
-                neighbors = [(a-1, b-1, c), (a, b-1, c), (a-1, b, c), (a, b, c)]
+                neighbors = ((a-1, b, c-1), (a, b, c-1), (a-1, b, c), (a, b, c))
             else:
+                if not (1 <= a < R and 1 <= b < R and 0 <= c < R):
+                    continue
+                neighbors = ((a-1, b-1, c), (a, b-1, c), (a-1, b, c), (a, b, c))
+
+            # Fast active neighbor check using frozenset
+            active = [n for n in neighbors if n in cube_set]
+            if not active or min(active) != idx:
                 continue
 
-            active_neighbors = [n for n in neighbors if n in cube_map]
-            if not active_neighbors:
-                continue
-
-            if min(active_neighbors) == idx:
-                grid, count = get_grid_input(neighbors)
-                if count >= 2:
-                    tri_verts = _process_shared_edge_geometry(grid)
-                    if tri_verts is not None:
-                        tri_vertex_chunks.append(tri_verts)
+            grid, count = get_grid_input(neighbors)
+            if count >= 2:
+                tri_verts = _process_shared_edge_geometry(grid)
+                if tri_verts is not None:
+                    tri_vertex_chunks.append(tri_verts)
 
     # 3. Vertex welding + face dedup using Torch
     if not tri_vertex_chunks:
