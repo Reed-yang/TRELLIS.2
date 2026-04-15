@@ -813,10 +813,16 @@ def _process_shared_edges_torch(
     cube_data_list: list[dict],
     merge_decimals: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Vectorized Torch path: tensor-based edge enumeration + geometry processing.
+    """Vectorized Torch path with Python fallback for conditional promotion edges.
 
     Drop-in replacement for the Python edge iteration + multiprocessing geometry
     loop. Keeps same input/output contract as process_shared_edges_batch.
+
+    The vectorized Torch path handles the common case. A small subset of edges
+    (all-4-cubes-present with num_components > 0 and some edge_weight > 0) may
+    trigger custom/collapse.py's conditional-promotion logic; those candidate
+    edges are processed via the Python `_process_shared_edge_geometry` fallback
+    to preserve bit-exact parity.
     """
     if not cube_data_list:
         return (
@@ -856,18 +862,101 @@ def _process_shared_edges_torch(
         edge_axes=table.edge_axes[keep],
     )
 
-    # Step D: Vectorized geometry processing
-    tri_verts = process_geometry_vectorized(kept_table, tensors, device)
+    # Step C.1: Identify candidate edges that may diverge from the Python
+    # reference path (tensor ops only). Diagnostics across real meshes show
+    # that per-edge divergence (Python vs vectorized Torch) only occurs for
+    # edges where ALL 4 neighbor cubes are present. Conditional-promotion
+    # (custom/collapse.py) is a strict subset of this; other subtle
+    # rank / slot-ordering differences also manifest only on 4-cube edges.
+    # Routing every 4-cube edge through the Python fallback produces
+    # bit-exact parity while leaving the >=95% of partial-neighbor edges on
+    # the fast vectorized path.
+    candidate_mask = kept_table.neighbor_counts == 4                   # (E,)
 
-    if tri_verts.shape[0] == 0:
+    # Step D: Non-candidate edges → vectorized Torch path
+    non_candidate_mask = ~candidate_mask
+    if non_candidate_mask.any():
+        nc_table = EdgeNeighborTable(
+            neighbor_counts=kept_table.neighbor_counts[non_candidate_mask],
+            neighbor_cube_ids=kept_table.neighbor_cube_ids[non_candidate_mask],
+            neighbor_positions=kept_table.neighbor_positions[non_candidate_mask],
+            neighbor_local_edges=kept_table.neighbor_local_edges[non_candidate_mask],
+            edge_axes=kept_table.edge_axes[non_candidate_mask],
+        )
+        tri_verts_torch = process_geometry_vectorized(nc_table, tensors, device)
+    else:
+        tri_verts_torch = torch.zeros((0, 3), dtype=torch.float64, device=device)
+
+    # Step E: Candidate edges → Python fallback
+    tri_verts_python_list: list[np.ndarray] = []
+    if candidate_mask.any():
+        # Build cube_map for Python path (same structure as process_shared_edges_batch)
+        cube_map: dict[tuple, list[dict]] = {}
+        _empty_18 = [0] * 18
+        for data in cube_data_list:
+            idx = data.get('cube_indices')
+            if idx is None:
+                continue
+            idx_t = tuple(idx) if not isinstance(idx, tuple) else idx
+            data['cube_indices'] = idx_t
+            if 'edge_weights' not in data:
+                data['edge_weights'] = _empty_18
+            if 'sorted_loops' not in data:
+                data['sorted_loops'] = []
+            if idx_t not in cube_map:
+                cube_map[idx_t] = [data]
+            else:
+                cube_map[idx_t].append(data)
+
+        cand_idx = torch.nonzero(candidate_mask, as_tuple=False).squeeze(1)
+        cand_n_cube = kept_table.neighbor_cube_ids[cand_idx]           # (M, 4)
+        cand_ci = tensors.cube_indices.cpu().numpy()                   # (N, 3)
+        cand_n_cube_cpu = cand_n_cube.cpu().numpy()                    # (M, 4)
+
+        for i in range(cand_n_cube_cpu.shape[0]):
+            slots = cand_n_cube_cpu[i]
+            grid: list[list[dict]] = []
+            for s_cube in slots:
+                s_cube = int(s_cube)
+                if s_cube < 0:
+                    # Should not happen for candidates (all 4 present), guard anyway
+                    grid.append([{'cube_indices': (0, 0, 0), 'sorted_loops': []}])
+                else:
+                    idx_tup = (
+                        int(cand_ci[s_cube, 0]),
+                        int(cand_ci[s_cube, 1]),
+                        int(cand_ci[s_cube, 2]),
+                    )
+                    entry = cube_map.get(idx_tup)
+                    if entry is None:
+                        grid.append([{'cube_indices': idx_tup, 'sorted_loops': []}])
+                    else:
+                        grid.append(entry)
+
+            tri_np = _process_shared_edge_geometry(grid)
+            if tri_np is not None and tri_np.shape[0] > 0:
+                tri_verts_python_list.append(tri_np)
+
+    # Step F: Merge Torch and Python triangles
+    if tri_verts_torch.shape[0] == 0 and not tri_verts_python_list:
         return (
             torch.zeros((0, 3), dtype=torch.float32),
             torch.zeros((0, 3), dtype=torch.int32),
         )
 
-    # Step E: Vertex welding (reuse existing _weld_and_dedup)
-    tri_verts_np = tri_verts.cpu().numpy()
-    return _weld_and_dedup(tri_verts_np, merge_decimals, device=device)
+    if tri_verts_torch.shape[0] > 0:
+        tri_verts_torch_np = tri_verts_torch.cpu().numpy()
+    else:
+        tri_verts_torch_np = np.zeros((0, 3), dtype=np.float64)
+
+    if tri_verts_python_list:
+        tri_verts_python_np = np.concatenate(tri_verts_python_list, axis=0)
+        all_tri_np = np.concatenate([tri_verts_torch_np, tri_verts_python_np], axis=0)
+    else:
+        all_tri_np = tri_verts_torch_np
+
+    # Step G: Vertex welding (reuse existing _weld_and_dedup)
+    return _weld_and_dedup(all_tri_np, merge_decimals, device=device)
 
 
 def process_shared_edges_batch(
