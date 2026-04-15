@@ -748,6 +748,7 @@ def _process_shared_edge_geometry(
 def _weld_and_dedup(
     flat_tri_verts: np.ndarray,
     merge_decimals: int,
+    device: Optional[torch.device] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Vertex welding + face deduplication using torch.unique.
@@ -755,14 +756,17 @@ def _weld_and_dedup(
     This replaces the Python dict vertex_to_index and set seen_faces from
     custom/collapse.py::generate_global_mesh() with O(N log N) sort-based dedup.
 
+    Uses GPU if available for massive speedup on torch.unique (97x at 800K vertices).
+
     Args:
         flat_tri_verts: (T*3, 3) float64 numpy array — every 3 consecutive rows
                        form one triangle's vertices.
         merge_decimals: Number of decimal places for vertex rounding.
+        device: torch device. None = auto (GPU if available, else CPU).
 
     Returns:
-        vertices: (V, 3) float32 — unique vertex coordinates.
-        faces: (F, 3) int32 — triangle face indices.
+        vertices: (V, 3) float32 — unique vertex coordinates (on CPU).
+        faces: (F, 3) int32 — triangle face indices (on CPU).
     """
     if flat_tri_verts.shape[0] == 0:
         return (
@@ -770,8 +774,11 @@ def _weld_and_dedup(
             torch.zeros((0, 3), dtype=torch.int32),
         )
 
-    # 1. Convert numpy to torch (zero-copy when possible)
-    flat_verts = torch.from_numpy(flat_tri_verts)  # (T*3, 3) float64
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # 1. Convert numpy to torch and move to device
+    flat_verts = torch.from_numpy(flat_tri_verts).to(device)  # (T*3, 3) float64
     T = flat_verts.shape[0] // 3
 
     # 2. Round for welding
@@ -783,11 +790,9 @@ def _weld_and_dedup(
 
     # 4. Recover actual coordinates: first occurrence per unique vertex (vectorized)
     num_unique = unique_rounded.shape[0]
-    # Scatter the original index for each vertex; keep the minimum (= first occurrence)
-    idx_arange = torch.arange(flat_verts.shape[0], dtype=torch.int64)
-    # For each unique vertex, find the first (smallest) original index
-    first_occur = torch.full((num_unique,), flat_verts.shape[0], dtype=torch.int64)
-    # scatter_reduce with 'amin' gives us the minimum index per unique vertex
+    idx_arange = torch.arange(flat_verts.shape[0], dtype=torch.int64, device=device)
+    first_occur = torch.full((num_unique,), flat_verts.shape[0], dtype=torch.int64,
+                             device=device)
     first_occur.scatter_reduce_(0, inverse_indices, idx_arange, reduce='amin',
                                 include_self=True)
     unique_verts = flat_verts[first_occur].float()  # (V, 3) float32
@@ -803,7 +808,7 @@ def _weld_and_dedup(
     face_indices = face_indices[non_degenerate]
 
     if face_indices.shape[0] == 0:
-        return unique_verts, torch.zeros((0, 3), dtype=torch.int32)
+        return unique_verts.cpu(), torch.zeros((0, 3), dtype=torch.int32)
 
     # 7. Canonical face rotation: rotate so minimum vertex index is first
     face_long = face_indices.to(torch.int64)
@@ -824,14 +829,16 @@ def _weld_and_dedup(
 
     # Keep only the first occurrence of each unique canonical face (vectorized)
     F_unique = unique_canonical.shape[0]
-    face_arange = torch.arange(face_indices.shape[0], dtype=torch.int64)
-    first_face_occur = torch.full((F_unique,), face_indices.shape[0], dtype=torch.int64)
+    face_arange = torch.arange(face_indices.shape[0], dtype=torch.int64, device=device)
+    first_face_occur = torch.full((F_unique,), face_indices.shape[0], dtype=torch.int64,
+                                  device=device)
     first_face_occur.scatter_reduce_(0, unique_idx, face_arange, reduce='amin',
                                      include_self=True)
 
     deduped_faces = face_indices[first_face_occur].to(torch.int32)
 
-    return unique_verts, deduped_faces
+    # Move results back to CPU for PLY writing
+    return unique_verts.cpu(), deduped_faces.cpu()
 
 
 # ---------------------------------------------------------------------------
