@@ -527,3 +527,67 @@ class TestExceptionCubeHandling:
         )
         # All exceptions → grouped at rank 0 with 4 points → 4 fan triangles
         assert faces.shape[0] >= 4
+
+
+from corep_fast.stages.s8_collapse import _cube_data_to_tensors, CubeDataTensors
+
+
+class TestCubeDataToTensors:
+    def test_empty_input(self):
+        tensors = _cube_data_to_tensors([], device=torch.device('cpu'))
+        assert tensors.cube_indices.shape == (0, 3)
+        assert tensors.loop_cube_offsets.shape == (1,)
+        assert tensors.loop_cube_offsets[0].item() == 0
+
+    def test_single_cube_no_loops(self):
+        data = [{
+            'cube_indices': (1, 2, 3),
+            'sorted_loops': [],
+            'edge_weights': [0]*18,
+            'exception': False,
+            'num_components': 0,
+        }]
+        t = _cube_data_to_tensors(data, device=torch.device('cpu'))
+        assert t.cube_indices.tolist() == [[1, 2, 3]]
+        assert t.cube_exception.tolist() == [False]
+        assert t.cube_num_components.tolist() == [0]
+        assert t.loop_cube_offsets.tolist() == [0, 0]
+        assert t.loop_component_point.shape[0] == 0
+
+    def test_cube_with_loops(self):
+        data = [{
+            'cube_indices': (5, 5, 5),
+            'sorted_loops': [
+                {'loop': [3, 12, 1], 'rank': [0, -1, -1],
+                 'component_point': [0.5, 0.5, 0.5]},
+                {'loop': [4, 6], 'rank': [1, 2],
+                 'component_point': [0.6, 0.6, 0.6]},
+            ],
+            'edge_weights': [0]*3 + [1] + [0]*14,
+            'exception': False,
+            'num_components': 2,
+        }]
+        t = _cube_data_to_tensors(data, device=torch.device('cpu'))
+        assert t.loop_cube_offsets.tolist() == [0, 2]
+        assert t.loop_component_point.shape == (2, 3)
+        assert t.max_loop_len >= 3
+        K = t.max_loop_len
+        loop0_edges = t.loop_edges_flat[:K].tolist()
+        loop0_ranks = t.loop_ranks_flat[:K].tolist()
+        assert loop0_edges[:3] == [3, 12, 1]
+        assert loop0_ranks[:3] == [0, -1, -1]
+        if K > 3:
+            assert loop0_edges[3] == -1
+
+    def test_exception_cube(self):
+        data = [{
+            'cube_indices': (0, 0, 0),
+            'sorted_loops': [{'component_point': [0.1, 0.2, 0.3]}],
+            'edge_weights': [0]*18,
+            'exception': True,
+            'num_components': 1,
+        }]
+        t = _cube_data_to_tensors(data, device=torch.device('cpu'))
+        assert t.cube_exception.tolist() == [True]
+        assert t.loop_component_point.shape == (1, 3)
+        assert torch.allclose(t.loop_component_point[0], torch.tensor([0.1, 0.2, 0.3]))

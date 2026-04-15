@@ -153,6 +153,136 @@ class EdgeNeighborTable:
     edge_axes: torch.Tensor
 
 
+# ---------------------------------------------------------------------------
+# CubeDataTensors: dense tensor representation of cube_data_list
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CubeDataTensors:
+    """Dense tensor representation of cube_data_list for vectorized processing.
+
+    All per-cube and per-loop data is flattened into tensors with CSR offsets
+    for ragged loop arrays.
+    """
+    cube_indices: torch.Tensor         # (N, 3) int32
+    cube_edge_weights: torch.Tensor    # (N, 18) int32
+    cube_exception: torch.Tensor       # (N,) bool
+    cube_num_components: torch.Tensor  # (N,) int32
+    loop_cube_offsets: torch.Tensor    # (N+1,) int64, cumulative loop count per cube
+    loop_component_point: torch.Tensor # (L, 3) float32
+    max_loop_len: int                  # max length of any loop (edge count)
+    loop_edges_flat: torch.Tensor      # (L * max_loop_len,) int32, -1 padding
+    loop_ranks_flat: torch.Tensor      # (L * max_loop_len,) int32, -1 padding
+
+
+def _cube_data_to_tensors(
+    cube_data_list: list[dict],
+    device: torch.device,
+) -> CubeDataTensors:
+    """Convert list-of-dict cube data to dense GPU tensors.
+
+    One-time conversion at the start of s8. After this, all processing is
+    vectorized tensor operations.
+
+    Args:
+        cube_data_list: list of cube dicts with cube_indices, sorted_loops,
+                        edge_weights, exception, num_components fields.
+        device: torch device for output tensors.
+
+    Returns:
+        CubeDataTensors with all fields populated.
+    """
+    N = len(cube_data_list)
+    if N == 0:
+        return CubeDataTensors(
+            cube_indices=torch.zeros((0, 3), dtype=torch.int32, device=device),
+            cube_edge_weights=torch.zeros((0, 18), dtype=torch.int32, device=device),
+            cube_exception=torch.zeros((0,), dtype=torch.bool, device=device),
+            cube_num_components=torch.zeros((0,), dtype=torch.int32, device=device),
+            loop_cube_offsets=torch.zeros((1,), dtype=torch.int64, device=device),
+            loop_component_point=torch.zeros((0, 3), dtype=torch.float32, device=device),
+            max_loop_len=1,
+            loop_edges_flat=torch.zeros((0,), dtype=torch.int32, device=device),
+            loop_ranks_flat=torch.zeros((0,), dtype=torch.int32, device=device),
+        )
+
+    cube_indices_list: list[list[int]] = []
+    cube_edge_weights_list: list[list[int]] = []
+    cube_exception_list: list[bool] = []
+    cube_num_components_list: list[int] = []
+    loop_points_list: list[list[float]] = []
+    loop_edges_nested: list[list[int]] = []
+    loop_ranks_nested: list[list[int]] = []
+    loops_per_cube: list[int] = []
+    max_loop_len = 1
+
+    for data in cube_data_list:
+        idx = data.get('cube_indices', (0, 0, 0))
+        if isinstance(idx, (list, tuple)) and len(idx) >= 3:
+            cube_indices_list.append([int(idx[0]), int(idx[1]), int(idx[2])])
+        else:
+            cube_indices_list.append([0, 0, 0])
+
+        ew = list(data.get('edge_weights', []) or [])
+        if len(ew) < 18:
+            ew = ew + [0] * (18 - len(ew))
+        else:
+            ew = ew[:18]
+        cube_edge_weights_list.append([int(x) for x in ew])
+
+        cube_exception_list.append(bool(data.get('exception', False)))
+        cube_num_components_list.append(int(data.get('num_components', 0)))
+
+        sorted_loops = data.get('sorted_loops', []) or []
+        loops_per_cube.append(len(sorted_loops))
+        for loop in sorted_loops:
+            pt = loop.get('component_point', [0.0, 0.0, 0.0]) or [0.0, 0.0, 0.0]
+            loop_points_list.append([float(pt[0]), float(pt[1]), float(pt[2])])
+            edges = list(loop.get('loop', []) or [])
+            ranks = list(loop.get('rank', []) or [])
+            # Align ranks to edges length
+            if len(ranks) < len(edges):
+                ranks = ranks + [-1] * (len(edges) - len(ranks))
+            elif len(ranks) > len(edges):
+                ranks = ranks[:len(edges)]
+            loop_edges_nested.append([int(x) for x in edges])
+            loop_ranks_nested.append([int(x) for x in ranks])
+            if len(edges) > max_loop_len:
+                max_loop_len = len(edges)
+
+    L = len(loop_points_list)
+    loop_edges_padded = np.full((L, max_loop_len), -1, dtype=np.int32)
+    loop_ranks_padded = np.full((L, max_loop_len), -1, dtype=np.int32)
+    for i, (edges, ranks) in enumerate(zip(loop_edges_nested, loop_ranks_nested)):
+        k = min(len(edges), max_loop_len)
+        loop_edges_padded[i, :k] = edges[:k]
+        loop_ranks_padded[i, :k] = ranks[:k]
+
+    offsets = np.zeros(N + 1, dtype=np.int64)
+    offsets[1:] = np.cumsum(loops_per_cube)
+
+    return CubeDataTensors(
+        cube_indices=torch.tensor(cube_indices_list, dtype=torch.int32, device=device),
+        cube_edge_weights=torch.tensor(cube_edge_weights_list, dtype=torch.int32, device=device),
+        cube_exception=torch.tensor(cube_exception_list, dtype=torch.bool, device=device),
+        cube_num_components=torch.tensor(cube_num_components_list, dtype=torch.int32, device=device),
+        loop_cube_offsets=torch.from_numpy(offsets).to(device),
+        loop_component_point=(
+            torch.tensor(loop_points_list, dtype=torch.float32, device=device)
+            if L > 0 else torch.zeros((0, 3), dtype=torch.float32, device=device)
+        ),
+        max_loop_len=max_loop_len,
+        loop_edges_flat=(
+            torch.from_numpy(loop_edges_padded.reshape(-1)).to(device)
+            if L > 0 else torch.zeros((0,), dtype=torch.int32, device=device)
+        ),
+        loop_ranks_flat=(
+            torch.from_numpy(loop_ranks_padded.reshape(-1)).to(device)
+            if L > 0 else torch.zeros((0,), dtype=torch.int32, device=device)
+        ),
+    )
+
+
 def compute_global_edge_keys(
     cube_indices: torch.Tensor,
     resolution: int,
