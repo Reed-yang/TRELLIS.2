@@ -119,3 +119,40 @@ def test_from_custom_include_subset():
     assert cb.tri_values.shape[0] > 0
     # edge_weights should be zero (not populated)
     assert cb.edge_weights.sum().item() == 0
+
+
+from corep_fast.interop.to_custom import custom_from_cube_batch
+
+
+def test_roundtrip_from_custom_to_custom():
+    """Convert list-of-dict → CubeBatch → list-of-dict and verify structure."""
+    regs_in = _make_fake_face_registers()
+    mt = _make_mesh_tensors()
+    cb = cube_batch_from_custom(regs_in, mt, device='cpu')
+    regs_out = custom_from_cube_batch(cb, mt)
+
+    assert len(regs_out) == 2
+    assert regs_out[0]['cube_indices'] == (10, 20, 30)
+    assert regs_out[1]['cube_indices'] == (11, 20, 30)
+    assert regs_out[0]['face_indices'] == [0, 1, 2]
+    assert regs_out[1]['face_indices'] == [3, 4]
+    assert regs_out[0]['num_components'] == 1
+    assert regs_out[1]['num_components'] == 2
+    assert regs_out[0]['edge_weights'] == list(range(18))
+    assert regs_out[1]['edge_weights'] == [1] * 18
+
+
+def test_roundtrip_preserves_component_points():
+    regs_in = _make_fake_face_registers()
+    mt = _make_mesh_tensors()
+    cb = cube_batch_from_custom(regs_in, mt, device='cpu')
+    regs_out = custom_from_cube_batch(cb, mt)
+
+    # Cube 0: 1 point
+    pts0 = regs_out[0]['component_points']
+    assert len(pts0) == 1
+    assert abs(pts0[0][0] - 0.5) < 1e-5
+
+    # Cube 1: 2 points
+    pts1 = regs_out[1]['component_points']
+    assert len(pts1) == 2
