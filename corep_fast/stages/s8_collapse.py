@@ -504,6 +504,297 @@ def compute_edge_ownership(
 
 
 # ---------------------------------------------------------------------------
+# Vectorized geometry processing (Stage 2 Task 3)
+# ---------------------------------------------------------------------------
+
+def process_geometry_vectorized(
+    table: EdgeNeighborTable,
+    tensors: CubeDataTensors,
+    device: torch.device,
+    max_rank: int = 16,
+) -> torch.Tensor:
+    """Vectorized geometry processing: emit fan triangles for all owned edges.
+
+    Handles exception cube wildcards. Does NOT handle conditional promotion
+    (complex edges are handled by the Python fallback path in later tasks).
+
+    Args:
+        table: EdgeNeighborTable with edges filtered to neighbor_counts >= 2
+        tensors: CubeDataTensors with cube and loop data
+        device: torch device
+        max_rank: max normalized rank to consider
+
+    Returns:
+        (T*3, 3) float64 tensor of triangle vertex coordinates.
+        Every 3 consecutive rows form one triangle.
+    """
+    E = table.neighbor_counts.shape[0]
+    if E == 0 or tensors.cube_indices.shape[0] == 0:
+        return torch.zeros((0, 3), dtype=torch.float64, device=device)
+
+    # --- Step 1: Gather neighbor info per edge ---
+    n_cube = table.neighbor_cube_ids           # (E, 4) int32, -1 for missing
+    valid_slot = n_cube >= 0                   # (E, 4) bool
+    n_cube_safe = n_cube.clamp(min=0).to(torch.int64)
+
+    # --- Step 1b: Re-derive per-slot local edge and uv slot using collapse.py convention ---
+    # table.neighbor_local_edges stores _EDGE_OFFSET_TABLE convention (geometry),
+    # but sorted_loops['loop'] entries use collapse.py::process_shared_edge_geometry
+    # convention, where for Y-axis edges local_edge ∈ {5, 7, 1, 3} (not 8-11).
+    # We recompute per-slot local_edge from (dx, dy, dz) = cube_xyz - edge_min_xyz.
+    cube_xyz = tensors.cube_indices.to(torch.int64)           # (N, 3)
+    # neighbor cube positions per slot, with -1 slots masked to a large sentinel
+    slot_xyz = cube_xyz[n_cube_safe]                          # (E, 4, 3) int64
+    SENTINEL_MAX = torch.iinfo(torch.int64).max
+    masked_xyz = torch.where(
+        valid_slot.unsqueeze(2),
+        slot_xyz,
+        torch.full_like(slot_xyz, SENTINEL_MAX),
+    )
+    edge_min = masked_xyz.min(dim=1).values                   # (E, 3) int64
+    dxyz = torch.where(
+        valid_slot.unsqueeze(2),
+        slot_xyz - edge_min.unsqueeze(1),
+        torch.zeros_like(slot_xyz),
+    )                                                         # (E, 4, 3) int64, values in {0, 1}
+    dx = dxyz[..., 0]
+    dy = dxyz[..., 1]
+    dz = dxyz[..., 2]
+
+    # collapse.py::get_local_edge(dx, dy, dz) table:
+    #   X axis (edge_axis=0): (dy, dz) → 6, 4, 2, 0 for (0,0),(1,0),(0,1),(1,1)
+    #   Y axis (edge_axis=1): (dx, dz) → 5, 7, 1, 3 for (0,0),(1,0),(0,1),(1,1)
+    #   Z axis (edge_axis=2): (dx, dy) → 10, 11, 9, 8 for (0,0),(1,0),(0,1),(1,1)
+    edge_axes = table.edge_axes.to(torch.int64)               # (E,)
+    ax = edge_axes.unsqueeze(1).expand(E, 4)                  # (E, 4)
+    # Per-axis mapping. Compute all three then select by axis.
+    # X axis: index by (dy, dz)
+    x_map = torch.tensor([[6, 2], [4, 0]], dtype=torch.int64, device=device)  # [dy][dz]
+    # Y axis: index by (dx, dz)
+    y_map = torch.tensor([[5, 1], [7, 3]], dtype=torch.int64, device=device)  # [dx][dz]
+    # Z axis: index by (dx, dy)
+    z_map = torch.tensor([[10, 9], [11, 8]], dtype=torch.int64, device=device)  # [dx][dy]
+    local_x = x_map[dy, dz]
+    local_y = y_map[dx, dz]
+    local_z = z_map[dx, dy]
+    n_loc = torch.where(
+        ax == 0, local_x,
+        torch.where(ax == 1, local_y, local_z),
+    ).to(torch.int32)                                          # (E, 4)
+    # Mask invalid slots with -1
+    n_loc = torch.where(valid_slot, n_loc, torch.full_like(n_loc, -1))
+
+    # uv slot_id: matches Python's neighbors = [(0,0), (1,0), (1,1), (0,1)]
+    #   X axis: uv = (dy, dz)
+    #   Y axis: uv = (dx, dz)
+    #   Z axis: uv = (dx, dy)
+    # uv → slot_id lookup: (0,0)->0, (1,0)->1, (1,1)->2, (0,1)->3
+    uv_slot_map = torch.tensor([[0, 3], [1, 2]], dtype=torch.int64, device=device)  # [u][v]
+    u_x, v_x = dy, dz
+    u_y, v_y = dx, dz
+    u_z, v_z = dx, dy
+    slot_x = uv_slot_map[u_x, v_x]
+    slot_y = uv_slot_map[u_y, v_y]
+    slot_z = uv_slot_map[u_z, v_z]
+    slot_id = torch.where(
+        ax == 0, slot_x,
+        torch.where(ax == 1, slot_y, slot_z),
+    ).to(torch.int64)                                          # (E, 4)
+
+    # --- Step 2: Per-neighbor exception status + edge weight ---
+    cube_exc_flat = tensors.cube_exception     # (N,)
+    cube_ew_flat = tensors.cube_edge_weights   # (N, 18)
+    cube_exc = cube_exc_flat[n_cube_safe] & valid_slot   # (E, 4)
+
+    n_loc_safe = n_loc.clamp(min=0).to(torch.int64)      # (E, 4)
+    cube_ew = cube_ew_flat[n_cube_safe]                  # (E, 4, 18)
+    W_at_edge = torch.gather(cube_ew, 2, n_loc_safe.unsqueeze(2)).squeeze(2)  # (E, 4)
+
+    # --- Step 3: Gather loop ranges per neighbor cube ---
+    loop_start = tensors.loop_cube_offsets[n_cube_safe]       # (E, 4) int64
+    loop_end = tensors.loop_cube_offsets[n_cube_safe + 1]     # (E, 4) int64
+    num_loops = (loop_end - loop_start).clamp(min=0)          # (E, 4)
+    # Zero out missing slots
+    num_loops = torch.where(valid_slot, num_loops, torch.zeros_like(num_loops))
+    max_loops = int(num_loops.max().item()) if E > 0 else 0
+
+    if max_loops == 0:
+        # No loops in any cube — no crossings possible. Still need to handle exceptions
+        # but without any rank presence, exceptions alone don't form full groups of 4.
+        return torch.zeros((0, 3), dtype=torch.float64, device=device)
+
+    # Flat loop indices: (E, 4, max_loops)
+    loop_range = torch.arange(max_loops, device=device).view(1, 1, max_loops)
+    flat_loop_idx = loop_start.unsqueeze(2) + loop_range      # (E, 4, max_loops)
+    in_range = loop_range < num_loops.unsqueeze(2)            # (E, 4, max_loops)
+    L_total = tensors.loop_component_point.shape[0]
+    flat_loop_idx_safe = flat_loop_idx.clamp(min=0, max=max(L_total - 1, 0))
+
+    # --- Step 4: Gather loop edges and ranks ---
+    K = tensors.max_loop_len
+    if L_total > 0:
+        loop_edges_2d = tensors.loop_edges_flat.view(-1, K)   # (L, K)
+        loop_ranks_2d = tensors.loop_ranks_flat.view(-1, K)   # (L, K)
+    else:
+        loop_edges_2d = torch.zeros((1, K), dtype=torch.int32, device=device)
+        loop_ranks_2d = torch.zeros((1, K), dtype=torch.int32, device=device)
+
+    # gathered_edges / gathered_ranks: (E, 4, max_loops, K)
+    gathered_edges = loop_edges_2d[flat_loop_idx_safe]
+    gathered_ranks = loop_ranks_2d[flat_loop_idx_safe]
+
+    # Mask invalid loops
+    gathered_edges = torch.where(
+        in_range.unsqueeze(3), gathered_edges, torch.full_like(gathered_edges, -1)
+    )
+    gathered_ranks = torch.where(
+        in_range.unsqueeze(3), gathered_ranks, torch.full_like(gathered_ranks, -1)
+    )
+
+    # --- Step 5: Find crossings at local_edge ---
+    target_local = n_loc.unsqueeze(2).unsqueeze(3)            # (E, 4, 1, 1)
+    match = (
+        (gathered_edges == target_local) &
+        in_range.unsqueeze(3) &
+        valid_slot.unsqueeze(2).unsqueeze(3)
+    )
+    # match: (E, 4, max_loops, K)
+
+    # --- Step 6: Rank normalization ---
+    is_neg = (n_loc == 2) | (n_loc == 6) | (n_loc == 3) | (n_loc == 7)  # (E, 4)
+    W_broadcast = W_at_edge.unsqueeze(2).unsqueeze(3)                    # (E, 4, 1, 1)
+    norm_ranks = torch.where(
+        is_neg.unsqueeze(2).unsqueeze(3),
+        W_broadcast - 1 - gathered_ranks,
+        gathered_ranks,
+    )
+    rank_valid = match & (norm_ranks >= 0) & (norm_ranks < max_rank)
+
+    # --- Step 7: Gather component points (per loop) ---
+    if L_total > 0:
+        loop_points_gathered = tensors.loop_component_point[flat_loop_idx_safe]
+    else:
+        loop_points_gathered = torch.zeros(
+            (E, 4, max_loops, 3), dtype=torch.float32, device=device
+        )
+    # loop_points_gathered: (E, 4, max_loops, 3)
+
+    # --- Step 8: Scatter points into (E, max_rank, 4, 3) ---
+    points_by_rank = torch.zeros((E, max_rank, 4, 3), dtype=torch.float32, device=device)
+    has_point = torch.zeros((E, max_rank, 4), dtype=torch.bool, device=device)
+
+    if rank_valid.any():
+        valid_flat = rank_valid.view(-1)
+        idx_flat = torch.nonzero(valid_flat, as_tuple=False).squeeze(1)  # (M,)
+
+        # Recover (e, slot, loop_idx, k) from flat index
+        stride_e = 4 * max_loops * K
+        stride_s = max_loops * K
+        stride_l = K
+        e_idx = (idx_flat // stride_e).to(torch.int64)
+        rem = idx_flat % stride_e
+        s_idx = (rem // stride_s).to(torch.int64)
+        rem = rem % stride_s
+        l_idx = (rem // stride_l).to(torch.int64)
+        # k_idx not needed — the point per match is loop_points_gathered[e, s, l]
+
+        # Map slot index (table slot 0..3) to uv-based fan slot_id (Python neighbor order)
+        uv_slot_idx = slot_id[e_idx, s_idx]              # (M,)
+
+        # Rank per match
+        r_idx = norm_ranks.view(-1)[idx_flat].to(torch.int64)
+
+        # Points per match
+        pts = loop_points_gathered[e_idx, s_idx, l_idx]  # (M, 3)
+
+        # Scatter (later matches overwrite earlier, which is acceptable)
+        points_by_rank[e_idx, r_idx, uv_slot_idx] = pts
+        has_point[e_idx, r_idx, uv_slot_idx] = True
+
+    # --- Step 9: Exception cube wildcards ---
+    # For each (e, slot) where cube_exc is True: use first loop's point as wildcard
+    any_has_point = has_point.any(dim=2)  # (E, max_rank)
+
+    if L_total > 0:
+        first_loop_safe = loop_start.clamp(min=0, max=L_total - 1).to(torch.int64)
+        exc_pt_per_slot = tensors.loop_component_point[first_loop_safe]  # (E, 4, 3)
+    else:
+        exc_pt_per_slot = torch.zeros((E, 4, 3), dtype=torch.float32, device=device)
+
+    # Permute exc_pt_per_slot / cube_exc / num_loops from table-slot index (0..3 of
+    # neighbor_cube_ids) to uv slot_id (Python neighbor order).
+    # scatter to uv_ordered tensors using slot_id as the target index per (e, s).
+    # valid slots map to a real uv slot; invalid slots (-1 / garbage) won't be read
+    # because cube_exc/num_loops for invalid slots are already 0/False.
+    slot_id_safe = slot_id.clamp(min=0)                                    # (E, 4)
+    exc_pt = torch.zeros((E, 4, 3), dtype=exc_pt_per_slot.dtype, device=device)
+    cube_exc_uv = torch.zeros((E, 4), dtype=torch.bool, device=device)
+    num_loops_uv = torch.zeros((E, 4), dtype=num_loops.dtype, device=device)
+    # Use scatter on last dim: for each (e, table_slot) write to (e, slot_id[e, table_slot])
+    e_arange = torch.arange(E, dtype=torch.int64, device=device).unsqueeze(1).expand(E, 4)
+    valid_mask_flat = valid_slot.reshape(-1)
+    e_flat = e_arange.reshape(-1)[valid_mask_flat]
+    uv_flat = slot_id_safe.reshape(-1)[valid_mask_flat]
+    exc_pt[e_flat, uv_flat] = exc_pt_per_slot.reshape(-1, 3)[valid_mask_flat]
+    cube_exc_uv[e_flat, uv_flat] = cube_exc.reshape(-1)[valid_mask_flat]
+    num_loops_uv[e_flat, uv_flat] = num_loops.reshape(-1)[valid_mask_flat]
+
+    # Fill missing slots where: cube is exception, slot is valid, cube has at least 1 loop,
+    # and the rank already has some presence (we don't invent new ranks from exceptions alone)
+    fill_mask = (
+        (~has_point) &
+        cube_exc_uv.unsqueeze(1) &
+        any_has_point.unsqueeze(2) &
+        (num_loops_uv.unsqueeze(1) > 0)
+    )
+    points_by_rank = torch.where(
+        fill_mask.unsqueeze(3),
+        exc_pt.unsqueeze(1).expand(E, max_rank, 4, 3),
+        points_by_rank,
+    )
+    has_point = has_point | fill_mask
+
+    # Rank-0 synthesis: if no rank has any points but exceptions exist
+    no_rank = ~any_has_point.any(dim=1)                     # (E,)
+    has_exc = (cube_exc_uv & (num_loops_uv > 0)).any(dim=1)  # (E,)
+    synth = no_rank & has_exc                                # (E,)
+    if synth.any():
+        idx = torch.nonzero(synth, as_tuple=False).squeeze(1)
+        valid_exc = cube_exc_uv[idx] & (num_loops_uv[idx] > 0)  # (M, 4)
+        has_point[idx, 0, :] = valid_exc
+        pts_rank0 = torch.where(
+            valid_exc.unsqueeze(2),
+            exc_pt[idx],
+            torch.zeros_like(exc_pt[idx]),
+        )
+        points_by_rank[idx, 0, :, :] = pts_rank0
+
+    # --- Step 10: Emit fan triangles for full rank groups (4 slots present) ---
+    full_mask = has_point.all(dim=2)  # (E, max_rank)
+    if not full_mask.any():
+        return torch.zeros((0, 3), dtype=torch.float64, device=device)
+
+    full_edges, full_ranks = torch.nonzero(full_mask, as_tuple=True)
+
+    pts_4 = points_by_rank[full_edges, full_ranks]  # (F, 4, 3)
+    proj = pts_4.mean(dim=1)                         # (F, 3)
+    p0 = pts_4[:, 0]
+    p1 = pts_4[:, 1]
+    p2 = pts_4[:, 2]
+    p3 = pts_4[:, 3]
+
+    # Fan: (proj,p0,p1), (proj,p1,p2), (proj,p2,p3), (proj,p3,p0)
+    tris = torch.stack([
+        torch.stack([proj, p0, p1], dim=1),
+        torch.stack([proj, p1, p2], dim=1),
+        torch.stack([proj, p2, p3], dim=1),
+        torch.stack([proj, p3, p0], dim=1),
+    ], dim=1)  # (F, 4, 3, 3)
+
+    return tris.reshape(-1, 3).to(torch.float64)
+
+
+# ---------------------------------------------------------------------------
 # Kernel 2: Shared-edge geometry processing
 # ---------------------------------------------------------------------------
 

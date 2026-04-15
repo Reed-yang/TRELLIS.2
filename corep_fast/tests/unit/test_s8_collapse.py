@@ -591,3 +591,93 @@ class TestCubeDataToTensors:
         assert t.cube_exception.tolist() == [True]
         assert t.loop_component_point.shape == (1, 3)
         assert torch.allclose(t.loop_component_point[0], torch.tensor([0.1, 0.2, 0.3]))
+
+
+from corep_fast.stages.s8_collapse import process_geometry_vectorized, EdgeNeighborTable
+
+
+class TestProcessGeometryVectorized:
+    def _setup_four_cubes(self):
+        """4 cubes around Y-axis edge at (5,5,5) with complete rank-0 data."""
+        from corep_fast.stages.s8_collapse import (
+            _cube_data_to_tensors,
+            compute_global_edge_keys,
+            enumerate_unique_edges,
+            build_edge_neighbor_table,
+        )
+        device = torch.device('cpu')
+        cube_data = [
+            {'cube_indices': (4, 5, 4),
+             'sorted_loops': [{'loop': [5, 13, 7], 'rank': [0, -1, -1],
+                               'component_point': [0.04, 0.05, 0.04]}],
+             'edge_weights': [0]*5 + [1] + [0]*12,
+             'exception': False, 'num_components': 1},
+            {'cube_indices': (5, 5, 4),
+             'sorted_loops': [{'loop': [7, 13, 5], 'rank': [0, -1, -1],
+                               'component_point': [0.05, 0.05, 0.04]}],
+             'edge_weights': [0]*7 + [1] + [0]*10,
+             'exception': False, 'num_components': 1},
+            {'cube_indices': (4, 5, 5),
+             'sorted_loops': [{'loop': [1, 12, 3], 'rank': [0, -1, -1],
+                               'component_point': [0.04, 0.05, 0.05]}],
+             'edge_weights': [0, 1] + [0]*16,
+             'exception': False, 'num_components': 1},
+            {'cube_indices': (5, 5, 5),
+             'sorted_loops': [{'loop': [3, 12, 1], 'rank': [0, -1, -1],
+                               'component_point': [0.05, 0.05, 0.05]}],
+             'edge_weights': [0]*3 + [1] + [0]*14,
+             'exception': False, 'num_components': 1},
+        ]
+        tensors = _cube_data_to_tensors(cube_data, device)
+        keys, cube_ids, local_ids = compute_global_edge_keys(tensors.cube_indices, 64)
+        uk, epe = enumerate_unique_edges(keys)
+        table = build_edge_neighbor_table(epe, cube_ids, local_ids, uk.shape[0])
+        # Filter to edges with >=2 neighbors
+        keep = table.neighbor_counts >= 2
+        kept = EdgeNeighborTable(
+            neighbor_counts=table.neighbor_counts[keep],
+            neighbor_cube_ids=table.neighbor_cube_ids[keep],
+            neighbor_positions=table.neighbor_positions[keep],
+            neighbor_local_edges=table.neighbor_local_edges[keep],
+            edge_axes=table.edge_axes[keep],
+        )
+        return kept, tensors, device
+
+    def test_produces_fan_triangles(self):
+        """4 cubes with rank-0 crossings should produce at least 4 fan triangles."""
+        table, tensors, device = self._setup_four_cubes()
+        tri_verts = process_geometry_vectorized(table, tensors, device)
+        # At least 4 fan triangles (12 vertex rows)
+        assert tri_verts.shape[0] >= 12
+        assert tri_verts.shape[1] == 3
+        assert tri_verts.dtype == torch.float64
+
+    def test_empty_input(self):
+        from corep_fast.stages.s8_collapse import _cube_data_to_tensors
+        device = torch.device('cpu')
+        tensors = _cube_data_to_tensors([], device)
+        empty_table = EdgeNeighborTable(
+            neighbor_counts=torch.zeros(0, dtype=torch.int32),
+            neighbor_cube_ids=torch.zeros((0, 4), dtype=torch.int32),
+            neighbor_positions=torch.zeros((0, 4), dtype=torch.int32),
+            neighbor_local_edges=torch.zeros((0, 4), dtype=torch.int32),
+            edge_axes=torch.zeros(0, dtype=torch.int32),
+        )
+        tri_verts = process_geometry_vectorized(empty_table, tensors, device)
+        assert tri_verts.shape == (0, 3)
+
+    def test_projection_point_is_mean(self):
+        """Projection point should be mean of 4 component points."""
+        table, tensors, device = self._setup_four_cubes()
+        tri_verts = process_geometry_vectorized(table, tensors, device)
+        # Expected projection: mean of (0.04,0.05,0.04), (0.05,0.05,0.04),
+        # (0.04,0.05,0.05), (0.05,0.05,0.05)
+        # = (0.045, 0.05, 0.045)
+        expected_proj = torch.tensor([0.045, 0.05, 0.045], dtype=torch.float64)
+        # Find the projection point in the output (it appears 4 times, once per fan tri)
+        found = False
+        for i in range(tri_verts.shape[0]):
+            if torch.allclose(tri_verts[i], expected_proj, atol=1e-5):
+                found = True
+                break
+        assert found, f"Projection point {expected_proj} not found. Verts:\n{tri_verts}"
