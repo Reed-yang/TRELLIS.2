@@ -195,3 +195,184 @@ def test_l2_equivalence_fails_on_different_loop_count():
     cb_b = _cube_batch_with_loops([[[1, 2, 3]]])
     report = check_layer2_loop_structure(cb_a, cb_b)
     assert not report.passed
+
+
+from corep_fast.profiling.topology_equivalence import (
+    check_layer3_rank_assignment,
+    check_layer4_point_matching,
+    check_layer5_point_coordinates,
+)
+
+
+def _cube_batch_with_ranks_and_points(
+    loops_per_cube: list[list[list[int]]],
+    ranks_per_cube: list[list[list[int]]],
+    match_per_cube: list[list[int]],
+    points_per_cube: list[list[list[float]]],
+) -> CubeBatch:
+    """Build CubeBatch with loops + ranks + point matching + points."""
+    num_cubes = len(loops_per_cube)
+    cb = CubeBatch.empty(num_cubes=num_cubes, resolution=64, device=torch.device('cpu'))
+
+    loop_cube_off = [0]
+    loop_edge_off = [0]
+    loop_edge_val = []
+    loop_edge_rank = []
+    loop_point_match = []
+    point_offsets = [0]
+    point_values = []
+
+    for ci in range(num_cubes):
+        cube_loops = loops_per_cube[ci]
+        cube_ranks = ranks_per_cube[ci]
+        cube_match = match_per_cube[ci]
+        cube_points = points_per_cube[ci]
+
+        loop_cube_off.append(loop_cube_off[-1] + len(cube_loops))
+        for li, loop in enumerate(cube_loops):
+            loop_edge_off.append(loop_edge_off[-1] + len(loop))
+            loop_edge_val.extend(loop)
+            loop_edge_rank.extend(cube_ranks[li])
+        loop_point_match.extend(cube_match)
+        point_offsets.append(point_offsets[-1] + len(cube_points))
+        point_values.extend(cube_points)
+
+    cb.loop_cube_off = torch.tensor(loop_cube_off, dtype=torch.int64)
+    cb.loop_edge_off = torch.tensor(loop_edge_off, dtype=torch.int64)
+    cb.loop_edge_val = torch.tensor(loop_edge_val, dtype=torch.int32)
+    cb.loop_edge_rank = torch.tensor(loop_edge_rank, dtype=torch.int32)
+    cb.loop_point_match = torch.tensor(loop_point_match, dtype=torch.int32)
+    cb.point_offsets = torch.tensor(point_offsets, dtype=torch.int64)
+    if point_values:
+        cb.point_values = torch.tensor(point_values, dtype=torch.float32)
+    else:
+        cb.point_values = torch.zeros((0, 3), dtype=torch.float32)
+    return cb
+
+
+# ── L3 tests ──
+
+def test_l3_passes_identical_ranks():
+    cb_a = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5, 7]]],
+        ranks_per_cube=[[[0, 0, 0]]],
+        match_per_cube=[[0]],
+        points_per_cube=[[[0.5, 0.5, 0.5]]],
+    )
+    cb_b = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5, 7]]],
+        ranks_per_cube=[[[0, 0, 0]]],
+        match_per_cube=[[0]],
+        points_per_cube=[[[0.5, 0.5, 0.5]]],
+    )
+    report = check_layer3_rank_assignment(cb_a, cb_b)
+    assert report.passed
+
+
+def test_l3_fails_on_rank_diff():
+    cb_a = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5, 7]]],
+        ranks_per_cube=[[[0, 0, 0]]],
+        match_per_cube=[[0]],
+        points_per_cube=[[[0.5, 0.5, 0.5]]],
+    )
+    cb_b = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5, 7]]],
+        ranks_per_cube=[[[0, 1, 0]]],
+        match_per_cube=[[0]],
+        points_per_cube=[[[0.5, 0.5, 0.5]]],
+    )
+    report = check_layer3_rank_assignment(cb_a, cb_b)
+    assert not report.passed
+    assert report.mismatches[0].field == 'loop_edge_rank'
+
+
+# ── L4 tests ──
+
+def test_l4_passes_identical_matching():
+    cb_a = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5, 7], [1, 2]]],
+        ranks_per_cube=[[[0, 0, 0], [0, 0]]],
+        match_per_cube=[[0, 1]],
+        points_per_cube=[[[0.5, 0.5, 0.5], [0.2, 0.3, 0.4]]],
+    )
+    cb_b = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5, 7], [1, 2]]],
+        ranks_per_cube=[[[0, 0, 0], [0, 0]]],
+        match_per_cube=[[0, 1]],
+        points_per_cube=[[[0.5, 0.5, 0.5], [0.2, 0.3, 0.4]]],
+    )
+    report = check_layer4_point_matching(cb_a, cb_b)
+    assert report.passed
+
+
+def test_l4_fails_on_match_swap():
+    cb_a = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5, 7], [1, 2]]],
+        ranks_per_cube=[[[0, 0, 0], [0, 0]]],
+        match_per_cube=[[0, 1]],
+        points_per_cube=[[[0.5, 0.5, 0.5], [0.2, 0.3, 0.4]]],
+    )
+    cb_b = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5, 7], [1, 2]]],
+        ranks_per_cube=[[[0, 0, 0], [0, 0]]],
+        match_per_cube=[[1, 0]],
+        points_per_cube=[[[0.5, 0.5, 0.5], [0.2, 0.3, 0.4]]],
+    )
+    report = check_layer4_point_matching(cb_a, cb_b)
+    assert not report.passed
+    assert report.mismatches[0].field == 'loop_point_match'
+
+
+# ── L5 tests ──
+
+def test_l5_passes_within_tolerance():
+    cb_a = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5]]],
+        ranks_per_cube=[[[0, 0]]],
+        match_per_cube=[[0]],
+        points_per_cube=[[[0.5, 0.5, 0.5]]],
+    )
+    cb_b = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5]]],
+        ranks_per_cube=[[[0, 0]]],
+        match_per_cube=[[0]],
+        points_per_cube=[[[0.50005, 0.49998, 0.50001]]],
+    )
+    report = check_layer5_point_coordinates(cb_a, cb_b)
+    assert report.passed
+
+
+def test_l5_fails_outside_tolerance():
+    cb_a = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5]]],
+        ranks_per_cube=[[[0, 0]]],
+        match_per_cube=[[0]],
+        points_per_cube=[[[0.5, 0.5, 0.5]]],
+    )
+    cb_b = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5]]],
+        ranks_per_cube=[[[0, 0]]],
+        match_per_cube=[[0]],
+        points_per_cube=[[[0.6, 0.5, 0.5]]],
+    )
+    report = check_layer5_point_coordinates(cb_a, cb_b)
+    assert not report.passed
+    assert report.mismatches[0].field == 'point_values'
+
+
+def test_full_5layer_check_passes():
+    cb_a = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5, 7]]],
+        ranks_per_cube=[[[0, 0, 0]]],
+        match_per_cube=[[0]],
+        points_per_cube=[[[0.5, 0.5, 0.5]]],
+    )
+    cb_b = _cube_batch_with_ranks_and_points(
+        loops_per_cube=[[[3, 5, 7]]],
+        ranks_per_cube=[[[0, 0, 0]]],
+        match_per_cube=[[0]],
+        points_per_cube=[[[0.5, 0.5, 0.5]]],
+    )
+    report = check_topology_equivalence(cb_a, cb_b, layers=['l1', 'l2', 'l3', 'l4', 'l5'])
+    assert report.all_passed()
