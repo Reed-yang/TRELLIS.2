@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import trimesh as _trimesh
 
 from corep_fast.containers import MeshTensors, CubeBatch, _replace_fields
 
@@ -483,6 +484,8 @@ def _component_centroid(
 
     Uses Sutherland-Hodgman polygon clipping against 6 AABB planes,
     then fan-triangulation to compute area and centroid.
+    The centroid is then snapped to the nearest point on the clipped
+    surface mesh, matching custom/feature_point.py behaviour.
     """
     # 6 clip planes: (normal, point_on_plane) facing inward
     planes = [
@@ -496,6 +499,7 @@ def _component_centroid(
 
     total_area = 0.0
     weighted_centroid = np.zeros(3, dtype=np.float64)
+    all_clipped_polys: list[list[np.ndarray]] = []
 
     for fid in comp_faces:
         vi = mesh_faces[fid]
@@ -521,11 +525,65 @@ def _component_centroid(
             total_area += area
             weighted_centroid += centroid * area
 
+        all_clipped_polys.append(poly)
+
     if total_area > 1e-12:
-        return weighted_centroid / total_area
+        target_center = weighted_centroid / total_area
+        # Snap centroid to nearest point on the clipped surface mesh
+        # (matches custom/feature_point.py behaviour)
+        return _snap_to_clipped_surface(target_center, all_clipped_polys)
     else:
-        # Fallback: return the AABB center
-        return (min_bound + max_bound) / 2.0
+        # Fallback: snap cube center to the original component mesh surface
+        cube_center = (min_bound + max_bound) / 2.0
+        return _snap_to_component_surface(
+            cube_center, comp_faces, mesh_verts, mesh_faces,
+        )
+
+
+def _snap_to_clipped_surface(
+    target: np.ndarray,
+    clipped_polys: list[list[np.ndarray]],
+) -> np.ndarray:
+    """Snap *target* to the nearest point on a mesh built from clipped polygons.
+
+    Mirrors custom/feature_point.py: builds a trimesh from clipped polygons,
+    then uses nearest.on_surface to project the centroid back onto the surface.
+    """
+    verts: list[np.ndarray] = []
+    faces: list[list[int]] = []
+    for poly in clipped_polys:
+        idx_start = len(verts)
+        verts.extend(poly)
+        for i in range(1, len(poly) - 1):
+            faces.append([idx_start, idx_start + i, idx_start + i + 1])
+
+    if not faces:
+        return target
+
+    clipped_mesh = _trimesh.Trimesh(
+        vertices=verts, faces=faces, process=False,
+    )
+    closest, _, _ = clipped_mesh.nearest.on_surface([target])
+    return closest[0]
+
+
+def _snap_to_component_surface(
+    point: np.ndarray,
+    comp_faces: list[int],
+    mesh_verts: np.ndarray,
+    mesh_faces: np.ndarray,
+) -> np.ndarray:
+    """Snap *point* to the nearest surface point of the original component mesh.
+
+    Fallback path when clipped area is negligible.
+    Mirrors custom/feature_point.py fallback behaviour.
+    """
+    local_faces = mesh_faces[comp_faces]
+    comp_mesh = _trimesh.Trimesh(
+        vertices=mesh_verts, faces=local_faces, process=True,
+    )
+    closest, _, _ = comp_mesh.nearest.on_surface([point])
+    return closest[0]
 
 
 def _clip_polygon_against_plane(
