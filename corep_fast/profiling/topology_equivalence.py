@@ -154,5 +154,82 @@ def check_topology_equivalence(
         if not report.layer1.passed:
             return report
 
-    # L2/L3/L4/L5 added in Tasks 8 and 9
+    if 'l2' in layers:
+        report.layer2 = check_layer2_loop_structure(cb_a, cb_b)
+        if not report.layer2.passed:
+            return report
+
+    # L3/L4/L5 added in Task 9
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Loop canonical form (spec §14.C)
+# ---------------------------------------------------------------------------
+
+def canonicalize_loop(edges: list[int] | torch.Tensor) -> tuple[int, ...]:
+    if isinstance(edges, torch.Tensor):
+        seq = edges.tolist()
+    else:
+        seq = list(edges)
+    if not seq:
+        raise ValueError("canonicalize_loop: empty loop")
+
+    n = len(seq)
+    min_idx = min(range(n), key=lambda i: seq[i])
+    fwd = tuple(seq[(min_idx + k) % n] for k in range(n))
+
+    rev = list(reversed(seq))
+    min_idx_r = min(range(n), key=lambda i: rev[i])
+    rev_canon = tuple(rev[(min_idx_r + k) % n] for k in range(n))
+
+    return fwd if fwd <= rev_canon else rev_canon
+
+
+def canonicalize_loop_set(loops: list[list[int]]) -> tuple[tuple[int, ...], ...]:
+    canon_each = [canonicalize_loop(l) for l in loops]
+    return tuple(sorted(canon_each))
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: Loop set equivalence
+# ---------------------------------------------------------------------------
+
+def _extract_loops_for_cube(cb: CubeBatch, cube_idx: int) -> list[list[int]]:
+    loop_lo = int(cb.loop_cube_off[cube_idx].item())
+    loop_hi = int(cb.loop_cube_off[cube_idx + 1].item())
+    loops = []
+    for l_idx in range(loop_lo, loop_hi):
+        e_lo = int(cb.loop_edge_off[l_idx].item())
+        e_hi = int(cb.loop_edge_off[l_idx + 1].item())
+        loops.append(cb.loop_edge_val[e_lo:e_hi].tolist())
+    return loops
+
+
+def check_layer2_loop_structure(cb_a: CubeBatch, cb_b: CubeBatch) -> LayerReport:
+    report = LayerReport(layer_name='L2 loop structure', num_cubes=cb_a.num_cubes)
+
+    for cube_idx in range(cb_a.num_cubes):
+        loops_a = _extract_loops_for_cube(cb_a, cube_idx)
+        loops_b = _extract_loops_for_cube(cb_b, cube_idx)
+
+        if len(loops_a) != len(loops_b):
+            report.add_mismatch(Mismatch(
+                field='loop_count',
+                cube_idx=cube_idx,
+                value_a=len(loops_a),
+                value_b=len(loops_b),
+            ))
+            continue
+
+        canon_a = canonicalize_loop_set(loops_a) if loops_a else ()
+        canon_b = canonicalize_loop_set(loops_b) if loops_b else ()
+        if canon_a != canon_b:
+            report.add_mismatch(Mismatch(
+                field='loop_set',
+                cube_idx=cube_idx,
+                value_a=canon_a,
+                value_b=canon_b,
+            ))
+
     return report
