@@ -193,8 +193,19 @@ Rewrite `custom/` CoReP pipeline as `corep_fast/` with Torch vectorization for b
 - `_weld_and_dedup` 17.7s → 2.65s (6.7x): numpy array pipeline + `scatter_reduce_('amin')` replaces Python for-loops
 - Edge iteration: frozenset lookup, cached sentinels, dict reuse
 - PLY writer: `np.savetxt` bulk writes
-- Remaining bottleneck: `_process_shared_edge_geometry` 263K Python calls (4.7s, 70%) — needs Triton/Cython for further gains
+- Multiprocessing for geometry processing: 263K edge tasks distributed across CPU cores
+- GPU `torch.unique` for vertex welding: 97x faster than CPU (1.75s → 0.018s at 800K verts)
 
-**Correctness:** A/B tests confirm exact vertex/face count match with custom/ implementation.
+**Performance Progression (res=256, H100):**
 
-### Status: Phase 1a s8 COMPLETE, moving to performance iteration and Stage 2 Triton planning
+| Optimization | s8 Time | vs Custom | Commit |
+|-------------|---------|-----------|--------|
+| Phase 1a initial | ~95s | 0.7x | `9b3ee9e` |
+| Vectorized welding | ~33s | 2.1x | `cffc719` |
+| + edge iter optimize | ~33s | 2.1x | `2020b1f` |
+| + multiprocessing | 23.2s | 3.0x | `2ec9bc3` |
+| + GPU welding | 13.9s | **5.0x** | `1511525` |
+
+**Correctness:** A/B tests confirm exact vertex/face count match with custom/ implementation at all resolutions tested.
+
+### Status: **5.0x speedup achieved on s8_collapse at res=256 (H100). Stage 2 Triton spec written, branch `triton-s8` created.**
