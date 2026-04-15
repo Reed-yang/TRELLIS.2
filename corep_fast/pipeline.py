@@ -214,3 +214,76 @@ def run_hybrid_pipeline(
             )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Pure corep_fast encode / decode / pipeline API
+# ---------------------------------------------------------------------------
+
+def corep_encode(
+    mesh_path: str,
+    resolution: int,
+    device: torch.device,
+    collector: Optional[ProfilingCollector] = None,
+) -> 'CubeBatch':
+    """Stages 1-7: mesh → CoReP voxel representation (all GPU tensors)."""
+    import torch
+    from corep_fast.containers import MeshTensors
+    from corep_fast.stages.s1_voxelize import s1_voxelize
+    from corep_fast.stages.s2_components import s2_components
+    from corep_fast.stages.s3_edge_weights import s3_edge_weights
+    from corep_fast.stages.s4_face_point import s4_face_point
+    from corep_fast.stages.s6_collapse import s6_collapse
+    from corep_fast.stages.s7_rank_assign import s7_rank_assign
+
+    pc = collector or ProfilingCollector()
+    mesh = trimesh.load(mesh_path)
+    mt = MeshTensors.from_trimesh(mesh, resolution, device=device)
+
+    with stage_timer('s1_voxelize', pc):
+        batch = s1_voxelize(mt, resolution, device)
+    with stage_timer('s2_components', pc):
+        batch = s2_components(batch, mt)
+    with stage_timer('s3_edge_weights', pc):
+        batch = s3_edge_weights(batch, mt)
+    with stage_timer('s4_face_point', pc):
+        batch = s4_face_point(batch, mt)
+    with stage_timer('s6_collapse', pc):
+        batch = s6_collapse(batch)
+    with stage_timer('s7_rank_assign', pc):
+        batch = s7_rank_assign(batch)
+
+    return batch
+
+
+def corep_decode(
+    batch: 'CubeBatch',
+    merge_decimals: int = 5,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Stage 8: CubeBatch → (vertices [V,3] float32, faces [F,3] int32)."""
+    import torch
+    from corep_fast.stages.s8_collapse import decode_from_cubebatch
+    return decode_from_cubebatch(batch, merge_decimals=merge_decimals)
+
+
+def corep_pipeline(
+    mesh_path: str,
+    resolution: int,
+    device: torch.device,
+    output_path: str | None = None,
+    merge_decimals: int = 5,
+    collector: Optional[ProfilingCollector] = None,
+) -> tuple:
+    """End-to-end: mesh → (CubeBatch, vertices, faces). Optionally write PLY."""
+    import torch
+    pc = collector or ProfilingCollector()
+    batch = corep_encode(mesh_path, resolution, device, collector=pc)
+
+    with stage_timer('s8_decode', pc):
+        vertices, faces = corep_decode(batch, merge_decimals=merge_decimals)
+
+    if output_path is not None:
+        from corep_fast.stages.s8_collapse import _write_ply_ascii
+        _write_ply_ascii(vertices, faces, output_path)
+
+    return batch, vertices, faces

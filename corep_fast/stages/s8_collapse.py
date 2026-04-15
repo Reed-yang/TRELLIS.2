@@ -20,6 +20,110 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
+# CubeBatch → (vertices, faces) decoder entry point
+# ---------------------------------------------------------------------------
+
+def decode_from_cubebatch(
+    batch: 'CubeBatch',
+    merge_decimals: int = 5,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Decode CubeBatch → (vertices, faces) using existing s8 pipeline.
+
+    Converts CubeBatch fields to the list[dict] format expected by
+    process_shared_edges_batch, then calls it.
+
+    Args:
+        batch: CubeBatch with all stages (s1-s7) populated.
+        merge_decimals: Vertex welding precision.
+
+    Returns:
+        vertices: (V, 3) float32
+        faces: (F, 3) int32
+    """
+    from corep_fast.containers import CubeStatus
+
+    cube_data_list = _cubebatch_to_dicts(batch)
+    vertices, faces = process_shared_edges_batch(
+        resolution=batch.resolution,
+        cube_data_list=cube_data_list,
+        merge_decimals=merge_decimals,
+    )
+    return vertices, faces
+
+
+def _cubebatch_to_dicts(batch: 'CubeBatch') -> list[dict]:
+    """Convert CubeBatch to list[dict] format for s8 processing."""
+    from corep_fast.containers import CubeStatus
+
+    N = batch.num_cubes
+    result = []
+
+    cube_indices_cpu = batch.cube_indices.cpu()
+    edge_weights_cpu = batch.edge_weights.cpu()
+    status_cpu = batch.status.cpu()
+    loop_cube_off = batch.loop_cube_off.cpu()
+    loop_edge_off = batch.loop_edge_off.cpu()
+    loop_edge_val = batch.loop_edge_val.cpu()
+    loop_edge_rank = batch.loop_edge_rank.cpu()
+    loop_point_match = batch.loop_point_match.cpu()
+    point_offsets = batch.point_offsets.cpu()
+    point_values = batch.point_values.cpu()
+
+    for i in range(N):
+        ci = tuple(cube_indices_cpu[i].tolist())
+        ew = edge_weights_cpu[i].tolist()
+        is_exception = int(status_cpu[i].item()) != CubeStatus.OK
+
+        # Get component points for this cube
+        p_lo = int(point_offsets[i].item())
+        p_hi = int(point_offsets[i + 1].item())
+        comp_pts = point_values[p_lo:p_hi].tolist()
+
+        if is_exception:
+            # Exception cubes: minimal dict
+            d = {
+                'exception': True,
+                'cube_indices': ci,
+                'sorted_loops': [{'component_point': comp_pts[0] if comp_pts else [0, 0, 0]}],
+            }
+        else:
+            # OK cubes: full sorted_loops
+            l_lo = int(loop_cube_off[i].item())
+            l_hi = int(loop_cube_off[i + 1].item())
+
+            sorted_loops = []
+            for li in range(l_lo, l_hi):
+                e_lo = int(loop_edge_off[li].item())
+                e_hi = int(loop_edge_off[li + 1].item())
+                edges = loop_edge_val[e_lo:e_hi].tolist()
+                ranks = loop_edge_rank[e_lo:e_hi].tolist()
+
+                # Get matched component point
+                match_idx = int(loop_point_match[li].item())
+                if match_idx >= 0 and (p_lo + match_idx) < p_hi:
+                    cp = point_values[p_lo + match_idx].tolist()
+                else:
+                    cp = comp_pts[0] if comp_pts else [0, 0, 0]
+
+                sorted_loops.append({
+                    'loop': edges,
+                    'rank': ranks,
+                    'component_point': cp,
+                })
+
+            d = {
+                'cube_indices': ci,
+                'edge_weights': ew,
+                'sorted_loops': sorted_loops,
+                'exception': False,
+            }
+
+        result.append(d)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Edge offset table: for each local edge 0..11, the (axis, dx, dy, dz) offset
 # applied to (ix, iy, iz) to produce the global edge coordinate.
 #
