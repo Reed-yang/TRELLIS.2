@@ -808,11 +808,74 @@ def _process_geometry_batch(grids: list) -> list[np.ndarray]:
     return results
 
 
+def _process_shared_edges_torch(
+    resolution: int,
+    cube_data_list: list[dict],
+    merge_decimals: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Vectorized Torch path: tensor-based edge enumeration + geometry processing.
+
+    Drop-in replacement for the Python edge iteration + multiprocessing geometry
+    loop. Keeps same input/output contract as process_shared_edges_batch.
+    """
+    if not cube_data_list:
+        return (
+            torch.zeros((0, 3), dtype=torch.float32),
+            torch.zeros((0, 3), dtype=torch.int32),
+        )
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Step A: Convert to tensors (one-time cost)
+    tensors = _cube_data_to_tensors(cube_data_list, device)
+
+    # Step B: Edge enumeration (fully vectorized)
+    keys, cube_ids, local_ids = compute_global_edge_keys(tensors.cube_indices, resolution)
+    unique_keys, edge_id_per_entry = enumerate_unique_edges(keys)
+    num_unique = unique_keys.shape[0]
+    if num_unique == 0:
+        return (
+            torch.zeros((0, 3), dtype=torch.float32),
+            torch.zeros((0, 3), dtype=torch.int32),
+        )
+    table = build_edge_neighbor_table(edge_id_per_entry, cube_ids, local_ids, num_unique)
+
+    # Step C: Filter to edges with >=2 neighbors
+    keep = table.neighbor_counts >= 2
+    if not keep.any():
+        return (
+            torch.zeros((0, 3), dtype=torch.float32),
+            torch.zeros((0, 3), dtype=torch.int32),
+        )
+
+    kept_table = EdgeNeighborTable(
+        neighbor_counts=table.neighbor_counts[keep],
+        neighbor_cube_ids=table.neighbor_cube_ids[keep],
+        neighbor_positions=table.neighbor_positions[keep],
+        neighbor_local_edges=table.neighbor_local_edges[keep],
+        edge_axes=table.edge_axes[keep],
+    )
+
+    # Step D: Vectorized geometry processing
+    tri_verts = process_geometry_vectorized(kept_table, tensors, device)
+
+    if tri_verts.shape[0] == 0:
+        return (
+            torch.zeros((0, 3), dtype=torch.float32),
+            torch.zeros((0, 3), dtype=torch.int32),
+        )
+
+    # Step E: Vertex welding (reuse existing _weld_and_dedup)
+    tri_verts_np = tri_verts.cpu().numpy()
+    return _weld_and_dedup(tri_verts_np, merge_decimals, device=device)
+
+
 def process_shared_edges_batch(
     resolution: int,
     cube_data_list: list[dict],
     merge_decimals: int = 5,
     num_workers: int = 0,
+    use_torch_path: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Process all shared edges across all cubes and return (vertices, faces).
@@ -826,6 +889,9 @@ def process_shared_edges_batch(
         merge_decimals: Vertex welding precision.
         num_workers: Number of parallel workers for geometry processing.
                      0 = auto (use os.cpu_count()), 1 = serial (no multiprocessing).
+        use_torch_path: If True, dispatch to the fully vectorized Torch path
+                        (_process_shared_edges_torch). Default False preserves
+                        existing Python + multiprocessing path.
 
     Returns:
         vertices: (V, 3) float32 — welded vertex coordinates.
@@ -836,6 +902,12 @@ def process_shared_edges_batch(
         return (
             torch.zeros((0, 3), dtype=torch.float32),
             torch.zeros((0, 3), dtype=torch.int32),
+        )
+
+    # Dispatch to vectorized Torch path if requested
+    if use_torch_path:
+        return _process_shared_edges_torch(
+            resolution, cube_data_list, merge_decimals,
         )
 
     # 1. Build cube_map: cube_indices_tuple → list[dict]

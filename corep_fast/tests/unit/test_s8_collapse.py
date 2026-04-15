@@ -681,3 +681,56 @@ class TestProcessGeometryVectorized:
                 found = True
                 break
         assert found, f"Projection point {expected_proj} not found. Verts:\n{tri_verts}"
+
+
+class TestProcessSharedEdgesTorchPath:
+    """A/B test: compare Torch vectorized path against Python path."""
+
+    def _make_four_cubes(self):
+        return [
+            {'cube_indices': (4, 5, 4),
+             'sorted_loops': [{'loop': [5, 13, 7], 'rank': [0, -1, -1],
+                               'component_point': [0.04, 0.05, 0.04]}],
+             'edge_weights': [0]*5 + [1] + [0]*12,
+             'exception': False, 'num_components': 1},
+            {'cube_indices': (5, 5, 4),
+             'sorted_loops': [{'loop': [7, 13, 5], 'rank': [0, -1, -1],
+                               'component_point': [0.05, 0.05, 0.04]}],
+             'edge_weights': [0]*7 + [1] + [0]*10,
+             'exception': False, 'num_components': 1},
+            {'cube_indices': (4, 5, 5),
+             'sorted_loops': [{'loop': [1, 12, 3], 'rank': [0, -1, -1],
+                               'component_point': [0.04, 0.05, 0.05]}],
+             'edge_weights': [0, 1] + [0]*16,
+             'exception': False, 'num_components': 1},
+            {'cube_indices': (5, 5, 5),
+             'sorted_loops': [{'loop': [3, 12, 1], 'rank': [0, -1, -1],
+                               'component_point': [0.05, 0.05, 0.05]}],
+             'edge_weights': [0]*3 + [1] + [0]*14,
+             'exception': False, 'num_components': 1},
+        ]
+
+    def test_torch_path_matches_python(self):
+        """Torch path should produce same vertex/face count as Python path."""
+        data_py = self._make_four_cubes()
+        data_torch = self._make_four_cubes()  # Fresh copy
+
+        v_py, f_py = process_shared_edges_batch(
+            resolution=64, cube_data_list=data_py,
+            merge_decimals=5, num_workers=1)
+
+        v_t, f_t = process_shared_edges_batch(
+            resolution=64, cube_data_list=data_torch,
+            merge_decimals=5, use_torch_path=True)
+
+        assert v_py.shape[0] == v_t.shape[0], \
+            f"vertex: py={v_py.shape[0]}, torch={v_t.shape[0]}"
+        assert f_py.shape[0] == f_t.shape[0], \
+            f"face: py={f_py.shape[0]}, torch={f_t.shape[0]}"
+
+    def test_torch_path_empty_input(self):
+        v, f = process_shared_edges_batch(
+            resolution=64, cube_data_list=[],
+            merge_decimals=5, use_torch_path=True)
+        assert v.shape == (0, 3)
+        assert f.shape == (0, 3)
