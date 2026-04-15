@@ -164,3 +164,37 @@ O-Voxel causes severe mesh fragmentation:
 
 Phase C: 100 sampled objects, 5 GT-injection conditions to locate bottleneck stage.
 Then write `my-docs/component-eval-summary.md`.
+
+---
+
+## CoReP-Fast: Stage 1 Torch Vectorization (2026-04-15 ~)
+
+### Goal
+Rewrite `custom/` CoReP pipeline as `corep_fast/` with Torch vectorization for batch dataset generation.
+
+### Phase 0: Infrastructure (2026-04-15)
+- 17 TDD tasks: CubeBatch, MeshTensors, interop bridges, profiling harness, topology equivalence, A/B rig
+- 88 tests, all passing. Commits `64dd3f6` → `8be3489`.
+
+### Phase 1a: s8_collapse Torch Rewrite (2026-04-15)
+- s8_collapse is #1 bottleneck at 48% of pipeline runtime
+- 9 TDD tasks: hybrid pipeline, edge enumeration, geometry processing, vertex welding, PLY writer, A/B validation
+
+**Key Performance Milestones (resolution=128, icosphere subdiv=3, 68K cubes):**
+
+| Version | s8 Time | vs Custom | Commit |
+|---------|---------|-----------|--------|
+| Custom baseline | 16.0s | 1.0x | — |
+| Phase 1a initial (Python loops) | 23.5s | 0.7x | `9b3ee9e` |
+| Vectorized _weld_and_dedup | 7.3s | 2.2x | `cffc719` |
+| Optimized edge iteration | ~6.7s | ~2.4x | `2020b1f` |
+
+**Optimization Details:**
+- `_weld_and_dedup` 17.7s → 2.65s (6.7x): numpy array pipeline + `scatter_reduce_('amin')` replaces Python for-loops
+- Edge iteration: frozenset lookup, cached sentinels, dict reuse
+- PLY writer: `np.savetxt` bulk writes
+- Remaining bottleneck: `_process_shared_edge_geometry` 263K Python calls (4.7s, 70%) — needs Triton/Cython for further gains
+
+**Correctness:** A/B tests confirm exact vertex/face count match with custom/ implementation.
+
+### Status: Phase 1a s8 COMPLETE, moving to performance iteration and Stage 2 Triton planning
