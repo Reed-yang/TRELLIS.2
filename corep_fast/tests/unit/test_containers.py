@@ -95,3 +95,101 @@ def test_mesh_tensors_to_cuda_device_if_available():
     assert mt.vertices.is_cuda
     assert mt.faces.is_cuda
     assert mt.triangles.is_cuda
+
+
+# ---------------------------------------------------------------------------
+# CubeBatch
+# ---------------------------------------------------------------------------
+from corep_fast.containers import CubeBatch, CubeStatus
+
+
+def _make_empty_cube_batch(N: int = 3, device: str = 'cpu') -> CubeBatch:
+    return CubeBatch.empty(num_cubes=N, resolution=64, device=torch.device(device))
+
+
+def test_cube_batch_empty_shapes():
+    cb = _make_empty_cube_batch(N=5)
+    assert cb.num_cubes == 5
+    assert cb.cube_indices.shape == (5, 3)
+    assert cb.cube_indices.dtype == torch.int32
+    assert cb.cube_hash.shape == (5,)
+    assert cb.cube_hash.dtype == torch.int64
+    assert cb.edge_weights.shape == (5, 18)
+    assert cb.edge_weights.dtype == torch.int32
+    assert cb.face_weights.shape == (5, 12)
+    assert cb.status.shape == (5,)
+    assert cb.num_components.shape == (5,)
+
+
+def test_cube_batch_empty_csr_offsets():
+    cb = _make_empty_cube_batch(N=5)
+    assert cb.tri_offsets.shape == (6,)
+    assert cb.tri_offsets.dtype == torch.int64
+    assert torch.equal(cb.tri_offsets, torch.zeros(6, dtype=torch.int64))
+    assert cb.tri_values.shape == (0,)
+    assert cb.bnd_offsets.shape == (6,)
+    assert cb.bnd_values.shape == (0,)
+    assert cb.point_offsets.shape == (6,)
+
+
+def test_cube_batch_status_enum():
+    assert CubeStatus.OK == 0
+    assert CubeStatus.AMBIGUOUS == 1
+    assert CubeStatus.UNSOLVABLE == 2
+    assert CubeStatus.BUDGET_EXCEEDED == 3
+
+
+def test_cube_batch_set_tri_csr():
+    """Test populating the tri_values/tri_offsets CSR from a list of per-cube lists."""
+    cb = _make_empty_cube_batch(N=3)
+    per_cube_tris = [
+        torch.tensor([5, 7, 9], dtype=torch.int32),
+        torch.tensor([], dtype=torch.int32),
+        torch.tensor([2], dtype=torch.int32),
+    ]
+    cb = cb.set_tri_csr(per_cube_tris)
+    assert torch.equal(cb.tri_offsets, torch.tensor([0, 3, 3, 4], dtype=torch.int64))
+    assert torch.equal(cb.tri_values, torch.tensor([5, 7, 9, 2], dtype=torch.int32))
+
+
+def test_cube_batch_get_tri_for_cube():
+    """Test slicing a single cube's triangles via CSR offsets."""
+    cb = _make_empty_cube_batch(N=3)
+    per_cube_tris = [
+        torch.tensor([5, 7, 9], dtype=torch.int32),
+        torch.tensor([], dtype=torch.int32),
+        torch.tensor([2], dtype=torch.int32),
+    ]
+    cb = cb.set_tri_csr(per_cube_tris)
+    assert torch.equal(cb.get_tris(0), torch.tensor([5, 7, 9], dtype=torch.int32))
+    assert cb.get_tris(1).shape == (0,)
+    assert torch.equal(cb.get_tris(2), torch.tensor([2], dtype=torch.int32))
+
+
+def test_cube_batch_num_loops_is_zero_when_empty():
+    cb = _make_empty_cube_batch(N=3)
+    assert cb.num_loops == 0
+    assert cb.num_loop_edges == 0
+
+
+def test_cube_batch_cube_hash_roundtrip():
+    """Verify cube_hash encodes (ix, iy, iz) reversibly within resolution bounds."""
+    cb = _make_empty_cube_batch(N=3)
+    indices = torch.tensor([[1, 2, 3], [0, 0, 0], [63, 63, 63]], dtype=torch.int32)
+    cb = cb.with_cube_indices(indices)
+    expected_hashes = torch.tensor(
+        [1 * 64 * 64 + 2 * 64 + 3, 0, 63 * 64 * 64 + 63 * 64 + 63],
+        dtype=torch.int64,
+    )
+    assert torch.equal(cb.cube_hash, expected_hashes)
+
+
+def test_cube_batch_invariants_check_csr_monotone():
+    cb = _make_empty_cube_batch(N=3)
+    cb.invariants_check('empty')  # should not raise
+
+    # Corrupt the tri_offsets and verify the check catches it
+    bad_offsets = torch.tensor([0, 5, 3, 7], dtype=torch.int64)  # non-monotone
+    cb_bad = cb.with_tri_offsets(bad_offsets)
+    with pytest.raises(AssertionError):
+        cb_bad.invariants_check('test_bad')
