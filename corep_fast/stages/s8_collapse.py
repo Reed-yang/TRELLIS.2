@@ -260,76 +260,68 @@ def build_edge_neighbor_table(
     E = num_unique_edges
     M = edge_id_per_entry.shape[0]
 
-    # Sort by edge_id to group neighbors of the same edge
-    sort_idx = torch.argsort(edge_id_per_entry)
+    if M == 0 or E == 0:
+        return EdgeNeighborTable(
+            neighbor_counts=torch.zeros(E, dtype=torch.int32, device=device),
+            neighbor_cube_ids=torch.full((E, 4), -1, dtype=torch.int32, device=device),
+            neighbor_positions=torch.full((E, 4), -1, dtype=torch.int32, device=device),
+            neighbor_local_edges=torch.full((E, 4), -1, dtype=torch.int32, device=device),
+            edge_axes=torch.zeros(E, dtype=torch.int32, device=device),
+        )
+
+    # Sort entries by edge_id (stable sort preserves insertion order for tie-breaking)
+    sort_idx = torch.argsort(edge_id_per_entry, stable=True)
     sorted_edge_ids = edge_id_per_entry[sort_idx]
     sorted_cube_ids = cube_ids[sort_idx]
     sorted_local_ids = local_ids[sort_idx]
 
-    # Count neighbors per edge
+    # Count entries per edge
     neighbor_counts = torch.zeros(E, dtype=torch.int32, device=device)
-    neighbor_counts.scatter_add_(
-        0,
-        sorted_edge_ids.to(torch.int64),
-        torch.ones(M, dtype=torch.int32, device=device),
-    )
+    ones = torch.ones(M, dtype=torch.int32, device=device)
+    neighbor_counts.scatter_add_(0, sorted_edge_ids.to(torch.int64), ones)
 
-    # Build padded (E, 4) tables
-    neighbor_cube_ids = torch.full((E, 4), -1, dtype=torch.int32, device=device)
-    neighbor_local_edges = torch.full((E, 4), -1, dtype=torch.int32, device=device)
-    neighbor_positions = torch.full((E, 4), -1, dtype=torch.int32, device=device)
-
-    # Determine edge axes from the first entry of each edge
-    edge_axes = torch.zeros(E, dtype=torch.int32, device=device)
-
-    # We need a per-edge slot counter. Use a scatter approach.
-    # First, compute the offset of each entry within its edge group.
-    # edges_start[e] = index of first entry with edge_id == e
-    # For each entry in sorted order, its position within the group.
-    ones = torch.ones(M, dtype=torch.int64, device=device)
-    cumcount = torch.zeros(E, dtype=torch.int64, device=device)
-
-    # Sequential fill — this is the bottleneck but only runs once
-    # and M is typically < 1M for resolution 256.
-    # For a fully vectorized version we would use segment_csr, but
-    # a simple Python loop over unique edges is acceptable for Phase 1a.
+    # CSR offsets
     offsets = torch.zeros(E + 1, dtype=torch.int64, device=device)
     offsets[1:] = torch.cumsum(neighbor_counts.to(torch.int64), dim=0)
 
-    table_offset = _EDGE_OFFSET_TABLE.to(device)
+    # For each entry in sorted order, slot within its group
+    entry_pos = torch.arange(M, dtype=torch.int64, device=device)
+    slot_per_entry = entry_pos - offsets[sorted_edge_ids.to(torch.int64)]
+    valid = slot_per_entry < 4
 
-    for e_idx in range(E):
-        lo = int(offsets[e_idx].item())
-        hi = int(offsets[e_idx + 1].item())
-        count = hi - lo
-        if count == 0:
-            continue
+    # Scatter into (E, 4) tables
+    neighbor_cube_ids = torch.full((E, 4), -1, dtype=torch.int32, device=device)
+    neighbor_local_edges = torch.full((E, 4), -1, dtype=torch.int32, device=device)
 
-        # Extract entries for this edge
-        e_cube_ids = sorted_cube_ids[lo:hi]
-        e_local_ids = sorted_local_ids[lo:hi]
+    v_edge = sorted_edge_ids[valid].to(torch.int64)
+    v_slot = slot_per_entry[valid]
+    flat_idx = v_edge * 4 + v_slot
+    neighbor_cube_ids.view(-1).scatter_(0, flat_idx, sorted_cube_ids[valid])
+    neighbor_local_edges.view(-1).scatter_(0, flat_idx, sorted_local_ids[valid])
 
-        # Axis from the first entry's local edge
-        first_local = int(e_local_ids[0].item())
-        axis = int(table_offset[first_local, 0].item())
-        edge_axes[e_idx] = axis
+    # Derive edge axes from first entry of each group
+    first_entry_pos = offsets[:-1].clamp(max=M - 1)
+    first_local_edges = sorted_local_ids[first_entry_pos]
+    edge_offset = _EDGE_OFFSET_TABLE.to(device)
+    edge_axes = edge_offset[first_local_edges.to(torch.int64), 0].to(torch.int32)
 
-        for slot in range(min(count, 4)):
-            cid = int(e_cube_ids[slot].item())
-            lid = int(e_local_ids[slot].item())
-            neighbor_cube_ids[e_idx, slot] = cid
-            neighbor_local_edges[e_idx, slot] = lid
-            # Position: determine from which position in _REVERSE_LOCAL_EDGE
-            # this local edge corresponds to.
-            rev = _REVERSE_LOCAL_EDGE[axis]
-            pos = (rev == lid).nonzero(as_tuple=False)
-            if pos.numel() > 0:
-                neighbor_positions[e_idx, slot] = pos[0, 0].item()
+    # Compute neighbor_positions via _REVERSE_LOCAL_EDGE lookup
+    rev = _REVERSE_LOCAL_EDGE.to(device)  # (3, 4)
+    axis_per_slot = edge_axes.unsqueeze(1).expand(E, 4).to(torch.int64)
+    local_per_slot = neighbor_local_edges.to(torch.int64)
+    candidates = rev[axis_per_slot]  # (E, 4, 4)
+    matches = candidates == local_per_slot.unsqueeze(2)
+    positions = matches.to(torch.int32).argmax(dim=2)
+    positions = torch.where(
+        neighbor_local_edges >= 0,
+        positions,
+        torch.full_like(positions, -1),
+    )
 
     return EdgeNeighborTable(
         neighbor_counts=neighbor_counts,
         neighbor_cube_ids=neighbor_cube_ids,
-        neighbor_positions=neighbor_positions,
+        neighbor_positions=positions,
         neighbor_local_edges=neighbor_local_edges,
         edge_axes=edge_axes,
     )

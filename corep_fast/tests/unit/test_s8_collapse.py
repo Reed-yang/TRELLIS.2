@@ -132,6 +132,25 @@ class TestBuildEdgeNeighborTable:
         # At least one edge should have 4 neighbors
         assert (table.neighbor_counts == 4).any()
 
+    def test_large_input_performance(self):
+        """Verify vectorized path handles 10K cubes quickly (< 1s)."""
+        import time
+        N = 10000
+        torch.manual_seed(42)
+        candidates = torch.randint(0, 100, (N*2, 3), dtype=torch.int32)
+        unique, _ = torch.unique(candidates, dim=0, return_inverse=True)
+        cube_indices = unique[:N]
+
+        keys, cube_ids, local_ids = compute_global_edge_keys(cube_indices, 128)
+        unique_keys, edge_id_per_entry = enumerate_unique_edges(keys)
+
+        t0 = time.time()
+        table = build_edge_neighbor_table(
+            edge_id_per_entry, cube_ids, local_ids, unique_keys.shape[0])
+        elapsed = time.time() - t0
+        assert elapsed < 1.0, f"build_edge_neighbor_table too slow: {elapsed:.2f}s"
+        assert (table.neighbor_counts >= 2).sum() > 0
+
 
 # ---- Tests for compute_edge_ownership ----
 
