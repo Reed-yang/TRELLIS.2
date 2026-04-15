@@ -63,3 +63,28 @@ def cube_mesh_tensors(cube_mesh) -> MeshTensors:
 @pytest.fixture
 def icosphere_mesh_tensors(icosphere_mesh) -> MeshTensors:
     return MeshTensors.from_trimesh(icosphere_mesh, resolution=64, device='cpu')
+
+
+# ---------------------------------------------------------------------------
+# A/B regression test fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope='session')
+def ab_mesh_path(tmp_path_factory) -> str:
+    """Icosphere PLY file for A/B tests. Session-scoped to avoid re-export."""
+    mesh = trimesh.creation.icosphere(subdivisions=2, radius=0.4)
+    path = str(tmp_path_factory.mktemp('ab') / 'icosphere.ply')
+    mesh.export(path)
+    return path
+
+
+@pytest.fixture(scope='session')
+def ab_resolution() -> int:
+    return 64
+
+
+@pytest.fixture
+def gpu_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device('cuda:0')
+    return torch.device('cpu')

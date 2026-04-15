@@ -103,3 +103,12 @@ EDGE_SHARE_FACTORS: torch.Tensor = torch.cat([
     torch.full((12,), 4, dtype=torch.int32),
     torch.full((6,),  2, dtype=torch.int32),
 ])
+
+
+# ---------------------------------------------------------------------------
+# Edge endpoint coordinates in unit cube — used by s3 for ray construction
+# CUBE_EDGE_ENDPOINTS[e] = (start_xyz, end_xyz) derived from CUBE_VERTICES[CUBE_EDGES]
+# ---------------------------------------------------------------------------
+CUBE_EDGE_STARTS: torch.Tensor = CUBE_VERTICES[CUBE_EDGES[:, 0].long()]  # (18, 3) float32
+CUBE_EDGE_ENDS: torch.Tensor = CUBE_VERTICES[CUBE_EDGES[:, 1].long()]    # (18, 3) float32
+CUBE_EDGE_DIRS: torch.Tensor = CUBE_EDGE_ENDS - CUBE_EDGE_STARTS         # (18, 3) float32
