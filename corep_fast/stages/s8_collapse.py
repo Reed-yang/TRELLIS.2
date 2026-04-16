@@ -1365,17 +1365,116 @@ def _build_grids_from_cube_map(candidate_mask, kept_table, cube_data_list, tenso
     return grids
 
 
-def _build_grids_from_tensors(candidate_mask, kept_table, tensors, batch):
-    """P1 placeholder: falls back to dict path for correctness.
+def _build_single_cube_dict(
+    ci, cube_indices_cpu, edge_weights_cpu, exception_cpu,
+    lco, leo, lev, ler, po, pv, lpm,
+):
+    """Build a single-cube dict from CPU numpy arrays.
 
-    P3 will replace this body with a direct CubeBatch-based grid construction
-    that avoids building the full 275K-entry cube_map. Kept as a separate
-    function now so P3 only needs to edit this one spot.
+    Only called for cubes that participate in candidate-edge fallback
+    (typically ~100K out of 275K at res=256).
     """
-    cube_data_list = _cubebatch_to_dicts(batch)
-    return _build_grids_from_cube_map(
-        candidate_mask, kept_table, cube_data_list, tensors,
-    )
+    ci_tup = (int(cube_indices_cpu[ci, 0]), int(cube_indices_cpu[ci, 1]),
+              int(cube_indices_cpu[ci, 2]))
+    is_exc = bool(exception_cpu[ci])
+    p_lo = int(po[ci])
+    p_hi = int(po[ci + 1])
+    comp_pts = pv[p_lo:p_hi].tolist() if p_hi > p_lo else []
+
+    if is_exc:
+        return {
+            'exception': True,
+            'cube_indices': ci_tup,
+            'sorted_loops': [{'component_point': comp_pts[0] if comp_pts else [0, 0, 0]}],
+        }
+
+    l_lo = int(lco[ci])
+    l_hi = int(lco[ci + 1])
+    sorted_loops = []
+    for li in range(l_lo, l_hi):
+        e_lo = int(leo[li])
+        e_hi = int(leo[li + 1])
+        edges = lev[e_lo:e_hi].tolist()
+        ranks = ler[e_lo:e_hi].tolist()
+        match_idx = int(lpm[li])
+        if 0 <= match_idx < (p_hi - p_lo):
+            cp = pv[p_lo + match_idx].tolist()
+        elif comp_pts:
+            cp = comp_pts[0]
+        else:
+            cp = [0.0, 0.0, 0.0]
+        sorted_loops.append({
+            'loop': edges,
+            'rank': ranks,
+            'component_point': cp,
+        })
+
+    return {
+        'cube_indices': ci_tup,
+        'edge_weights': edge_weights_cpu[ci].tolist(),
+        'sorted_loops': sorted_loops,
+        'exception': False,
+    }
+
+
+def _build_grids_from_tensors(candidate_mask, kept_table, tensors, batch):
+    """Build Python grids directly from CubeBatch CSR, only for candidate cubes.
+
+    Avoids building a full 275K-entry cube_map dict. Instead:
+    1. Collect the set of ~100K neighbor cubes referenced by candidates.
+    2. Bulk-transfer needed CSR arrays once.
+    3. Build dict only for those cubes.
+
+    Expected saving vs _build_grids_from_cube_map: ~0.6s at res=256.
+    """
+    cand_idx = torch.nonzero(candidate_mask, as_tuple=False).squeeze(1)
+    M = cand_idx.shape[0]
+    if M == 0:
+        return []
+
+    # Bulk GPU→CPU transfer (once)
+    cand_n_cube = kept_table.neighbor_cube_ids[cand_idx].cpu().numpy()  # (M, 4)
+    cube_indices_cpu = tensors.cube_indices.cpu().numpy()
+    edge_weights_cpu = tensors.cube_edge_weights.cpu().numpy()
+    exception_cpu = tensors.cube_exception.cpu().numpy()
+    lco = batch.loop_cube_off.cpu().numpy()
+    leo = batch.loop_edge_off.cpu().numpy()
+    lev = batch.loop_edge_val.cpu().numpy()
+    ler = batch.loop_edge_rank.cpu().numpy()
+    po = batch.point_offsets.cpu().numpy()
+    pv = batch.point_values.cpu().numpy()
+    lpm = batch.loop_point_match.cpu().numpy()
+
+    # Collect only referenced neighbor cubes (~100K, not 275K)
+    unique_cubes = set()
+    for i in range(M):
+        for s in range(4):
+            ci = int(cand_n_cube[i, s])
+            if ci >= 0:
+                unique_cubes.add(ci)
+
+    # Build dict only for those cubes
+    cube_dicts = {
+        ci: _build_single_cube_dict(
+            ci, cube_indices_cpu, edge_weights_cpu, exception_cpu,
+            lco, leo, lev, ler, po, pv, lpm,
+        )
+        for ci in unique_cubes
+    }
+
+    # Assemble grids
+    cand_ci = cube_indices_cpu
+    grids = []
+    for i in range(M):
+        grid = []
+        for s in range(4):
+            ci = int(cand_n_cube[i, s])
+            if ci < 0:
+                grid.append([{'cube_indices': (0, 0, 0), 'sorted_loops': []}])
+            else:
+                grid.append([cube_dicts[ci]])
+        grids.append(grid)
+    return grids
 
 
 def _process_shared_edges_from_tensors(
