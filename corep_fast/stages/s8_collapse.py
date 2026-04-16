@@ -1009,7 +1009,7 @@ def _process_shared_edges_torch(
     else:
         tri_verts_torch = torch.zeros((0, 3), dtype=torch.float64, device=device)
 
-    # Step E: Candidate edges → Python fallback
+    # Step E: Candidate edges → Python fallback (with multiprocessing for large batches)
     tri_verts_python_list: list[np.ndarray] = []
     if candidate_mask.any():
         # Build cube_map for Python path (same structure as process_shared_edges_batch)
@@ -1035,13 +1035,15 @@ def _process_shared_edges_torch(
         cand_ci = tensors.cube_indices.cpu().numpy()                   # (N, 3)
         cand_n_cube_cpu = cand_n_cube.cpu().numpy()                    # (M, 4)
 
-        for i in range(cand_n_cube_cpu.shape[0]):
+        # Build all grids upfront
+        grids: list[list] = []
+        M = cand_n_cube_cpu.shape[0]
+        for i in range(M):
             slots = cand_n_cube_cpu[i]
             grid: list[list[dict]] = []
             for s_cube in slots:
                 s_cube = int(s_cube)
                 if s_cube < 0:
-                    # Should not happen for candidates (all 4 present), guard anyway
                     grid.append([{'cube_indices': (0, 0, 0), 'sorted_loops': []}])
                 else:
                     idx_tup = (
@@ -1054,10 +1056,24 @@ def _process_shared_edges_torch(
                         grid.append([{'cube_indices': idx_tup, 'sorted_loops': []}])
                     else:
                         grid.append(entry)
+            grids.append(grid)
 
-            tri_np = _process_shared_edge_geometry(grid)
-            if tri_np is not None and tri_np.shape[0] > 0:
-                tri_verts_python_list.append(tri_np)
+        # Dispatch via multiprocessing for large batches
+        import os as _os
+        num_workers = max(1, (_os.cpu_count() or 4) - 4)
+        if num_workers > 1 and M >= 1000:
+            from multiprocessing import Pool as _Pool
+            chunk_size = max(M // (num_workers * 4), 1)
+            with _Pool(num_workers) as p:
+                results = p.map(_process_shared_edge_geometry, grids, chunksize=chunk_size)
+            for tri_np in results:
+                if tri_np is not None and tri_np.shape[0] > 0:
+                    tri_verts_python_list.append(tri_np)
+        else:
+            for grid in grids:
+                tri_np = _process_shared_edge_geometry(grid)
+                if tri_np is not None and tri_np.shape[0] > 0:
+                    tri_verts_python_list.append(tri_np)
 
     # Step F: Merge Torch and Python triangles
     if tri_verts_torch.shape[0] == 0 and not tri_verts_python_list:
