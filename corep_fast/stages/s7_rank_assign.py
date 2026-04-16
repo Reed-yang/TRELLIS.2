@@ -9,20 +9,20 @@ Output:
   - loop_point_match (L,) int32  -- which component point each loop is assigned to
 
 Public API:
-    s7_rank_assign(batch) -> CubeBatch
+    s7_rank_assign(batch, pool=None) -> CubeBatch
 """
 from __future__ import annotations
 
-import itertools
 import math
-from collections import Counter
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import torch
 from scipy.optimize import linear_sum_assignment
 
-from corep_fast.constants import CUBE_EDGES, CUBE_FACETS, CUBE_VERTICES
+from corep_fast.constants import (
+    CUBE_EDGES, CUBE_EDGE_STARTS, CUBE_EDGE_ENDS, CUBE_FACETS, CUBE_VERTICES,
+)
 from corep_fast.containers import CubeBatch, CubeStatus, _replace_fields
 
 # ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@ def _trace_loops_from_adj(
 
 
 # ---------------------------------------------------------------------------
-# Slow path: U-Turn enumeration with rank tracking
+# Slow path: U-Turn with specific assignment (rank tracking)
 # ---------------------------------------------------------------------------
 
 def _trace_with_ranks_uturn_assignment(
@@ -252,76 +252,6 @@ def _get_canonical_solution(loops: List[List[int]]) -> Tuple[Tuple[int, ...], ..
     return tuple(sorted([_get_canonical_loop(l) for l in loops]))
 
 
-def _trace_with_ranks_uturn(
-    ew: List[int],
-    fw: List[int],
-    s6_loops: List[List[int]],
-) -> List[List[Tuple[int, int]]]:
-    """Slow path: enumerate U-Turn assignments, find the one matching s6 output,
-    and return traced loops with rank information.
-
-    Falls back to the fast path result if no match is found.
-    """
-    # Build target signature from s6 loops
-    target_sig = _get_canonical_solution(s6_loops)
-
-    # Enumerate valid U-Turn assignments (same logic as s6's _collapse_with_uturns)
-    face_valid_assignments: List[List[Tuple[int, int, int]]] = []
-
-    for t_idx in range(12):
-        valid_for_face: List[Tuple[int, int, int]] = []
-        W = fw[t_idx]
-        e1, e2, e3 = _TRIANGLES[t_idx]
-
-        for u1 in range(W + 1):
-            for u2 in range(W + 1 - u1):
-                u3 = W - u1 - u2
-
-                w1 = ew[e1] - 2 * u1
-                w2 = ew[e2] - 2 * u2
-                w3 = ew[e3] - 2 * u3
-
-                if w1 < 0 or w2 < 0 or w3 < 0:
-                    continue
-                if w1 + w2 < w3 or w2 + w3 < w1 or w3 + w1 < w2:
-                    continue
-                if (w1 + w2 + w3) % 2 != 0:
-                    continue
-
-                valid_for_face.append((u1, u2, u3))
-
-        if not valid_for_face:
-            return []
-
-        face_valid_assignments.append(valid_for_face)
-
-    total_combinations = math.prod(len(v) for v in face_valid_assignments)
-    if total_combinations > 100000:
-        return []
-
-    # Try each assignment and find one that matches s6 output
-    for assignment in itertools.product(*face_valid_assignments):
-        try:
-            traced = _trace_with_ranks_uturn_assignment(ew, assignment)
-            edge_only = [[node[0] for node in loop] for loop in traced]
-            # Prune backward U-Turns (any edge appearing >= 3 times in a single loop)
-            is_valid = True
-            for loop in edge_only:
-                if any(count >= 3 for count in Counter(loop).values()):
-                    is_valid = False
-                    break
-            if not is_valid:
-                continue
-
-            sig = _get_canonical_solution(edge_only)
-            if sig == target_sig:
-                return traced
-        except Exception:
-            continue
-
-    return []
-
-
 # ---------------------------------------------------------------------------
 # Match traced loops (with ranks) to s6 edge-only loops
 # ---------------------------------------------------------------------------
@@ -378,7 +308,7 @@ def _match_loops_to_ranks(
 
 
 # ---------------------------------------------------------------------------
-# Centroid computation
+# Centroid computation (CPU fallback per cube)
 # ---------------------------------------------------------------------------
 
 def _compute_centroids(
@@ -428,7 +358,7 @@ def _compute_centroids(
 
 
 # ---------------------------------------------------------------------------
-# Hungarian matching
+# Hungarian matching (CPU per cube)
 # ---------------------------------------------------------------------------
 
 def _hungarian_match(
@@ -491,17 +421,88 @@ def _extract_component_points(batch: CubeBatch, cube_idx: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Phase 1 worker: rank re-tracing (module-level for pickling)
+# ---------------------------------------------------------------------------
+
+def _s7_rank_worker(work_item):
+    """Process one cube for rank assignment.
+
+    Args:
+        work_item: (cube_idx, ew_list, s6_loops, uturn_assign_or_none)
+            - cube_idx: int
+            - ew_list: list[int] of length 18
+            - s6_loops: list[list[int]] — edge-only loops from s6
+            - uturn_assign_or_none: tuple[tuple[int,int,int], ...] or None
+              None means fast-path (no U-turns); otherwise the (12, 3) assignment.
+
+    Returns:
+        (cube_idx, rank_lists)  where rank_lists is list[list[int]]
+    """
+    cube_idx, ew_i, s6_loops, uturn_assign = work_item
+
+    if not s6_loops:
+        return (cube_idx, [])
+
+    if uturn_assign is not None:
+        try:
+            traced_loops = _trace_with_ranks_uturn_assignment(ew_i, uturn_assign)
+        except Exception:
+            traced_loops = []
+    else:
+        traced_loops = _trace_with_ranks_fast(ew_i)
+
+    rank_lists = _match_loops_to_ranks(s6_loops, traced_loops)
+    return (cube_idx, rank_lists)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 worker: Hungarian matching (module-level for pickling)
+# ---------------------------------------------------------------------------
+
+def _hungarian_worker(work_item):
+    """Process one cube for Hungarian matching.
+
+    Args:
+        work_item: (cube_idx, cost_matrix_np)
+            - cube_idx: int
+            - cost_matrix_np: (n_loops, n_points) float64 cost matrix
+
+    Returns:
+        (cube_idx, match_indices)
+    """
+    cube_idx, cost_matrix = work_item
+
+    if cost_matrix.size == 0:
+        return (cube_idx, [])
+
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    n_loops = cost_matrix.shape[0]
+    result = [0] * n_loops
+    for r, c in zip(row_ind, col_ind):
+        result[r] = int(c)
+    return (cube_idx, result)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def s7_rank_assign(batch: CubeBatch) -> CubeBatch:
+def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
     """Assign ranks to loop edge crossings and match loops to component points.
 
-    1. Rank assignment: re-trace arc graph with rank tracking
-    2. Loop centroid: average of interpolated edge crossing positions
-    3. Point matching: Hungarian assignment (loop centroids <-> component points)
+    Three-phase pipeline:
+      Phase 1: MP rank re-tracing (CPU graph traversal)
+      Phase 2: GPU batched centroid interpolation (scatter-mean)
+      Phase 3: MP Hungarian matching (scipy per cube)
 
-    Updates loop_edge_rank and loop_point_match.
+    Consumes batch.uturn_assignment directly for slow-path cubes (no re-enumeration).
+
+    Args:
+        batch: CubeBatch after s6_collapse (must have uturn_assignment populated).
+        pool: Optional PersistentWorkerPool for multiprocessing. If None, runs serially.
+
+    Returns:
+        Updated CubeBatch with loop_edge_rank and loop_point_match.
     """
     N = batch.num_cubes
     device = batch.device
@@ -510,7 +511,6 @@ def s7_rank_assign(batch: CubeBatch) -> CubeBatch:
         return batch
 
     ew_np = batch.edge_weights.cpu().numpy()   # (N, 18) int32
-    fw_np = batch.face_weights.cpu().numpy()   # (N, 12) int32
     ci_np = batch.cube_indices.cpu().numpy()    # (N, 3)  int32
     resolution = batch.resolution
     d = 1.0 / resolution
@@ -518,69 +518,230 @@ def s7_rank_assign(batch: CubeBatch) -> CubeBatch:
     total_edges = int(batch.loop_edge_val.shape[0])
     total_loops = int(batch.loop_cube_off[-1].item())
 
+    # Precompute uturn_assignment on CPU
+    uturn_np = batch.uturn_assignment.cpu().numpy()  # (N, 12, 3) int32
+
+    # Precompute CSR offsets on CPU
+    loop_cube_off_cpu = batch.loop_cube_off.cpu()
+    loop_edge_off_cpu = batch.loop_edge_off.cpu()
+    loop_edge_val_cpu = batch.loop_edge_val.cpu()
+    status_cpu = batch.status.cpu()
+
+    # ===================================================================
+    # Phase 1: Rank re-tracing (CPU, optionally multiprocessing)
+    # ===================================================================
+
+    # Build work items for OK cubes
+    rank_work_items = []
+    ok_cube_indices = []
+
+    for i in range(N):
+        status_i = int(status_cpu[i].item())
+        l_lo = int(loop_cube_off_cpu[i].item())
+        l_hi = int(loop_cube_off_cpu[i + 1].item())
+        n_loops = l_hi - l_lo
+
+        if n_loops == 0 or status_i != CubeStatus.OK:
+            continue
+
+        ew_i = ew_np[i].tolist()
+
+        # Extract s6 loops (edge-only)
+        s6_loops = []
+        for li in range(l_lo, l_hi):
+            e_lo = int(loop_edge_off_cpu[li].item())
+            e_hi = int(loop_edge_off_cpu[li + 1].item())
+            s6_loops.append(loop_edge_val_cpu[e_lo:e_hi].tolist())
+
+        # Determine fast-path vs slow-path from uturn_assignment
+        uturn_row = uturn_np[i]  # (12, 3) int32
+        if uturn_row[0, 0] == -1:
+            # Fast-path: all -1 means no U-turns
+            uturn_assign = None
+        else:
+            # Slow-path: use the stored assignment directly
+            uturn_assign = tuple(
+                tuple(int(x) for x in uturn_row[t])
+                for t in range(12)
+            )
+
+        rank_work_items.append((i, ew_i, s6_loops, uturn_assign))
+        ok_cube_indices.append(i)
+
+    # Dispatch rank work
+    if pool is not None and rank_work_items:
+        rank_results = pool.map_chunked(_s7_rank_worker, rank_work_items, chunk_size=500)
+    else:
+        rank_results = [_s7_rank_worker(item) for item in rank_work_items]
+
+    # Collect rank results into flat arrays
     all_ranks = [0] * total_edges
     all_matches = [0] * total_loops
 
+    # Fill non-OK cubes with defaults
     for i in range(N):
-        status_i = int(batch.status[i].item())
-        l_lo = int(batch.loop_cube_off[i].item())
-        l_hi = int(batch.loop_cube_off[i + 1].item())
+        status_i = int(status_cpu[i].item())
+        l_lo = int(loop_cube_off_cpu[i].item())
+        l_hi = int(loop_cube_off_cpu[i + 1].item())
         n_loops = l_hi - l_lo
 
         if n_loops == 0:
             continue
 
         if status_i != CubeStatus.OK:
-            # Non-OK cubes: fill ranks with 0, match with identity
             for li in range(l_lo, l_hi):
-                e_lo = int(batch.loop_edge_off[li].item())
-                e_hi = int(batch.loop_edge_off[li + 1].item())
+                e_lo = int(loop_edge_off_cpu[li].item())
+                e_hi = int(loop_edge_off_cpu[li + 1].item())
                 for k in range(e_lo, e_hi):
                     all_ranks[k] = 0
             for li_off in range(n_loops):
                 all_matches[l_lo + li_off] = li_off
-            continue
 
-        ew_i = ew_np[i].tolist()
-        fw_i = fw_np[i].tolist()
-
-        # 1. Extract s6 loops (edge-only)
-        s6_loops = _extract_s6_loops(batch, i)
-
-        # 2. Re-trace arc graph with rank tracking
-        has_uturns = any(fw_i)
-        if has_uturns:
-            traced_loops = _trace_with_ranks_uturn(ew_i, fw_i, s6_loops)
-        else:
-            traced_loops = _trace_with_ranks_fast(ew_i)
-
-        # 3. Match traced loops to s6 loops -> extract rank sequences
-        rank_lists = _match_loops_to_ranks(s6_loops, traced_loops)
-
-        # 4. Write ranks into flat array
+    # Write OK-cube rank results into flat array
+    for cube_idx, rank_lists in rank_results:
+        l_lo = int(loop_cube_off_cpu[cube_idx].item())
         for li_off, ranks in enumerate(rank_lists):
             li = l_lo + li_off
-            e_lo = int(batch.loop_edge_off[li].item())
+            e_lo = int(loop_edge_off_cpu[li].item())
             for k, r in enumerate(ranks):
                 all_ranks[e_lo + k] = r
 
-        # 5. Compute loop centroids
-        cube_origin = ci_np[i].astype(np.float64) * d
-        centroids = _compute_centroids(s6_loops, rank_lists, ew_i, cube_origin, d)
+    # ===================================================================
+    # Phase 2: GPU batched centroid interpolation (scatter-mean)
+    # ===================================================================
 
-        # 6. Extract component points and do Hungarian matching
-        comp_pts = _extract_component_points(batch, i)
+    if total_edges > 0 and ok_cube_indices:
+        # Build flat arrays for all edge crossings of OK cubes:
+        #   For each crossing at (cube_i, loop_j, position_k):
+        #     edge_idx, rank, edge_weight, cube_origin
+        # Then compute positions on GPU.
 
-        if comp_pts.shape[0] > 0 and n_loops > 0:
-            match_indices = _hungarian_match(centroids, comp_pts)
+        # Collect per-crossing data
+        crossing_loop_ids = []    # which loop each crossing belongs to
+        crossing_edge_ids = []    # edge index (0..17)
+        crossing_ranks = []       # rank index
+        crossing_weights = []     # edge weight
+        crossing_cube_ids = []    # which cube (for cube_origin lookup)
+
+        for cube_idx, rank_lists in rank_results:
+            l_lo = int(loop_cube_off_cpu[cube_idx].item())
+            l_hi = int(loop_cube_off_cpu[cube_idx + 1].item())
+            for li_off in range(l_hi - l_lo):
+                li = l_lo + li_off
+                e_lo = int(loop_edge_off_cpu[li].item())
+                e_hi = int(loop_edge_off_cpu[li + 1].item())
+                edges = loop_edge_val_cpu[e_lo:e_hi].tolist()
+                ranks = rank_lists[li_off] if li_off < len(rank_lists) else [0] * (e_hi - e_lo)
+                for pos_k in range(len(edges)):
+                    crossing_loop_ids.append(li)
+                    crossing_edge_ids.append(edges[pos_k])
+                    crossing_ranks.append(ranks[pos_k] if pos_k < len(ranks) else 0)
+                    crossing_weights.append(int(ew_np[cube_idx, edges[pos_k]]))
+                    crossing_cube_ids.append(cube_idx)
+
+        n_crossings = len(crossing_loop_ids)
+
+        if n_crossings > 0:
+            # Move to GPU tensors
+            t_loop_ids = torch.tensor(crossing_loop_ids, dtype=torch.int64, device=device)
+            t_edge_ids = torch.tensor(crossing_edge_ids, dtype=torch.int64, device=device)
+            t_ranks = torch.tensor(crossing_ranks, dtype=torch.float32, device=device)
+            t_weights = torch.tensor(crossing_weights, dtype=torch.float32, device=device)
+            t_cube_ids = torch.tensor(crossing_cube_ids, dtype=torch.int64, device=device)
+
+            # Edge endpoint coords (18, 3) on GPU
+            edge_starts = CUBE_EDGE_STARTS.to(device=device, dtype=torch.float32)  # (18, 3)
+            edge_ends = CUBE_EDGE_ENDS.to(device=device, dtype=torch.float32)      # (18, 3)
+
+            # Cube origins: cube_indices / resolution
+            cube_indices_gpu = batch.cube_indices.to(dtype=torch.float32)  # (N, 3) on device
+            cube_origins = cube_indices_gpu / resolution   # (N, 3)
+            step = 1.0 / resolution
+
+            # Gather per-crossing values
+            start_pts = edge_starts[t_edge_ids]    # (n_crossings, 3)
+            end_pts = edge_ends[t_edge_ids]        # (n_crossings, 3)
+            origins = cube_origins[t_cube_ids]     # (n_crossings, 3)
+
+            # Interpolation parameter: t = (rank + 1) / (weight + 1)
+            t_param = (t_ranks + 1.0) / (t_weights + 1.0)  # (n_crossings,)
+            t_param = t_param.unsqueeze(1)  # (n_crossings, 1)
+
+            # Position = cube_origin + (start + t * (end - start)) * step
+            local_pos = start_pts + t_param * (end_pts - start_pts)  # (n_crossings, 3)
+            world_pos = origins + local_pos * step                    # (n_crossings, 3)
+
+            # Scatter-mean by loop_id to get (total_loops, 3) centroids
+            loop_centroids = torch.zeros(total_loops, 3, dtype=torch.float32, device=device)
+            loop_counts = torch.zeros(total_loops, dtype=torch.float32, device=device)
+
+            loop_centroids.scatter_add_(0, t_loop_ids.unsqueeze(1).expand(-1, 3), world_pos)
+            loop_counts.scatter_add_(0, t_loop_ids, torch.ones(n_crossings, dtype=torch.float32, device=device))
+
+            # Avoid division by zero
+            safe_counts = loop_counts.clamp(min=1.0).unsqueeze(1)
+            loop_centroids = loop_centroids / safe_counts  # (total_loops, 3)
         else:
+            loop_centroids = torch.zeros(total_loops, 3, dtype=torch.float32, device=device)
+    else:
+        loop_centroids = torch.zeros(total_loops, 3, dtype=torch.float32, device=device)
+
+    # ===================================================================
+    # Phase 3: Hungarian matching (CPU, optionally multiprocessing)
+    # ===================================================================
+
+    # Build cost matrices on GPU, then dispatch scipy per cube
+    point_offsets_cpu = batch.point_offsets.cpu()
+    point_values_gpu = batch.point_values  # (P, 3) on device
+
+    hungarian_work_items = []
+
+    for cube_idx in ok_cube_indices:
+        l_lo = int(loop_cube_off_cpu[cube_idx].item())
+        l_hi = int(loop_cube_off_cpu[cube_idx + 1].item())
+        n_loops = l_hi - l_lo
+        if n_loops == 0:
+            continue
+
+        p_lo = int(point_offsets_cpu[cube_idx].item())
+        p_hi = int(point_offsets_cpu[cube_idx + 1].item())
+        n_points = p_hi - p_lo
+
+        if n_points == 0:
             # No component points: identity match
-            match_indices = list(range(n_loops))
+            for li_off in range(n_loops):
+                all_matches[l_lo + li_off] = li_off
+            continue
 
-        for li_off, m in enumerate(match_indices):
-            all_matches[l_lo + li_off] = m
+        # Get centroids for this cube's loops from GPU tensor
+        centroids_i = loop_centroids[l_lo:l_hi]          # (n_loops, 3) on device
+        comp_pts_i = point_values_gpu[p_lo:p_hi]          # (n_points, 3) on device
 
+        # Compute cost matrix on GPU: squared Euclidean distance
+        diff = centroids_i.unsqueeze(1) - comp_pts_i.unsqueeze(0)  # (n_loops, n_points, 3)
+        cost_gpu = (diff ** 2).sum(dim=-1)                          # (n_loops, n_points)
+        cost_np = cost_gpu.cpu().numpy().astype(np.float64)
+
+        hungarian_work_items.append((cube_idx, cost_np))
+
+    # Dispatch Hungarian work
+    if pool is not None and hungarian_work_items:
+        hungarian_results = pool.map_chunked(_hungarian_worker, hungarian_work_items, chunk_size=500)
+    else:
+        hungarian_results = [_hungarian_worker(item) for item in hungarian_work_items]
+
+    # Write Hungarian results
+    for cube_idx, match_indices in hungarian_results:
+        l_lo = int(loop_cube_off_cpu[cube_idx].item())
+        l_hi = int(loop_cube_off_cpu[cube_idx + 1].item())
+        n_loops = l_hi - l_lo
+        for li_off in range(min(len(match_indices), n_loops)):
+            all_matches[l_lo + li_off] = match_indices[li_off]
+
+    # ===================================================================
     # Pack results
+    # ===================================================================
+
     loop_edge_rank = torch.tensor(all_ranks, dtype=torch.int32, device=device) \
         if total_edges > 0 else torch.zeros(0, dtype=torch.int32, device=device)
     loop_point_match = torch.tensor(all_matches, dtype=torch.int32, device=device) \
