@@ -102,63 +102,66 @@ def s4_face_point(batch: CubeBatch, mesh: MeshTensors, pool=None) -> CubeBatch:
 # Part 1: Face weights (U-Turn detection) — CPU + multiprocessing
 # ======================================================================
 
+# Fork-inherited shared data for face_weight workers.
+# Set in parent process BEFORE creating the temporary Pool so that
+# forked workers inherit them via copy-on-write (zero pickle overhead).
+_FW_MESH_TRIS = None   # (F, 3, 3) float64
+_FW_CUBE_IDX = None     # (N, 3) int32
+_FW_TRI_OFF = None      # (N+1,) int64
+_FW_TRI_VAL = None      # (T,) int32
+_FW_STEP = None         # float
+
+
 def _compute_face_weights_mp(batch: CubeBatch, mesh: MeshTensors, pool=None) -> torch.Tensor:
     """Compute face_weights (N, 12) via per-cube CPU computation.
 
-    When pool is provided, dispatches work across processes.
-    Otherwise, runs serially (for tests and small batches).
+    Uses a temporary multiprocessing.Pool created AFTER setting module-level
+    shared data, so forked workers inherit the data via OS copy-on-write
+    with zero pickle overhead.
     """
+    global _FW_MESH_TRIS, _FW_CUBE_IDX, _FW_TRI_OFF, _FW_TRI_VAL, _FW_STEP
+
     N = batch.num_cubes
     device = batch.device
     R = batch.resolution
-    step = 1.0 / R
+    _FW_STEP = 1.0 / R
 
-    cube_indices_np = batch.cube_indices.cpu().numpy()
-    tri_offsets_np = batch.tri_offsets.cpu().numpy()
-    tri_values_np = batch.tri_values.cpu().numpy()
+    _FW_CUBE_IDX = batch.cube_indices.cpu().numpy()
+    _FW_TRI_OFF = batch.tri_offsets.cpu().numpy()
+    _FW_TRI_VAL = batch.tri_values.cpu().numpy()
     mesh_verts_np = mesh.vertices.cpu().numpy().astype(np.float64)
     mesh_faces_np = mesh.faces.cpu().numpy()
-    mesh_triangles_np = mesh_verts_np[mesh_faces_np]  # (F, 3, 3)
+    _FW_MESH_TRIS = mesh_verts_np[mesh_faces_np]  # (F, 3, 3)
 
-    # Build work items: one tuple per cube with all data needed
-    work_items = []
-    for ci in range(N):
-        ix, iy, iz = cube_indices_np[ci]
-        lo = int(tri_offsets_np[ci])
-        hi = int(tri_offsets_np[ci + 1])
-
-        if lo >= hi:
-            work_items.append(None)  # sentinel: no triangles
-        else:
-            f_ids = tri_values_np[lo:hi]
-            cube_tris = mesh_triangles_np[f_ids]  # (K, 3, 3) float64
-            base = np.array([ix, iy, iz], dtype=np.float64) * step
-            cube_verts = base + _V_OFFSETS * step  # (8, 3)
-            work_items.append((cube_verts, cube_tris))
-
-    if pool is not None:
-        results = pool.map_chunked(_face_weight_worker, work_items, chunk_size=500)
+    num_workers = pool._num_workers if pool is not None else 1
+    if num_workers > 1 and N > 500:
+        from multiprocessing import Pool as _Pool
+        chunksize = max(1, N // (num_workers * 4))
+        with _Pool(num_workers) as p:
+            results = p.map(_fw_worker_indexed, range(N), chunksize=chunksize)
     else:
-        results = [_face_weight_worker(item) for item in work_items]
+        results = [_fw_worker_indexed(ci) for ci in range(N)]
 
     fw_all = np.stack(results, axis=0)  # (N, 12)
     return torch.from_numpy(fw_all).to(device=device, dtype=torch.int32)
 
 
-def _face_weight_worker(item) -> np.ndarray:
-    """Process a single cube's face weights. Module-level for pickle compatibility.
+def _fw_worker_indexed(ci: int) -> np.ndarray:
+    """Compute face weights for cube ci using fork-inherited shared data.
 
-    Args:
-        item: None (no triangles) or (cube_verts, cube_tris) tuple.
-
-    Returns:
-        (12,) int32 array of U-turn counts per facet.
+    Each worker only receives a single int (cube index) — no numpy pickle.
+    Shared arrays (_FW_MESH_TRIS etc.) are inherited via fork COW.
     """
     fw = np.zeros(12, dtype=np.int32)
-    if item is None:
+    lo = int(_FW_TRI_OFF[ci])
+    hi = int(_FW_TRI_OFF[ci + 1])
+    if lo >= hi:
         return fw
 
-    cube_verts, cube_tris = item
+    ix, iy, iz = _FW_CUBE_IDX[ci]
+    base = np.array([ix, iy, iz], dtype=np.float64) * _FW_STEP
+    cube_verts = base + _V_OFFSETS * _FW_STEP  # (8, 3)
+    cube_tris = _FW_MESH_TRIS[_FW_TRI_VAL[lo:hi]]  # (K, 3, 3) float64
 
     for t_idx, (vert_ids, edge_ids) in enumerate(zip(FACET_VERTS, FACET_EDGES)):
         v0i, v1i, v2i = vert_ids
