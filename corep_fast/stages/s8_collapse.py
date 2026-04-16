@@ -52,56 +52,57 @@ def decode_from_cubebatch(
 
 
 def _cubebatch_to_dicts(batch: 'CubeBatch') -> list[dict]:
-    """Convert CubeBatch to list[dict] format for s8 processing."""
+    """Convert CubeBatch to list[dict] format for s8 processing.
+
+    All tensors are converted to numpy once upfront to avoid per-element
+    .item() GPU sync overhead (275K syncs → 0 syncs).
+    """
     from corep_fast.containers import CubeStatus
 
     N = batch.num_cubes
     result = []
 
-    cube_indices_cpu = batch.cube_indices.cpu()
-    edge_weights_cpu = batch.edge_weights.cpu()
-    status_cpu = batch.status.cpu()
-    loop_cube_off = batch.loop_cube_off.cpu()
-    loop_edge_off = batch.loop_edge_off.cpu()
-    loop_edge_val = batch.loop_edge_val.cpu()
-    loop_edge_rank = batch.loop_edge_rank.cpu()
-    loop_point_match = batch.loop_point_match.cpu()
-    point_offsets = batch.point_offsets.cpu()
-    point_values = batch.point_values.cpu()
+    # Convert all tensors to numpy ONCE (single GPU→CPU transfer per tensor)
+    ci_np = batch.cube_indices.cpu().numpy()
+    ew_np = batch.edge_weights.cpu().numpy()
+    status_np = batch.status.cpu().numpy()
+    lco_np = batch.loop_cube_off.cpu().numpy()
+    leo_np = batch.loop_edge_off.cpu().numpy()
+    lev_np = batch.loop_edge_val.cpu().numpy()
+    ler_np = batch.loop_edge_rank.cpu().numpy()
+    lpm_np = batch.loop_point_match.cpu().numpy()
+    po_np = batch.point_offsets.cpu().numpy()
+    pv_np = batch.point_values.cpu().numpy()
 
     for i in range(N):
-        ci = tuple(cube_indices_cpu[i].tolist())
-        ew = edge_weights_cpu[i].tolist()
-        is_exception = int(status_cpu[i].item()) != CubeStatus.OK
+        ci = tuple(int(x) for x in ci_np[i])
+        ew = [int(x) for x in ew_np[i]]
+        is_exception = int(status_np[i]) != CubeStatus.OK
 
-        # Get component points for this cube
-        p_lo = int(point_offsets[i].item())
-        p_hi = int(point_offsets[i + 1].item())
-        comp_pts = point_values[p_lo:p_hi].tolist()
+        p_lo = int(po_np[i])
+        p_hi = int(po_np[i + 1])
+        comp_pts = pv_np[p_lo:p_hi].tolist()
 
         if is_exception:
-            # Exception cubes: minimal dict
             d = {
                 'exception': True,
                 'cube_indices': ci,
                 'sorted_loops': [{'component_point': comp_pts[0] if comp_pts else [0, 0, 0]}],
             }
         else:
-            # OK cubes: full sorted_loops
-            l_lo = int(loop_cube_off[i].item())
-            l_hi = int(loop_cube_off[i + 1].item())
+            l_lo = int(lco_np[i])
+            l_hi = int(lco_np[i + 1])
 
             sorted_loops = []
             for li in range(l_lo, l_hi):
-                e_lo = int(loop_edge_off[li].item())
-                e_hi = int(loop_edge_off[li + 1].item())
-                edges = loop_edge_val[e_lo:e_hi].tolist()
-                ranks = loop_edge_rank[e_lo:e_hi].tolist()
+                e_lo = int(leo_np[li])
+                e_hi = int(leo_np[li + 1])
+                edges = [int(x) for x in lev_np[e_lo:e_hi]]
+                ranks = [int(x) for x in ler_np[e_lo:e_hi]]
 
-                # Get matched component point
-                match_idx = int(loop_point_match[li].item())
+                match_idx = int(lpm_np[li])
                 if match_idx >= 0 and (p_lo + match_idx) < p_hi:
-                    cp = point_values[p_lo + match_idx].tolist()
+                    cp = pv_np[p_lo + match_idx].tolist()
                 else:
                     cp = comp_pts[0] if comp_pts else [0, 0, 0]
 
