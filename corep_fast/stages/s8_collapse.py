@@ -141,30 +141,41 @@ def _pad_ragged_loops_gpu(
 def decode_from_cubebatch(
     batch: 'CubeBatch',
     merge_decimals: int = 5,
+    use_direct_tensor: Optional[bool] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Decode CubeBatch → (vertices, faces) using existing s8 pipeline.
-
-    Converts CubeBatch fields to the list[dict] format expected by
-    process_shared_edges_batch, then calls it.
+    """Decode CubeBatch -> (vertices, faces).
 
     Args:
         batch: CubeBatch with all stages (s1-s7) populated.
         merge_decimals: Vertex welding precision.
+        use_direct_tensor: If True, skip dict intermediate (M2 P1 optimization).
+                           If None, use COREP_FAST_S8_DIRECT_TENSOR env var.
 
     Returns:
         vertices: (V, 3) float32
         faces: (F, 3) int32
     """
-    from corep_fast.containers import CubeStatus
+    if use_direct_tensor is None:
+        from corep_fast.config import USE_DIRECT_TENSOR_S8
+        use_direct_tensor = USE_DIRECT_TENSOR_S8
 
+    if use_direct_tensor:
+        tensors = _cubebatch_to_tensors_direct(batch)
+        return _process_shared_edges_from_tensors(
+            resolution=batch.resolution,
+            tensors=tensors,
+            batch=batch,
+            merge_decimals=merge_decimals,
+        )
+
+    # Legacy dict path
     cube_data_list = _cubebatch_to_dicts(batch)
-    vertices, faces = process_shared_edges_batch(
+    return process_shared_edges_batch(
         resolution=batch.resolution,
         cube_data_list=cube_data_list,
         merge_decimals=merge_decimals,
-        use_torch_path=True,  # Use fully vectorized Torch path (baseline s8_torch)
+        use_torch_path=True,
     )
-    return vertices, faces
 
 
 def _cubebatch_to_dicts(batch: 'CubeBatch') -> list[dict]:
@@ -821,6 +832,7 @@ def process_geometry_vectorized(
     tensors: CubeDataTensors,
     device: torch.device,
     max_rank: int = 16,
+    exc_pt_per_cube_override: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Vectorized geometry processing: emit fan triangles for all owned edges.
 
@@ -832,6 +844,12 @@ def process_geometry_vectorized(
         tensors: CubeDataTensors with cube and loop data
         device: torch device
         max_rank: max normalized rank to consider
+        exc_pt_per_cube_override: Optional (N, 3) float32 tensor giving the
+            per-cube first point used for exception-wildcard fallback. When
+            provided (direct-tensor path), Step 9 gathers the wildcard point
+            from this per-cube tensor instead of `tensors.loop_component_point`
+            (which in the dict path holds a virtual first-loop's point; in the
+            direct path there is no such virtual loop).
 
     Returns:
         (T*3, 3) float64 tensor of triangle vertex coordinates.
@@ -1024,7 +1042,12 @@ def process_geometry_vectorized(
     # For each (e, slot) where cube_exc is True: use first loop's point as wildcard
     any_has_point = has_point.any(dim=2)  # (E, max_rank)
 
-    if L_total > 0:
+    if exc_pt_per_cube_override is not None:
+        # Direct-tensor path: gather per-cube first point (N, 3) into (E, 4, 3).
+        # n_cube_safe clamps -1 slots to 0; invalid slots won't be read because
+        # valid_slot masks them out below.
+        exc_pt_per_slot = exc_pt_per_cube_override[n_cube_safe]  # (E, 4, 3)
+    elif L_total > 0:
         first_loop_safe = loop_start.clamp(min=0, max=L_total - 1).to(torch.int64)
         exc_pt_per_slot = tensors.loop_component_point[first_loop_safe]  # (E, 4, 3)
     else:
@@ -1283,6 +1306,215 @@ def _process_shared_edges_torch(
         all_tri_np = tri_verts_torch_np
 
     # Step G: Vertex welding (reuse existing _weld_and_dedup)
+    return _weld_and_dedup(all_tri_np, merge_decimals, device=device)
+
+
+# ---------------------------------------------------------------------------
+# Direct-tensor s8 path (M2 P1): bypasses _cube_data_to_tensors + dict layer.
+# ---------------------------------------------------------------------------
+
+def _build_grids_from_cube_map(candidate_mask, kept_table, cube_data_list, tensors):
+    """Legacy: build Python grids from cube_data_list (via cube_map dict).
+
+    Used when USE_DIRECT_GRIDS_S8=0 or as fallback inside the direct-tensor
+    path. Mirrors the per-candidate grid construction from the
+    _process_shared_edges_torch fallback block.
+    """
+    cube_map: dict[tuple, list[dict]] = {}
+    _empty_18 = [0] * 18
+    for data in cube_data_list:
+        idx = data.get('cube_indices')
+        if idx is None:
+            continue
+        idx_t = tuple(idx) if not isinstance(idx, tuple) else idx
+        data['cube_indices'] = idx_t
+        if 'edge_weights' not in data:
+            data['edge_weights'] = _empty_18
+        if 'sorted_loops' not in data:
+            data['sorted_loops'] = []
+        if idx_t not in cube_map:
+            cube_map[idx_t] = [data]
+        else:
+            cube_map[idx_t].append(data)
+
+    cand_idx = torch.nonzero(candidate_mask, as_tuple=False).squeeze(1)
+    cand_n_cube = kept_table.neighbor_cube_ids[cand_idx].cpu().numpy()  # (M, 4)
+    cand_ci = tensors.cube_indices.cpu().numpy()                          # (N, 3)
+
+    M = cand_n_cube.shape[0]
+    grids: list[list] = []
+    for i in range(M):
+        slots = cand_n_cube[i]
+        grid: list[list[dict]] = []
+        for s_cube in slots:
+            s_cube = int(s_cube)
+            if s_cube < 0:
+                grid.append([{'cube_indices': (0, 0, 0), 'sorted_loops': []}])
+            else:
+                idx_tup = (
+                    int(cand_ci[s_cube, 0]),
+                    int(cand_ci[s_cube, 1]),
+                    int(cand_ci[s_cube, 2]),
+                )
+                entry = cube_map.get(idx_tup)
+                if entry is None:
+                    grid.append([{'cube_indices': idx_tup, 'sorted_loops': []}])
+                else:
+                    grid.append(entry)
+        grids.append(grid)
+    return grids
+
+
+def _build_grids_from_tensors(candidate_mask, kept_table, tensors, batch):
+    """P1 placeholder: falls back to dict path for correctness.
+
+    P3 will replace this body with a direct CubeBatch-based grid construction
+    that avoids building the full 275K-entry cube_map. Kept as a separate
+    function now so P3 only needs to edit this one spot.
+    """
+    cube_data_list = _cubebatch_to_dicts(batch)
+    return _build_grids_from_cube_map(
+        candidate_mask, kept_table, cube_data_list, tensors,
+    )
+
+
+def _process_shared_edges_from_tensors(
+    resolution: int,
+    tensors: 'CubeDataTensors',
+    batch,
+    merge_decimals: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Process shared edges directly from CubeDataTensors + CubeBatch.
+
+    Skips Step A (_cube_data_to_tensors) of _process_shared_edges_torch.
+    All other logic (enum, vectorized, fallback, merge, weld) is identical.
+
+    Args:
+        resolution: grid resolution.
+        tensors: CubeDataTensors (already built via _cubebatch_to_tensors_direct).
+        batch: CubeBatch, used for per-cube first-point gather and Python
+            fallback cube_data construction.
+        merge_decimals: vertex welding precision.
+
+    Returns:
+        (vertices, faces) tuple.
+    """
+    device = tensors.cube_indices.device
+    N = tensors.cube_indices.shape[0]
+
+    if N == 0:
+        return (
+            torch.zeros((0, 3), dtype=torch.float32),
+            torch.zeros((0, 3), dtype=torch.int32),
+        )
+
+    # Step B: Edge enumeration (identical to _process_shared_edges_torch)
+    keys, cube_ids, local_ids = compute_global_edge_keys(tensors.cube_indices, resolution)
+    unique_keys, edge_id_per_entry = enumerate_unique_edges(keys)
+    num_unique = unique_keys.shape[0]
+    if num_unique == 0:
+        return (
+            torch.zeros((0, 3), dtype=torch.float32),
+            torch.zeros((0, 3), dtype=torch.int32),
+        )
+    table = build_edge_neighbor_table(edge_id_per_entry, cube_ids, local_ids, num_unique)
+
+    # Step C: Filter keep edges (>= 2 neighbors)
+    keep = table.neighbor_counts >= 2
+    if not keep.any():
+        return (
+            torch.zeros((0, 3), dtype=torch.float32),
+            torch.zeros((0, 3), dtype=torch.int32),
+        )
+
+    kept_table = EdgeNeighborTable(
+        neighbor_counts=table.neighbor_counts[keep],
+        neighbor_cube_ids=table.neighbor_cube_ids[keep],
+        neighbor_positions=table.neighbor_positions[keep],
+        neighbor_local_edges=table.neighbor_local_edges[keep],
+        edge_axes=table.edge_axes[keep],
+    )
+
+    # 4-cube candidate edges: routed through Python fallback for bit-parity
+    candidate_mask = kept_table.neighbor_counts == 4
+
+    # Build per-cube first-point tensor for Step 9 exception fallback.
+    # In the dict path, the virtual first loop of an exception cube carries
+    # the fallback point; in the direct path we build it explicitly from CSR.
+    po_lo = batch.point_offsets[:-1]
+    po_hi = batch.point_offsets[1:]
+    has_pt = po_hi > po_lo
+    first_pt_per_cube = torch.zeros((N, 3), dtype=torch.float32, device=device)
+    if batch.point_values.shape[0] > 0 and has_pt.any():
+        first_pt_per_cube[has_pt] = batch.point_values[po_lo[has_pt]]
+
+    # Step D: Non-candidate edges -> vectorized Torch path
+    non_candidate_mask = ~candidate_mask
+    if non_candidate_mask.any():
+        nc_table = EdgeNeighborTable(
+            neighbor_counts=kept_table.neighbor_counts[non_candidate_mask],
+            neighbor_cube_ids=kept_table.neighbor_cube_ids[non_candidate_mask],
+            neighbor_positions=kept_table.neighbor_positions[non_candidate_mask],
+            neighbor_local_edges=kept_table.neighbor_local_edges[non_candidate_mask],
+            edge_axes=kept_table.edge_axes[non_candidate_mask],
+        )
+        tri_verts_torch = process_geometry_vectorized(
+            nc_table, tensors, device,
+            exc_pt_per_cube_override=first_pt_per_cube,
+        )
+    else:
+        tri_verts_torch = torch.zeros((0, 3), dtype=torch.float64, device=device)
+
+    # Step E: Python fallback for 4-cube candidate edges
+    tri_verts_python_list: list[np.ndarray] = []
+    if candidate_mask.any():
+        from corep_fast.config import USE_DIRECT_GRIDS_S8
+        if USE_DIRECT_GRIDS_S8:
+            grids = _build_grids_from_tensors(
+                candidate_mask, kept_table, tensors, batch,
+            )
+        else:
+            cube_data_list = _cubebatch_to_dicts(batch)
+            grids = _build_grids_from_cube_map(
+                candidate_mask, kept_table, cube_data_list, tensors,
+            )
+
+        import os as _os
+        num_workers = max(1, (_os.cpu_count() or 4) - 4)
+        M = len(grids)
+        if num_workers > 1 and M >= 100_000:
+            from multiprocessing import Pool as _Pool
+            chunk_size = max(M // (num_workers * 4), 1)
+            with _Pool(num_workers) as p:
+                results = p.map(_process_shared_edge_geometry, grids, chunksize=chunk_size)
+            for tri_np in results:
+                if tri_np is not None and tri_np.shape[0] > 0:
+                    tri_verts_python_list.append(tri_np)
+        else:
+            for grid in grids:
+                tri_np = _process_shared_edge_geometry(grid)
+                if tri_np is not None and tri_np.shape[0] > 0:
+                    tri_verts_python_list.append(tri_np)
+
+    # Step F: Merge Torch and Python triangles
+    if tri_verts_torch.shape[0] == 0 and not tri_verts_python_list:
+        return (
+            torch.zeros((0, 3), dtype=torch.float32),
+            torch.zeros((0, 3), dtype=torch.int32),
+        )
+
+    if tri_verts_torch.shape[0] > 0:
+        tri_verts_torch_np = tri_verts_torch.cpu().numpy()
+    else:
+        tri_verts_torch_np = np.zeros((0, 3), dtype=np.float64)
+
+    if tri_verts_python_list:
+        tri_verts_python_np = np.concatenate(tri_verts_python_list, axis=0)
+        all_tri_np = np.concatenate([tri_verts_torch_np, tri_verts_python_np], axis=0)
+    else:
+        all_tri_np = tri_verts_torch_np
+
+    # Step G: Vertex welding
     return _weld_and_dedup(all_tri_np, merge_decimals, device=device)
 
 
