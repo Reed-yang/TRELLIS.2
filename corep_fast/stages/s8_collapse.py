@@ -1331,8 +1331,7 @@ def _process_shared_edges_torch(
     # Hybrid predicate: 4-cube edges with any neighbor having num_loops >= 2
     # still go through the Python fallback because conditional-promotion on
     # multi-loop neighbor cubes is not handled by the vectorized path.
-    import os as _os_flag
-    s8_4cube_vec = _os_flag.environ.get('COREP_FAST_S8_4CUBE_VECTORIZED', '0') == '1'
+    from corep_fast.config import S8_4CUBE_VECTORIZED as s8_4cube_vec
 
     if s8_4cube_vec:
         # Compute max neighbor num_loops per kept edge.
@@ -1690,8 +1689,7 @@ def _process_shared_edges_from_tensors(
     #   - 4-cube edges where any neighbor has num_loops >= 2 → Python fallback
     # Multi-loop neighbors are the case where conditional-promotion in
     # custom/collapse.py can fire and the vectorized path lacks that logic.
-    import os as _os_flag
-    s8_4cube_vec = _os_flag.environ.get('COREP_FAST_S8_4CUBE_VECTORIZED', '0') == '1'
+    from corep_fast.config import S8_4CUBE_VECTORIZED as s8_4cube_vec
     if s8_4cube_vec:
         n_cube_safe_for_pred = kept_table.neighbor_cube_ids.clamp(min=0).to(torch.int64)
         valid_slot_for_pred = kept_table.neighbor_cube_ids >= 0
