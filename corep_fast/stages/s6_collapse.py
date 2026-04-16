@@ -499,7 +499,7 @@ def _s6_worker(work_item):
 # Public API
 # ---------------------------------------------------------------------------
 
-def s6_collapse(batch: CubeBatch, pool=None) -> CubeBatch:
+def s6_collapse(batch: CubeBatch, pool=None, num_workers: int | None = None) -> CubeBatch:
     """Extract topological loops via normal curve theory + U-Turn enumeration.
 
     Merges custom/ collapse_edge.py (s5) + collapse_face.py (s6).
@@ -517,11 +517,19 @@ def s6_collapse(batch: CubeBatch, pool=None) -> CubeBatch:
 
     Updates loop_cube_off, loop_edge_off, loop_edge_val, status, uturn_assignment.
     """
+    import os as _os
     N = batch.num_cubes
     device = batch.device
 
     if N == 0:
         return batch
+
+    # Derive worker count
+    if num_workers is None:
+        if pool is not None:
+            num_workers = pool._num_workers
+        else:
+            num_workers = max(1, (_os.cpu_count() or 4) - 4)
 
     # ==================================================================
     # Phase 1: GPU batched checks — partition cubes
@@ -581,9 +589,12 @@ def s6_collapse(batch: CubeBatch, pool=None) -> CubeBatch:
                 bool(slow_mask_np[i]),
             ))
 
-    # Dispatch to pool or run serially
-    if pool is not None and work_items:
-        results = pool.map_chunked(_s6_worker, work_items, chunk_size=500)
+    # Dispatch via temp Pool (fork-inherited) or run serially
+    if num_workers > 1 and len(work_items) > 500:
+        from multiprocessing import Pool as _Pool
+        with _Pool(num_workers) as p:
+            results = p.map(_s6_worker, work_items,
+                            chunksize=max(1, len(work_items) // (num_workers * 4)))
     else:
         results = [_s6_worker(item) for item in work_items]
 

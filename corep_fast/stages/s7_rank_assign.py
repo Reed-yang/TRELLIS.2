@@ -487,7 +487,7 @@ def _hungarian_worker(work_item):
 # Public API
 # ---------------------------------------------------------------------------
 
-def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
+def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) -> CubeBatch:
     """Assign ranks to loop edge crossings and match loops to component points.
 
     Three-phase pipeline:
@@ -504,11 +504,19 @@ def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
     Returns:
         Updated CubeBatch with loop_edge_rank and loop_point_match.
     """
+    import os as _os
     N = batch.num_cubes
     device = batch.device
 
     if N == 0:
         return batch
+
+    # Derive worker count: explicit > legacy pool > cpu_count - 4
+    if num_workers is None:
+        if pool is not None:
+            num_workers = pool._num_workers
+        else:
+            num_workers = max(1, (_os.cpu_count() or 4) - 4)
 
     ew_np = batch.edge_weights.cpu().numpy()   # (N, 18) int32
     ci_np = batch.cube_indices.cpu().numpy()    # (N, 3)  int32
@@ -570,12 +578,11 @@ def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
         ok_cube_indices.append(i)
 
     # Dispatch rank work — use temporary Pool with fork-inherited data
-    if pool is not None and len(rank_work_items) > 500:
+    if num_workers > 1 and len(rank_work_items) > 500:
         from multiprocessing import Pool as _Pool
-        num_w = pool._num_workers
-        with _Pool(num_w) as p:
+        with _Pool(num_workers) as p:
             rank_results = p.map(_s7_rank_worker, rank_work_items,
-                                 chunksize=max(1, len(rank_work_items) // (num_w * 4)))
+                                 chunksize=max(1, len(rank_work_items) // (num_workers * 4)))
     else:
         rank_results = [_s7_rank_worker(item) for item in rank_work_items]
 
@@ -725,12 +732,11 @@ def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
         hungarian_work_items.append((cube_idx, cost_np))
 
     # Dispatch Hungarian work — use temporary Pool
-    if pool is not None and len(hungarian_work_items) > 500:
+    if num_workers > 1 and len(hungarian_work_items) > 500:
         from multiprocessing import Pool as _Pool
-        num_w = pool._num_workers
-        with _Pool(num_w) as p:
+        with _Pool(num_workers) as p:
             hungarian_results = p.map(_hungarian_worker, hungarian_work_items,
-                                      chunksize=max(1, len(hungarian_work_items) // (num_w * 4)))
+                                      chunksize=max(1, len(hungarian_work_items) // (num_workers * 4)))
     else:
         hungarian_results = [_hungarian_worker(item) for item in hungarian_work_items]
 

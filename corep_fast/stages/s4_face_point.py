@@ -63,7 +63,8 @@ _V_OFFSETS = np.array([
 ], dtype=np.float64)
 
 
-def s4_face_point(batch: CubeBatch, mesh: MeshTensors, pool=None) -> CubeBatch:
+def s4_face_point(batch: CubeBatch, mesh: MeshTensors, pool=None,
+                  num_workers: int | None = None) -> CubeBatch:
     """Compute face_weights and component_points.
 
     Part A: face_weights via CPU graph BFS, parallelized with multiprocessing.
@@ -72,7 +73,8 @@ def s4_face_point(batch: CubeBatch, mesh: MeshTensors, pool=None) -> CubeBatch:
     Args:
         batch: CubeBatch after s3 (with edge_weights, num_components, comp_face_off/val).
         mesh: MeshTensors with vertices, faces, triangles, face_adj.
-        pool: Optional PersistentWorkerPool for multiprocessing. If None, runs serially.
+        pool: Legacy PersistentWorkerPool (only used to derive num_workers if passed).
+        num_workers: Worker count for internal multiprocessing. If None, uses (cpu_count - 4).
     """
     N = batch.num_cubes
     device = batch.device
@@ -80,10 +82,14 @@ def s4_face_point(batch: CubeBatch, mesh: MeshTensors, pool=None) -> CubeBatch:
     if N == 0:
         return batch
 
+    # Derive worker count from legacy pool arg if num_workers not explicit
+    if num_workers is None and pool is not None:
+        num_workers = pool._num_workers
+
     # ------------------------------------------------------------------
     # Part 1: face_weights via CPU (multiprocessing over cubes)
     # ------------------------------------------------------------------
-    face_weights = _compute_face_weights_mp(batch, mesh, pool)
+    face_weights = _compute_face_weights_mp(batch, mesh, num_workers=num_workers)
 
     # ------------------------------------------------------------------
     # Part 2: component_points via GPU-batched kernels
@@ -112,7 +118,8 @@ _FW_TRI_VAL = None      # (T,) int32
 _FW_STEP = None         # float
 
 
-def _compute_face_weights_mp(batch: CubeBatch, mesh: MeshTensors, pool=None) -> torch.Tensor:
+def _compute_face_weights_mp(batch: CubeBatch, mesh: MeshTensors,
+                             num_workers: int | None = None) -> torch.Tensor:
     """Compute face_weights (N, 12) via per-cube CPU computation.
 
     Uses a temporary multiprocessing.Pool created AFTER setting module-level
@@ -121,6 +128,7 @@ def _compute_face_weights_mp(batch: CubeBatch, mesh: MeshTensors, pool=None) -> 
     """
     global _FW_MESH_TRIS, _FW_CUBE_IDX, _FW_TRI_OFF, _FW_TRI_VAL, _FW_STEP
 
+    import os as _os
     N = batch.num_cubes
     device = batch.device
     R = batch.resolution
@@ -133,7 +141,10 @@ def _compute_face_weights_mp(batch: CubeBatch, mesh: MeshTensors, pool=None) -> 
     mesh_faces_np = mesh.faces.cpu().numpy()
     _FW_MESH_TRIS = mesh_verts_np[mesh_faces_np]  # (F, 3, 3)
 
-    num_workers = pool._num_workers if pool is not None else 1
+    # Default: use most cores (leave 4 for main process + GPU transfers)
+    if num_workers is None:
+        num_workers = max(1, (_os.cpu_count() or 4) - 4)
+
     if num_workers > 1 and N > 500:
         from multiprocessing import Pool as _Pool
         chunksize = max(1, N // (num_workers * 4))

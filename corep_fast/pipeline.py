@@ -242,7 +242,6 @@ def corep_encode(
     """
     import torch
     from corep_fast.containers import MeshTensors
-    from corep_fast.parallel.worker_pool import PersistentWorkerPool
     from corep_fast.stages.s1_voxelize import s1_voxelize
     from corep_fast.stages.s2_components import s2_components
     from corep_fast.stages.s3_edge_weights import s3_edge_weights
@@ -254,20 +253,20 @@ def corep_encode(
     mesh = trimesh.load(mesh_path)
     mt = MeshTensors.from_trimesh(mesh, resolution, device=device)
 
+    # NOTE: no PersistentWorkerPool here. Each stage creates its own temp Pool
+    # to allow fork-inherited shared data (COW) without double-fork overhead.
     with stage_timer('s1_voxelize', pc):
         batch = s1_voxelize(mt, resolution, device)
     with stage_timer('s2_components', pc):
         batch = s2_components(batch, mt)
     with stage_timer('s3_edge_weights', pc):
         batch = s3_edge_weights(batch, mt)
-
-    with PersistentWorkerPool(num_workers=num_workers) as pool:
-        with stage_timer('s4_face_point', pc):
-            batch = s4_face_point(batch, mt, pool=pool)
-        with stage_timer('s6_collapse', pc):
-            batch = s6_collapse(batch, pool=pool)
-        with stage_timer('s7_rank_assign', pc):
-            batch = s7_rank_assign(batch, pool=pool)
+    with stage_timer('s4_face_point', pc):
+        batch = s4_face_point(batch, mt, num_workers=num_workers)
+    with stage_timer('s6_collapse', pc):
+        batch = s6_collapse(batch, num_workers=num_workers)
+    with stage_timer('s7_rank_assign', pc):
+        batch = s7_rank_assign(batch, num_workers=num_workers)
 
     return batch
 
