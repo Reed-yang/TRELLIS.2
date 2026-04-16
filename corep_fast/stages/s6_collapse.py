@@ -10,16 +10,17 @@ Output:
   - loop_edge_off (L+1,) int64  — per-loop offsets into edge list
   - loop_edge_val (E,)   int32  — flat array of edge indices per loop
   - status        (N,)   int32  — CubeStatus per cube
+  - uturn_assignment (N, 12, 3) int32 — per-facet (u1,u2,u3); -1 for fast-path
 
 Public API:
-    s6_collapse(batch) -> CubeBatch
+    s6_collapse(batch, pool=None) -> CubeBatch
 """
 from __future__ import annotations
 
 import itertools
 import math
 from collections import Counter
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set
 
 import numpy as np
 import torch
@@ -375,19 +376,146 @@ def _collapse_with_uturns(ew: List[int], fw: List[int]) -> Tuple[List[List[int]]
         return pruned[0], CubeStatus.AMBIGUOUS
 
 
+def _collapse_with_uturns_tracked(
+    ew: List[int], fw: List[int],
+) -> Tuple[List[List[int]], int, Optional[List[Tuple[int, int, int]]]]:
+    """Slow path with assignment tracking for uturn_assignment output.
+
+    Same as _collapse_with_uturns but also returns the winning assignment
+    tuple (12 x (u1, u2, u3)) when status is OK.
+
+    Returns:
+        (loops, status, assignment_or_none)
+        assignment_or_none is a list of 12 (u1,u2,u3) tuples for OK cubes,
+        None otherwise.
+    """
+    # 1. For each facet, enumerate valid (u1, u2, u3) with u1+u2+u3 = face_weight
+    face_valid_assignments: List[List[Tuple[int, int, int]]] = []
+    is_possible = True
+
+    for t_idx in range(12):
+        valid_for_face: List[Tuple[int, int, int]] = []
+        W = fw[t_idx]
+        e1, e2, e3 = _TRIANGLES[t_idx]
+
+        for u1 in range(W + 1):
+            for u2 in range(W + 1 - u1):
+                u3 = W - u1 - u2
+
+                w1 = ew[e1] - 2 * u1
+                w2 = ew[e2] - 2 * u2
+                w3 = ew[e3] - 2 * u3
+
+                if w1 < 0 or w2 < 0 or w3 < 0:
+                    continue
+                if w1 + w2 < w3 or w2 + w3 < w1 or w3 + w1 < w2:
+                    continue
+                if (w1 + w2 + w3) % 2 != 0:
+                    continue
+
+                valid_for_face.append((u1, u2, u3))
+
+        if not valid_for_face:
+            is_possible = False
+            break
+
+        face_valid_assignments.append(valid_for_face)
+
+    if not is_possible:
+        return [], CubeStatus.UNSOLVABLE, None
+
+    # Safeguard against combinatorial explosion
+    total_combinations = math.prod(len(v) for v in face_valid_assignments)
+    if total_combinations > 100000:
+        return [], CubeStatus.BUDGET_EXCEEDED, None
+
+    # 2. Cartesian product → trace loops → deduplicate
+    # Track which assignment produced each canonical solution
+    unique_solutions: Dict[Tuple, Tuple[List[List[int]], Tuple]] = {}
+
+    for assignment in itertools.product(*face_valid_assignments):
+        try:
+            loops_with_faces = _trace_loops_for_uturn_assignment(ew, assignment)
+            canonical_sol = _get_canonical_solution(
+                [loop[::2] for loop in loops_with_faces]
+            )
+            if canonical_sol not in unique_solutions:
+                unique_solutions[canonical_sol] = (
+                    [loop[::2] for loop in loops_with_faces],
+                    assignment,
+                )
+        except Exception:
+            continue
+
+    # 3. Prune backward U-Turns (any edge appearing >= 3 times in a single loop)
+    pruned: List[Tuple[List[List[int]], Tuple]] = []
+    for sol_loops, sol_assignment in unique_solutions.values():
+        is_valid = True
+        for loop in sol_loops:
+            if any(count >= 3 for count in Counter(loop).values()):
+                is_valid = False
+                break
+        if is_valid:
+            pruned.append((sol_loops, sol_assignment))
+
+    # 4. Classify
+    num_sols = len(pruned)
+    if num_sols == 0:
+        return [], CubeStatus.UNSOLVABLE, None
+    elif num_sols == 1:
+        return pruned[0][0], CubeStatus.OK, list(pruned[0][1])
+    else:
+        # Ambiguous: return the first solution but mark status
+        return pruned[0][0], CubeStatus.AMBIGUOUS, None
+
+
+# ---------------------------------------------------------------------------
+# Worker function for multiprocessing (module-level for pickling)
+# ---------------------------------------------------------------------------
+
+def _s6_worker(work_item):
+    """Process one cube for s6 collapse.
+
+    Args:
+        work_item: tuple of (cube_idx, ew_list, fw_list, is_slow_path)
+
+    Returns:
+        tuple of (cube_idx, loops, status, assignment_or_none)
+        assignment_or_none is a list of 12 (u1,u2,u3) tuples for
+        slow-path OK cubes, None otherwise.
+    """
+    cube_idx, ew_list, fw_list, is_slow_path = work_item
+
+    if is_slow_path:
+        loops, status, assignment = _collapse_with_uturns_tracked(ew_list, fw_list)
+    else:
+        loops, status = _collapse_fast(ew_list)
+        assignment = None
+
+    return (cube_idx, loops, status, assignment)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def s6_collapse(batch: CubeBatch) -> CubeBatch:
+def s6_collapse(batch: CubeBatch, pool=None) -> CubeBatch:
     """Extract topological loops via normal curve theory + U-Turn enumeration.
 
     Merges custom/ collapse_edge.py (s5) + collapse_face.py (s6).
 
-    Fast path (face_weights == 0): direct arc assignment + loop trace.
-    Slow path (face_weights > 0): U-Turn enumeration + validation.
+    Phase 1 (GPU): Batched triangle-inequality, parity, arc-count checks
+    to partition cubes into fast-path / slow-path / empty.
 
-    Updates loop_cube_off, loop_edge_off, loop_edge_val, status.
+    Phase 2 (CPU/MP): Graph construction + loop tracing via workers.
+
+    Phase 3: Assembly into CSR arrays + uturn_assignment.
+
+    Args:
+        batch: CubeBatch with edge_weights/face_weights populated (after s4).
+        pool: Optional PersistentWorkerPool for multiprocessing dispatch.
+
+    Updates loop_cube_off, loop_edge_off, loop_edge_val, status, uturn_assignment.
     """
     N = batch.num_cubes
     device = batch.device
@@ -395,31 +523,93 @@ def s6_collapse(batch: CubeBatch) -> CubeBatch:
     if N == 0:
         return batch
 
-    ew_np = batch.edge_weights.cpu().numpy()   # (N, 18)
-    fw_np = batch.face_weights.cpu().numpy()   # (N, 12)
+    # ==================================================================
+    # Phase 1: GPU batched checks — partition cubes
+    # ==================================================================
+    edge_weights = batch.edge_weights          # (N, 18) int32
+    face_weights = batch.face_weights          # (N, 12) int32
 
-    all_loops: List[List[List[int]]] = []      # per-cube list of loops
-    statuses: List[int] = []
+    # Partition cubes into fast/slow/empty paths
+    has_any_weight = edge_weights.sum(dim=1) > 0              # (N,)
+    has_uturns = (face_weights > 0).any(dim=1)                # (N,)
+    fast_path_mask = has_any_weight & ~has_uturns             # (N,)
+    slow_path_mask = has_any_weight & has_uturns              # (N,)
+    # empty_mask = ~has_any_weight  (not needed explicitly)
 
+    # GPU batched triangle-inequality + parity checks on FACETS
+    FACETS = CUBE_FACETS.to(device)                           # (12, 3)
+    w1 = edge_weights[:, FACETS[:, 0]]                        # (N, 12)
+    w2 = edge_weights[:, FACETS[:, 1]]                        # (N, 12)
+    w3 = edge_weights[:, FACETS[:, 2]]                        # (N, 12)
+
+    # Triangle inequality
+    tri_valid = (w1 + w2 >= w3) & (w2 + w3 >= w1) & (w3 + w1 >= w2)  # (N, 12)
+
+    # Parity check
+    parity_ok = ((w1 + w2 + w3) % 2) == 0                    # (N, 12)
+
+    # Arc counts (Normal Curve Theory)
+    k12 = (w1 + w2 - w3) // 2                                # (N, 12)
+    k23 = (w2 + w3 - w1) // 2
+    k31 = (w3 + w1 - w2) // 2
+
+    # Cubes that fail ANY facet check on the fast path are unsolvable
+    all_valid = tri_valid.all(dim=1) & parity_ok.all(dim=1)   # (N,)
+    # Mark fast-path cubes that fail GPU checks as unsolvable
+    # (slow-path cubes may still succeed via U-turn enumeration)
+    fast_gpu_fail = fast_path_mask & ~all_valid
+
+    # ==================================================================
+    # Phase 2: CPU/MP — build work items and dispatch
+    # ==================================================================
+    ew_np = edge_weights.cpu().numpy()                        # (N, 18)
+    fw_np = face_weights.cpu().numpy()                        # (N, 12)
+    fast_mask_np = fast_path_mask.cpu().numpy()
+    slow_mask_np = slow_path_mask.cpu().numpy()
+    fast_fail_np = fast_gpu_fail.cpu().numpy()
+
+    work_items = []
     for i in range(N):
-        ew_i = ew_np[i].tolist()
-        fw_i = fw_np[i].tolist()
-
-        # Skip cubes with all-zero weights (no surface intersection)
-        if sum(ew_i) == 0:
-            all_loops.append([])
-            statuses.append(CubeStatus.OK)
+        if fast_fail_np[i]:
+            # GPU already determined this cube is unsolvable — skip worker
             continue
+        if fast_mask_np[i] or slow_mask_np[i]:
+            work_items.append((
+                i,
+                ew_np[i].tolist(),
+                fw_np[i].tolist(),
+                bool(slow_mask_np[i]),
+            ))
 
-        if any(fw_i):
-            # Slow path: U-Turn enumeration
-            loops, status = _collapse_with_uturns(ew_i, fw_i)
-        else:
-            # Fast path: direct arc assignment + loop trace
-            loops, status = _collapse_fast(ew_i)
+    # Dispatch to pool or run serially
+    if pool is not None and work_items:
+        results = pool.map_chunked(_s6_worker, work_items, chunk_size=500)
+    else:
+        results = [_s6_worker(item) for item in work_items]
 
-        all_loops.append(loops)
-        statuses.append(status)
+    # ==================================================================
+    # Phase 3: Assembly — collect results, build CSR + uturn_assignment
+    # ==================================================================
+
+    # Initialize per-cube containers
+    per_cube_loops: List[List[List[int]]] = [[] for _ in range(N)]
+    per_cube_status = np.zeros(N, dtype=np.int32)  # default OK=0
+    uturn_np = np.full((N, 12, 3), -1, dtype=np.int32)
+
+    # Mark GPU-failed fast-path cubes
+    for i in range(N):
+        if fast_fail_np[i]:
+            per_cube_status[i] = CubeStatus.UNSOLVABLE
+
+    # Populate from worker results
+    for cube_idx, loops, status, assignment in results:
+        per_cube_loops[cube_idx] = loops
+        per_cube_status[cube_idx] = status
+        if assignment is not None and status == CubeStatus.OK:
+            for f_idx, (u1, u2, u3) in enumerate(assignment):
+                uturn_np[cube_idx, f_idx, 0] = u1
+                uturn_np[cube_idx, f_idx, 1] = u2
+                uturn_np[cube_idx, f_idx, 2] = u3
 
     # ------------------------------------------------------------------
     # Pack into two-level CSR:
@@ -431,7 +621,7 @@ def s6_collapse(batch: CubeBatch) -> CubeBatch:
     edge_offsets = [0]
     edge_vals: List[int] = []
 
-    for loops in all_loops:
+    for loops in per_cube_loops:
         cube_offsets.append(cube_offsets[-1] + len(loops))
         for loop in loops:
             edge_offsets.append(edge_offsets[-1] + len(loop))
@@ -441,7 +631,8 @@ def s6_collapse(batch: CubeBatch) -> CubeBatch:
     loop_edge_off = torch.tensor(edge_offsets, dtype=torch.int64, device=device)
     loop_edge_val = torch.tensor(edge_vals, dtype=torch.int32, device=device) if edge_vals else \
         torch.zeros(0, dtype=torch.int32, device=device)
-    status_tensor = torch.tensor(statuses, dtype=torch.int32, device=device)
+    status_tensor = torch.tensor(per_cube_status, dtype=torch.int32, device=device)
+    uturn_tensor = torch.tensor(uturn_np, dtype=torch.int32, device=device)
 
     return _replace_fields(
         batch,
@@ -449,4 +640,5 @@ def s6_collapse(batch: CubeBatch) -> CubeBatch:
         loop_edge_off=loop_edge_off,
         loop_edge_val=loop_edge_val,
         status=status_tensor,
+        uturn_assignment=uturn_tensor,
     )
