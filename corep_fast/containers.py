@@ -79,7 +79,15 @@ class MeshTensors:
             raise ValueError("MeshTensors.from_trimesh: degenerate mesh with zero extent")
         # Apply 0.947 safety margin matching custom/voxelize.py
         scale = 0.947 / extent
-        verts_np = (verts_np - center_np) * scale + 0.5  # map into [0.0265, 0.9735]
+        # Asymmetric per-axis centering offset matches custom/voxelize.normalize_mesh
+        # (lines 54-56). Avoids placing symmetric meshes (sphere, cube, axis-aligned
+        # CAD) exactly on voxel boundaries i/R, which would trigger degenerate
+        # branches in S1 SAT (strict >/< without epsilon), S3 Moller-Trumbore, and
+        # S4 facet-coplanar tests. With +0.5 a unit sphere's axis vertex lands at
+        # (0.964, 0.5, 0.5) — y/z exactly = 16/32 at res=32; the offset shifts
+        # them to (0.953, 0.506, 0.513) so no axis sits on a voxel boundary.
+        offset = np.array([0.489, 0.506, 0.513], dtype=np.float32)
+        verts_np = (verts_np - center_np) * scale + offset
 
         verts = torch.from_numpy(verts_np).to(device=device, dtype=torch.float32)
         faces = torch.from_numpy(faces_np).to(device=device, dtype=torch.int32)
