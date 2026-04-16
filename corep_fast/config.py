@@ -12,8 +12,23 @@ Three logical config pieces:
 from __future__ import annotations
 
 import enum
+import os
 from dataclasses import dataclass, replace
 from typing import Literal
+
+
+# ---------------------------------------------------------------------------
+# M2 feature flags (set via env vars for easy toggle in profile runs)
+# ---------------------------------------------------------------------------
+
+# P1: Skip dict intermediate in s8 (direct-tensor path).
+USE_DIRECT_TENSOR_S8 = os.environ.get('COREP_FAST_S8_DIRECT_TENSOR', '1') == '1'
+
+# P2: GPU-accelerated face_weights in s4.
+USE_GPU_FW_S4 = os.environ.get('COREP_FAST_S4_GPU_FW', '1') == '1'
+
+# P3: Build grids directly from CubeBatch tensors in s8 (no cube_map dict).
+USE_DIRECT_GRIDS_S8 = os.environ.get('COREP_FAST_S8_DIRECT_GRIDS', '1') == '1'
 
 
 # ---------------------------------------------------------------------------
