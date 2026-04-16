@@ -92,18 +92,15 @@ def sh_clip_against_plane(
 
         # Emit 1: intersection for case3 (outside->inside, intersection first)
         emit1 = case3
-        if emit1.any():
-            out, out_count = _emit(out, out_count, intersection, emit1)
+        _emit(out, out_count, intersection, emit1)
 
         # Emit 2: vj for case1 or case3
         emit2 = case1 | case3
-        if emit2.any():
-            out, out_count = _emit(out, out_count, vj, emit2)
+        _emit(out, out_count, vj, emit2)
 
         # Emit 3: intersection for case2 (inside->outside)
         emit3 = case2
-        if emit3.any():
-            out, out_count = _emit(out, out_count, intersection, emit3)
+        _emit(out, out_count, intersection, emit3)
 
     return out, out_count
 
@@ -113,8 +110,13 @@ def _emit(
     out_count: torch.Tensor,
     vertex: torch.Tensor,
     mask: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> None:
     """Write *vertex* into *out* at position *out_count* for polygons where *mask* is True.
+
+    Mutates *out* and *out_count* in-place.  When *mask* is all-False the
+    advanced-index scatter is a no-op (writes nothing), so no explicit guard
+    is needed — this avoids a device-to-host sync that ``mask.any()`` would
+    trigger on CUDA tensors.
 
     Parameters
     ----------
@@ -122,14 +124,7 @@ def _emit(
     out_count : (C,) int32  current write cursor per polygon.
     vertex : (C, 3)         vertex to emit.
     mask : (C,) bool        which polygons should emit.
-
-    Returns
-    -------
-    out, out_count  (mutated in-place where safe, but returned for clarity).
     """
-    if not mask.any():
-        return out, out_count
-
     C = out.shape[0]
     device = out.device
 
@@ -138,15 +133,11 @@ def _emit(
     idx = idx.clamp(max=MAX_VERTS - 1)
 
     # Build scatter index: for each polygon c where mask[c], write vertex[c]
-    # into out[c, idx[c], :].
-    # We do this via advanced indexing on a clone to avoid in-place issues.
+    # into out[c, idx[c], :].  In-place is safe — out and out_count are local
+    # buffers with no autograd graph.
     c_idx = torch.arange(C, device=device)
-    out = out.clone()
     out[c_idx[mask], idx[mask], :] = vertex[mask]
-    out_count = out_count.clone()
     out_count[mask] += 1
-
-    return out, out_count
 
 
 def sh_clip_aabb(

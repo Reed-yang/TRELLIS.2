@@ -40,6 +40,17 @@ def plane_triangle_intersect(
             plane (has vertices on **both** sides, i.e. at least one
             strictly positive *and* at least one strictly negative signed
             distance).
+
+    Note:
+        Edge-case: when one vertex lies exactly on the plane (d_i == 0)
+        and the other two are on opposite sides, only one edge crossing
+        is detected (d_i * d_j == 0 does not satisfy ``< 0``), producing
+        a degenerate segment (seg_p1 == seg_p2).  In practice this is
+        harmless for the CoReP pipeline because (a) float32/float64
+        makes exact d==0 essentially impossible for general meshes, and
+        (b) the upstream s4 cube-facet planes never pass exactly through
+        mesh vertices after normalization.  If this ever matters, the
+        crossing check can be extended to handle on-plane vertices.
     """
     K = triangles.shape[0]
     dev = triangles.device

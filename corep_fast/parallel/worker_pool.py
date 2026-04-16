@@ -65,7 +65,7 @@ class PersistentWorkerPool:
             chunk_size: Items per worker chunk.
 
         Returns:
-            Flat list of results (order may differ from input).
+            Flat list of results in the same order as input.
         """
         if not items:
             return []
