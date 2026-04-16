@@ -30,13 +30,19 @@ USE_GPU_FW_S4 = os.environ.get('COREP_FAST_S4_GPU_FW', '1') == '1'
 # P3: Build grids directly from CubeBatch tensors in s8 (no cube_map dict).
 USE_DIRECT_GRIDS_S8 = os.environ.get('COREP_FAST_S8_DIRECT_GRIDS', '1') == '1'
 
-# Phase 2 W1: Vectorize 4-cube edge geometry, eliminating Python fallback.
+# Phase 2 W1 (s8): Vectorize 4-cube edge geometry, eliminating Python fallback.
 # Default OFF — safe baseline. Flip to "1" after A/B parity is confirmed in Phase 3.
 S8_4CUBE_VECTORIZED = os.environ.get('COREP_FAST_S8_4CUBE_VECTORIZED', '0') == '1'
 
-# Phase 2 W2: GPU batched parallel BFS for s7 Phase 1 rank tracing.
+# Phase 2 W2 (s7): GPU batched parallel BFS for s7 Phase 1 rank tracing.
 # Default OFF — safe baseline. Flip to "1" after A/B parity is confirmed in Phase 3.
 S7_PHASE1_GPU = os.environ.get('COREP_FAST_S7_PHASE1_GPU', '0') == '1'
+
+# Phase 2 W3 (s6): GPU vectorized fast-path for s6_collapse (80-90% of cubes).
+# When ON, fast-path cubes (face_weights==0) are processed via batched GPU
+# adjacency + parallel cycle traversal instead of CPU MP. Default OFF until
+# Phase 3 merge.
+S6_FASTPATH_GPU = os.environ.get('COREP_FAST_S6_FASTPATH_GPU', '0') == '1'
 
 
 # ---------------------------------------------------------------------------
