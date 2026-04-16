@@ -47,6 +47,7 @@ def decode_from_cubebatch(
         resolution=batch.resolution,
         cube_data_list=cube_data_list,
         merge_decimals=merge_decimals,
+        use_torch_path=True,  # Use fully vectorized Torch path (baseline s8_torch)
     )
     return vertices, faces
 
