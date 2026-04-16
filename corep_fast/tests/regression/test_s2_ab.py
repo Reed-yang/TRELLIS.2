@@ -53,6 +53,16 @@ class TestS2AB:
         assert torch.equal(gpu_nc[gpu_order], custom_nc[custom_order]), \
             "num_components mismatch"
 
+    def test_comp_face_csr_populated(self, custom_regs, gpu_batch):
+        """s2 must populate comp_face_off / comp_face_val CSR."""
+        N = gpu_batch.num_cubes
+        assert gpu_batch.comp_face_off.shape == (N + 1,)
+        assert gpu_batch.comp_face_off[0] == 0
+        total_cf = int(gpu_batch.comp_face_off[-1].item())
+        assert total_cf > 0, "comp_face_val must be non-empty for non-trivial mesh"
+        assert gpu_batch.comp_face_val.shape == (total_cf,)
+        assert (gpu_batch.comp_face_val >= 0).all()
+
     def test_num_boundary_exact_match(self, custom_regs, gpu_batch):
         custom_nb = torch.tensor(
             [r.get('num_boundary', 0) for r in custom_regs], dtype=torch.int32)

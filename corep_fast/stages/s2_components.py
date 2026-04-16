@@ -163,10 +163,36 @@ def s2_components(batch: CubeBatch, mesh: MeshTensors) -> CubeBatch:
 
     num_components = transitions.sum(dim=1).to(torch.int32)  # (N,)
 
-    # --- Step 6: num_boundary = 0 for now ---
+    # --- Step 6: Build comp_face CSR (face ids grouped by component per cube) ---
+    # Sort each cube's face slots by component label so faces of the same
+    # component are contiguous.  Padding slots (label == max_faces) sort last.
+    sort_keys = labels_for_count  # (N, max_faces) — padding has max_faces
+    _, sort_order = sort_keys.sort(dim=1, stable=True)  # (N, max_faces)
+
+    # Gather face ids in component-grouped order
+    sorted_faces = padded_faces.gather(1, sort_order)  # (N, max_faces) int32
+    sorted_mask = mask.gather(1, sort_order)            # (N, max_faces) bool
+
+    # Per-cube valid face counts (same as `counts` computed earlier)
+    per_cube_counts = counts  # (N,) int64
+
+    # Build CSR offsets from per-cube counts
+    comp_face_off = torch.zeros(N + 1, dtype=torch.int64, device=device)
+    torch.cumsum(per_cube_counts, dim=0, out=comp_face_off[1:])
+
+    # Flatten valid entries into comp_face_val
+    comp_face_val = sorted_faces[sorted_mask].to(torch.int32)  # (total_faces,)
+
+    # --- Step 7: num_boundary = 0 for now ---
     num_boundary = torch.zeros(N, dtype=torch.int32, device=device)
 
-    return _replace_fields(batch, num_components=num_components, num_boundary=num_boundary)
+    return _replace_fields(
+        batch,
+        num_components=num_components,
+        num_boundary=num_boundary,
+        comp_face_off=comp_face_off,
+        comp_face_val=comp_face_val,
+    )
 
 
 def _label_propagation_sequential(
