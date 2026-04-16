@@ -301,3 +301,46 @@ class TestS7AB:
             f"(skipped {skipped_uturn} U-turn cubes). "
             f"First: {first_mismatch_info}"
         )
+
+    def test_loop_point_match_in_range(self, gpu_batch):
+        """Every loop_point_match index must be within [0, n_points) for that cube."""
+        loop_cube_off = gpu_batch.loop_cube_off.cpu()
+        loop_point_match = gpu_batch.loop_point_match.cpu()
+        point_offsets = gpu_batch.point_offsets.cpu()
+        status = gpu_batch.status.cpu()
+
+        N = gpu_batch.num_cubes
+        violations = 0
+        checked = 0
+        first_violation = None
+
+        for i in range(N):
+            if int(status[i]) != CubeStatus.OK:
+                continue
+            l_lo = int(loop_cube_off[i])
+            l_hi = int(loop_cube_off[i + 1])
+            n_loops = l_hi - l_lo
+            if n_loops == 0:
+                continue
+
+            p_lo = int(point_offsets[i])
+            p_hi = int(point_offsets[i + 1])
+            n_points = p_hi - p_lo
+
+            checked += 1
+            for li in range(l_lo, l_hi):
+                m = int(loop_point_match[li])
+                if m < 0 or (n_points > 0 and m >= n_points):
+                    violations += 1
+                    if first_violation is None:
+                        first_violation = (
+                            f"cube {i}: loop {li} matched to point {m}, "
+                            f"but n_points={n_points}"
+                        )
+                    break
+
+        assert checked > 0, "No OK cubes with loops were checked"
+        assert violations == 0, (
+            f"{violations}/{checked} cubes have out-of-range loop_point_match. "
+            f"First: {first_violation}"
+        )
