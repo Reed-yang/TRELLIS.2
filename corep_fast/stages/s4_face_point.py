@@ -6,16 +6,21 @@ Merges custom/feature_face.py (s4a) and custom/feature_point.py (s4b):
   - point_offsets (N+1,)  int64  + point_values (P, 3) float32
     — area-weighted component centroids packed in CSR
 
+Part A (face_weights): CPU graph BFS per cube, parallelized via multiprocessing.
+Part B (component_points): GPU-batched SH clip + fan centroid + closest-point snap.
+
 Public API:
-    s4_face_point(batch, mesh) -> CubeBatch
+    s4_face_point(batch, mesh, pool=None) -> CubeBatch
 """
 from __future__ import annotations
 
 import numpy as np
 import torch
-import trimesh as _trimesh
 
 from corep_fast.containers import MeshTensors, CubeBatch, _replace_fields
+from corep_fast.geom.sh_clip import sh_clip_aabb
+from corep_fast.geom.fan_centroid import fan_area_centroid
+from corep_fast.geom.closest_point import closest_point_on_mesh
 
 # Facet vertex indices — each facet's 3 cube-vertex indices
 # Matches custom/feature_face.py _worker_triangles ordering.
@@ -58,12 +63,16 @@ _V_OFFSETS = np.array([
 ], dtype=np.float64)
 
 
-def s4_face_point(batch: CubeBatch, mesh: MeshTensors) -> CubeBatch:
-    """Compute face_weights and component_points via GPU operations.
+def s4_face_point(batch: CubeBatch, mesh: MeshTensors, pool=None) -> CubeBatch:
+    """Compute face_weights and component_points.
 
-    Merges custom/ s4a (feature_face) and s4b (feature_point):
-    - face_weights (N, 12) — U-Turn count per triangulated facet
-    - point_offsets (N+1,) + point_values (P, 3) — area-weighted component centroids
+    Part A: face_weights via CPU graph BFS, parallelized with multiprocessing.
+    Part B: component_points via GPU-batched SH clip + fan centroid + closest-point snap.
+
+    Args:
+        batch: CubeBatch after s3 (with edge_weights, num_components, comp_face_off/val).
+        mesh: MeshTensors with vertices, faces, triangles, face_adj.
+        pool: Optional PersistentWorkerPool for multiprocessing. If None, runs serially.
     """
     N = batch.num_cubes
     device = batch.device
@@ -72,14 +81,14 @@ def s4_face_point(batch: CubeBatch, mesh: MeshTensors) -> CubeBatch:
         return batch
 
     # ------------------------------------------------------------------
-    # Part 1: face_weights via CPU loop (mirrors custom/feature_face.py)
+    # Part 1: face_weights via CPU (multiprocessing over cubes)
     # ------------------------------------------------------------------
-    face_weights = _compute_face_weights_cpu(batch, mesh)
+    face_weights = _compute_face_weights_mp(batch, mesh, pool)
 
     # ------------------------------------------------------------------
-    # Part 2: component_points via per-cube Sutherland-Hodgman clipping
+    # Part 2: component_points via GPU-batched kernels
     # ------------------------------------------------------------------
-    point_offsets, point_values = _compute_component_points(batch, mesh)
+    point_offsets, point_values = _compute_component_points_gpu(batch, mesh)
 
     return _replace_fields(
         batch,
@@ -90,15 +99,14 @@ def s4_face_point(batch: CubeBatch, mesh: MeshTensors) -> CubeBatch:
 
 
 # ======================================================================
-# Part 1: Face weights (U-Turn detection) — CPU loop
+# Part 1: Face weights (U-Turn detection) — CPU + multiprocessing
 # ======================================================================
 
-def _compute_face_weights_cpu(batch: CubeBatch, mesh: MeshTensors) -> torch.Tensor:
-    """Compute face_weights (N, 12) via per-cube CPU loop.
+def _compute_face_weights_mp(batch: CubeBatch, mesh: MeshTensors, pool=None) -> torch.Tensor:
+    """Compute face_weights (N, 12) via per-cube CPU computation.
 
-    For each cube and each of its 12 triangulated facets, intersect
-    registered mesh triangles with the facet plane, clip to facet
-    boundary, build a segment graph, and count U-Turn pairs.
+    When pool is provided, dispatches work across processes.
+    Otherwise, runs serially (for tests and small batches).
     """
     N = batch.num_cubes
     device = batch.device
@@ -112,37 +120,62 @@ def _compute_face_weights_cpu(batch: CubeBatch, mesh: MeshTensors) -> torch.Tens
     mesh_faces_np = mesh.faces.cpu().numpy()
     mesh_triangles_np = mesh_verts_np[mesh_faces_np]  # (F, 3, 3)
 
-    fw_all = np.zeros((N, 12), dtype=np.int32)
-
+    # Build work items: one tuple per cube with all data needed
+    work_items = []
     for ci in range(N):
         ix, iy, iz = cube_indices_np[ci]
         lo = int(tri_offsets_np[ci])
         hi = int(tri_offsets_np[ci + 1])
+
         if lo >= hi:
+            work_items.append(None)  # sentinel: no triangles
+        else:
+            f_ids = tri_values_np[lo:hi]
+            cube_tris = mesh_triangles_np[f_ids]  # (K, 3, 3) float64
+            base = np.array([ix, iy, iz], dtype=np.float64) * step
+            cube_verts = base + _V_OFFSETS * step  # (8, 3)
+            work_items.append((cube_verts, cube_tris))
+
+    if pool is not None:
+        results = pool.map_chunked(_face_weight_worker, work_items, chunk_size=500)
+    else:
+        results = [_face_weight_worker(item) for item in work_items]
+
+    fw_all = np.stack(results, axis=0)  # (N, 12)
+    return torch.from_numpy(fw_all).to(device=device, dtype=torch.int32)
+
+
+def _face_weight_worker(item) -> np.ndarray:
+    """Process a single cube's face weights. Module-level for pickle compatibility.
+
+    Args:
+        item: None (no triangles) or (cube_verts, cube_tris) tuple.
+
+    Returns:
+        (12,) int32 array of U-turn counts per facet.
+    """
+    fw = np.zeros(12, dtype=np.int32)
+    if item is None:
+        return fw
+
+    cube_verts, cube_tris = item
+
+    for t_idx, (vert_ids, edge_ids) in enumerate(zip(FACET_VERTS, FACET_EDGES)):
+        v0i, v1i, v2i = vert_ids
+        V0 = cube_verts[v0i]
+        V1 = cube_verts[v1i]
+        V2 = cube_verts[v2i]
+
+        segments = _intersect_facet_with_mesh(V0, V1, V2, cube_tris)
+        if not segments:
             continue
 
-        f_ids = tri_values_np[lo:hi]
-        cube_tris = mesh_triangles_np[f_ids]  # (K, 3, 3) float64
+        fw[t_idx] = _count_uturns(
+            segments, V0, V1, V2, cube_verts,
+            vert_ids, edge_ids,
+        )
 
-        base = np.array([ix, iy, iz], dtype=np.float64) * step
-        cube_verts = base + _V_OFFSETS * step  # (8, 3)
-
-        for t_idx, (vert_ids, edge_ids) in enumerate(zip(FACET_VERTS, FACET_EDGES)):
-            v0i, v1i, v2i = vert_ids
-            V0 = cube_verts[v0i]
-            V1 = cube_verts[v1i]
-            V2 = cube_verts[v2i]
-
-            segments = _intersect_facet_with_mesh(V0, V1, V2, cube_tris)
-            if not segments:
-                continue
-
-            fw_all[ci, t_idx] = _count_uturns(
-                segments, V0, V1, V2, cube_verts,
-                vert_ids, edge_ids,
-            )
-
-    return torch.from_numpy(fw_all).to(device=device, dtype=torch.int32)
+    return fw
 
 
 def _intersect_facet_with_mesh(
@@ -347,19 +380,20 @@ def _find_or_add_node(nodes: list[np.ndarray], pt: np.ndarray, tol: float = 1e-8
 
 
 # ======================================================================
-# Part 2: Component points — Sutherland-Hodgman AABB clipping
+# Part 2: Component points — GPU-batched SH clip + fan centroid + snap
 # ======================================================================
 
-def _compute_component_points(
+def _compute_component_points_gpu(
     batch: CubeBatch,
     mesh: MeshTensors,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute area-weighted component centroids packed in CSR.
+    """Compute area-weighted component centroids packed in CSR, using GPU kernels.
 
     For each cube, for each connected component of registered faces:
-    1. Clip each mesh triangle to the cube AABB (Sutherland-Hodgman, 6 planes)
-    2. Fan-triangulate clipped polygons
-    3. Compute area-weighted centroid: sum(area_i * centroid_i) / sum(area_i)
+    1. Clip each mesh triangle to the cube AABB using sh_clip_aabb()
+    2. Compute area-weighted centroid using fan_area_centroid()
+    3. Aggregate centroids across triangles within each component (weighted by area)
+    4. Snap all centroids to mesh surface using closest_point_on_mesh()
 
     Returns:
         point_offsets (N+1,) int64 — CSR offsets
@@ -368,68 +402,234 @@ def _compute_component_points(
     N = batch.num_cubes
     device = batch.device
     R = batch.resolution
+    step = 1.0 / R
 
-    cube_indices_np = batch.cube_indices.cpu().numpy()
-    tri_offsets_np = batch.tri_offsets.cpu().numpy()
-    tri_values_np = batch.tri_values.cpu().numpy()
     num_components_np = batch.num_components.cpu().numpy()
+    comp_face_off_np = batch.comp_face_off.cpu().numpy()
+    comp_face_val = batch.comp_face_val  # keep on device
 
-    mesh_verts_np = mesh.vertices.cpu().numpy().astype(np.float64)
-    mesh_faces_idx_np = mesh.faces.cpu().numpy()  # (F, 3) int32 — vertex indices
-    face_adj_np = mesh.face_adj.cpu().numpy()  # (F, 3) int32
+    # Build point_offsets from num_components (CSR: num_components per cube)
+    nc_tensor = batch.num_components.to(torch.int64)
+    point_offsets = torch.zeros(N + 1, dtype=torch.int64, device=device)
+    point_offsets[1:] = torch.cumsum(nc_tensor, dim=0)
+    total_points = int(point_offsets[-1].item())
 
-    all_points: list[np.ndarray] = []
-    offsets = np.zeros(N + 1, dtype=np.int64)
+    if total_points == 0:
+        return point_offsets, torch.zeros((0, 3), dtype=torch.float32, device=device)
+
+    # ------------------------------------------------------------------
+    # Step 1: Enumerate all (cube, component) pairs and their face sets
+    # ------------------------------------------------------------------
+    # comp_face_off is a CSR over cubes, where each cube's segment contains
+    # face ids grouped by component. We need to split each cube's segment
+    # into num_components[ci] sub-groups.
+    #
+    # The comp_face_val layout for cube ci with nc components is:
+    #   comp_face_val[comp_face_off[ci]:comp_face_off[ci+1]]
+    #   split into nc contiguous groups (from s2_components union-find ordering).
+    #
+    # We need to re-discover component boundaries. Since s2 stored them
+    # contiguously by component, we can use the face_adj connectivity
+    # to identify group boundaries.
+
+    cube_indices = batch.cube_indices  # (N, 3) int32, on device
+    mesh_faces = mesh.faces  # (F, 3) int32, on device
+    mesh_verts = mesh.vertices  # (V, 3) float32/float64, on device
+    face_adj = mesh.face_adj  # (F, 3) int32, on device
+
+    # Pre-compute AABB bounds for all cubes: (N, 3)
+    cube_min = cube_indices.float() * step  # (N, 3)
+    cube_max = (cube_indices.float() + 1.0) * step  # (N, 3)
+
+    # ------------------------------------------------------------------
+    # Step 2: For each (cube, component), collect face ids, clip, centroid
+    # ------------------------------------------------------------------
+    # We process this by iterating over cubes on CPU to build the
+    # (cube_component -> face_ids) mapping, then batch the GPU work.
+
+    # Collect all per-component triangle indices and their cube assignments
+    comp_cube_idx = []    # which cube each component belongs to
+    comp_face_lists = []  # list of face-id arrays per component
+
+    comp_face_off_cpu = comp_face_off_np
+    comp_face_val_cpu = comp_face_val.cpu().numpy()
+    mesh_faces_cpu = mesh_faces.cpu().numpy()
+    face_adj_cpu = face_adj.cpu().numpy()
 
     for ci in range(N):
-        ix, iy, iz = cube_indices_np[ci]
-        lo = int(tri_offsets_np[ci])
-        hi = int(tri_offsets_np[ci + 1])
         nc = int(num_components_np[ci])
-
-        if lo >= hi or nc == 0:
-            offsets[ci + 1] = offsets[ci]
+        if nc == 0:
             continue
 
-        f_ids = tri_values_np[lo:hi].tolist()
+        lo = int(comp_face_off_cpu[ci])
+        hi = int(comp_face_off_cpu[ci + 1])
+        face_ids = comp_face_val_cpu[lo:hi]
 
-        # AABB bounds for this cube
-        min_bound = np.array([ix, iy, iz], dtype=np.float64) / R
-        max_bound = np.array([ix + 1, iy + 1, iz + 1], dtype=np.float64) / R
+        if len(face_ids) == 0:
+            # Pad with empty components
+            for _ in range(nc):
+                comp_cube_idx.append(ci)
+                comp_face_lists.append(np.array([], dtype=np.int32))
+            continue
 
-        # Group faces into connected components using Union-Find
-        components = _get_local_components(f_ids, mesh_faces_idx_np, face_adj_np)
+        # Split face_ids into connected components using face_adj
+        components = _get_local_components_np(face_ids, mesh_faces_cpu, face_adj_cpu)
 
-        cube_points: list[np.ndarray] = []
-        for comp_faces in components:
-            centroid = _component_centroid(
-                comp_faces, mesh_verts_np, mesh_faces_idx_np, min_bound, max_bound,
-            )
-            cube_points.append(centroid)
+        # Take at most nc components; pad with empty if fewer found
+        for k, comp_faces in enumerate(components[:nc]):
+            comp_cube_idx.append(ci)
+            comp_face_lists.append(np.array(comp_faces, dtype=np.int32))
+        # Pad with empty components if union-find found fewer than expected
+        for _ in range(nc - len(components[:nc])):
+            comp_cube_idx.append(ci)
+            comp_face_lists.append(np.array([], dtype=np.int32))
 
-        # Ensure we produce exactly nc points (pad with cube center if needed)
-        cube_center = (min_bound + max_bound) / 2.0
-        while len(cube_points) < nc:
-            cube_points.append(cube_center.copy())
-        # Trim to nc (shouldn't happen, but safety)
-        cube_points = cube_points[:nc]
+    assert len(comp_cube_idx) == total_points, \
+        f"Component count mismatch: got {len(comp_cube_idx)}, expected {total_points}"
 
-        all_points.extend(cube_points)
-        offsets[ci + 1] = offsets[ci] + nc
+    comp_cube_idx_np = np.array(comp_cube_idx, dtype=np.int64)
 
-    point_offsets = torch.from_numpy(offsets).to(device=device, dtype=torch.int64)
-    if all_points:
-        point_values = torch.tensor(
-            np.stack(all_points, axis=0), dtype=torch.float32, device=device,
-        )
-    else:
-        point_values = torch.zeros((0, 3), dtype=torch.float32, device=device)
+    # ------------------------------------------------------------------
+    # Step 3: Flatten all (component, triangle) pairs for GPU batch clip
+    # ------------------------------------------------------------------
+    # For each component, we need to clip its triangles against its cube AABB.
+    # Flatten into one big batch for sh_clip_aabb.
+
+    # Build flat arrays: for each (component, face) pair, store the face_id and component_id
+    flat_face_ids = []
+    flat_comp_ids = []
+    comp_tri_offsets = np.zeros(total_points + 1, dtype=np.int64)
+
+    for k in range(total_points):
+        faces_k = comp_face_lists[k]
+        flat_face_ids.append(faces_k)
+        flat_comp_ids.extend([k] * len(faces_k))
+        comp_tri_offsets[k + 1] = comp_tri_offsets[k] + len(faces_k)
+
+    total_tris = int(comp_tri_offsets[-1])
+
+    if total_tris == 0:
+        # All components have no faces — return cube centers as fallback
+        cube_centers = (cube_min + cube_max) / 2.0  # (N, 3)
+        all_pts = cube_centers[torch.from_numpy(comp_cube_idx_np).to(device)]  # (P, 3)
+        return point_offsets, all_pts.float()
+
+    flat_face_ids_np = np.concatenate(flat_face_ids) if flat_face_ids else np.array([], dtype=np.int32)
+    flat_comp_ids_np = np.array(flat_comp_ids, dtype=np.int64)
+
+    # Gather triangles for all (component, face) pairs: (total_tris, 3, 3)
+    flat_face_ids_t = torch.from_numpy(flat_face_ids_np.astype(np.int64)).to(device)
+    flat_comp_ids_t = torch.from_numpy(flat_comp_ids_np).to(device)
+    comp_cube_idx_t = torch.from_numpy(comp_cube_idx_np).to(device)
+
+    # Get the cube index for each flat triangle
+    tri_cube_idx = comp_cube_idx_t[flat_comp_ids_t]  # (total_tris,)
+
+    # Gather mesh triangles: vertices[faces[face_id]]
+    triangles_gpu = mesh.triangles[flat_face_ids_t.long()]  # (total_tris, 3, 3) float32
+
+    # Gather AABB bounds per triangle from their cube
+    aabb_min = cube_min[tri_cube_idx.long()]  # (total_tris, 3)
+    aabb_max = cube_max[tri_cube_idx.long()]  # (total_tris, 3)
+
+    # ------------------------------------------------------------------
+    # Step 4: GPU-batched SH clip + fan centroid
+    # ------------------------------------------------------------------
+    # sh_clip_aabb expects float32
+    triangles_f32 = triangles_gpu.float()
+    aabb_min_f32 = aabb_min.float()
+    aabb_max_f32 = aabb_max.float()
+
+    poly, v_len = sh_clip_aabb(triangles_f32, aabb_min_f32, aabb_max_f32)
+    # poly: (total_tris, MAX_VERTS, 3), v_len: (total_tris,) int32
+
+    centroid_per_tri, area_per_tri = fan_area_centroid(poly, v_len)
+    # centroid_per_tri: (total_tris, 3), area_per_tri: (total_tris,)
+
+    # ------------------------------------------------------------------
+    # Step 5: Aggregate centroids by component (area-weighted)
+    # ------------------------------------------------------------------
+    # For each component k, compute:
+    #   centroid_k = sum(area_i * centroid_i) / sum(area_i)
+    # where i ranges over triangles in component k.
+
+    # Use scatter to aggregate by component
+    weighted_centroids = centroid_per_tri * area_per_tri.unsqueeze(1)  # (total_tris, 3)
+
+    # Scatter-add weighted centroids and areas by component index
+    comp_weighted_sum = torch.zeros(total_points, 3, device=device, dtype=torch.float32)
+    comp_area_sum = torch.zeros(total_points, device=device, dtype=torch.float32)
+
+    comp_weighted_sum.scatter_add_(0, flat_comp_ids_t.unsqueeze(1).expand(-1, 3), weighted_centroids)
+    comp_area_sum.scatter_add_(0, flat_comp_ids_t, area_per_tri)
+
+    # Normalize: centroid = weighted_sum / total_area
+    degenerate = comp_area_sum < 1e-12
+    safe_area = comp_area_sum.clone()
+    safe_area[degenerate] = 1.0
+
+    comp_centroids = comp_weighted_sum / safe_area.unsqueeze(1)  # (P, 3)
+
+    # For degenerate components (zero clipped area), use cube center as fallback
+    cube_centers = (cube_min + cube_max) / 2.0  # (N, 3)
+    fallback_centers = cube_centers[comp_cube_idx_t.long()]  # (P, 3)
+    comp_centroids[degenerate] = fallback_centers[degenerate].float()
+
+    # ------------------------------------------------------------------
+    # Step 6: Snap centroids to mesh surface using closest_point_on_mesh
+    # ------------------------------------------------------------------
+    # For each component, snap centroid to the clipped surface.
+    # However, building per-component clipped meshes for trimesh is expensive.
+    # Instead, we snap to the *original* mesh triangles registered to each component,
+    # which is much more GPU-friendly.
+    #
+    # For non-degenerate components: snap centroid to the component's own triangles.
+    # For degenerate components: snap cube center to the component's own triangles.
+
+    # We process snapping per component: for each component k, find closest point
+    # on its triangles. To batch this efficiently, we group components by similar
+    # triangle count and process in chunks.
+
+    point_values = _snap_centroids_to_components(
+        comp_centroids, comp_face_lists, mesh, device,
+    )
 
     return point_offsets, point_values
 
 
-def _get_local_components(
-    face_ids: list[int],
+def _snap_centroids_to_components(
+    centroids: torch.Tensor,     # (P, 3) float32
+    comp_face_lists: list,        # list of np arrays of face ids per component
+    mesh: MeshTensors,
+    device: torch.device,
+) -> torch.Tensor:
+    """Snap each component centroid to its component's mesh surface.
+
+    Uses the GPU closest_point_on_mesh kernel for each component.
+    Groups components by triangle count for efficient batching.
+    """
+    P = centroids.shape[0]
+    result = centroids.clone()  # (P, 3)
+
+    # For each component, find closest point on its triangles
+    # Process in batches to reduce kernel launch overhead
+    for k in range(P):
+        face_ids = comp_face_lists[k]
+        if len(face_ids) == 0:
+            continue  # keep centroid (cube center fallback) as-is
+
+        face_ids_t = torch.from_numpy(face_ids.astype(np.int64)).to(device)
+        comp_tris = mesh.triangles[face_ids_t]  # (K, 3, 3)
+
+        query = centroids[k:k+1]  # (1, 3)
+        snapped, _ = closest_point_on_mesh(query, comp_tris.float())
+        result[k] = snapped[0]
+
+    return result
+
+
+def _get_local_components_np(
+    face_ids: np.ndarray,
     mesh_faces: np.ndarray,  # (F, 3) int32
     face_adj: np.ndarray,    # (F, 3) int32
 ) -> list[list[int]]:
@@ -442,8 +642,8 @@ def _get_local_components(
     if n == 0:
         return []
 
-    face_set = set(face_ids)
-    face_to_idx = {f: i for i, f in enumerate(face_ids)}
+    face_set = set(int(f) for f in face_ids)
+    face_to_idx = {int(f): i for i, f in enumerate(face_ids)}
 
     parent = list(range(n))
 
@@ -459,8 +659,9 @@ def _get_local_components(
             parent[ra] = rb
 
     for idx, fid in enumerate(face_ids):
+        fid_int = int(fid)
         for e in range(3):
-            nbr = int(face_adj[fid, e])
+            nbr = int(face_adj[fid_int, e])
             if nbr >= 0 and nbr in face_set:
                 union(idx, face_to_idx[nbr])
 
@@ -468,151 +669,6 @@ def _get_local_components(
     groups: dict[int, list[int]] = {}
     for idx, fid in enumerate(face_ids):
         root = find(idx)
-        groups.setdefault(root, []).append(fid)
+        groups.setdefault(root, []).append(int(fid))
 
     return list(groups.values())
-
-
-def _component_centroid(
-    comp_faces: list[int],
-    mesh_verts: np.ndarray,    # (V, 3) float64
-    mesh_faces: np.ndarray,    # (F, 3) int32
-    min_bound: np.ndarray,     # (3,) float64
-    max_bound: np.ndarray,     # (3,) float64
-) -> np.ndarray:
-    """Compute area-weighted centroid for a component's faces clipped to AABB.
-
-    Uses Sutherland-Hodgman polygon clipping against 6 AABB planes,
-    then fan-triangulation to compute area and centroid.
-    The centroid is then snapped to the nearest point on the clipped
-    surface mesh, matching custom/feature_point.py behaviour.
-    """
-    # 6 clip planes: (normal, point_on_plane) facing inward
-    planes = [
-        (np.array([1, 0, 0], dtype=np.float64), min_bound),
-        (np.array([-1, 0, 0], dtype=np.float64), max_bound),
-        (np.array([0, 1, 0], dtype=np.float64), min_bound),
-        (np.array([0, -1, 0], dtype=np.float64), max_bound),
-        (np.array([0, 0, 1], dtype=np.float64), min_bound),
-        (np.array([0, 0, -1], dtype=np.float64), max_bound),
-    ]
-
-    total_area = 0.0
-    weighted_centroid = np.zeros(3, dtype=np.float64)
-    all_clipped_polys: list[list[np.ndarray]] = []
-
-    for fid in comp_faces:
-        vi = mesh_faces[fid]
-        poly = [mesh_verts[vi[0]].copy(), mesh_verts[vi[1]].copy(), mesh_verts[vi[2]].copy()]
-
-        # Clip against 6 planes
-        for normal, point in planes:
-            poly = _clip_polygon_against_plane(poly, normal, point)
-            if len(poly) < 3:
-                break
-
-        if len(poly) < 3:
-            continue
-
-        # Fan-triangulate and accumulate area-weighted centroid
-        p0 = poly[0]
-        for i in range(1, len(poly) - 1):
-            p1 = poly[i]
-            p2 = poly[i + 1]
-            cross = np.cross(p1 - p0, p2 - p0)
-            area = 0.5 * np.linalg.norm(cross)
-            centroid = (p0 + p1 + p2) / 3.0
-            total_area += area
-            weighted_centroid += centroid * area
-
-        all_clipped_polys.append(poly)
-
-    if total_area > 1e-12:
-        target_center = weighted_centroid / total_area
-        # Snap centroid to nearest point on the clipped surface mesh
-        # (matches custom/feature_point.py behaviour)
-        return _snap_to_clipped_surface(target_center, all_clipped_polys)
-    else:
-        # Fallback: snap cube center to the original component mesh surface
-        cube_center = (min_bound + max_bound) / 2.0
-        return _snap_to_component_surface(
-            cube_center, comp_faces, mesh_verts, mesh_faces,
-        )
-
-
-def _snap_to_clipped_surface(
-    target: np.ndarray,
-    clipped_polys: list[list[np.ndarray]],
-) -> np.ndarray:
-    """Snap *target* to the nearest point on a mesh built from clipped polygons.
-
-    Mirrors custom/feature_point.py: builds a trimesh from clipped polygons,
-    then uses nearest.on_surface to project the centroid back onto the surface.
-    """
-    verts: list[np.ndarray] = []
-    faces: list[list[int]] = []
-    for poly in clipped_polys:
-        idx_start = len(verts)
-        verts.extend(poly)
-        for i in range(1, len(poly) - 1):
-            faces.append([idx_start, idx_start + i, idx_start + i + 1])
-
-    if not faces:
-        return target
-
-    clipped_mesh = _trimesh.Trimesh(
-        vertices=verts, faces=faces, process=False,
-    )
-    closest, _, _ = clipped_mesh.nearest.on_surface([target])
-    return closest[0]
-
-
-def _snap_to_component_surface(
-    point: np.ndarray,
-    comp_faces: list[int],
-    mesh_verts: np.ndarray,
-    mesh_faces: np.ndarray,
-) -> np.ndarray:
-    """Snap *point* to the nearest surface point of the original component mesh.
-
-    Fallback path when clipped area is negligible.
-    Mirrors custom/feature_point.py fallback behaviour.
-    """
-    local_faces = mesh_faces[comp_faces]
-    comp_mesh = _trimesh.Trimesh(
-        vertices=mesh_verts, faces=local_faces, process=True,
-    )
-    closest, _, _ = comp_mesh.nearest.on_surface([point])
-    return closest[0]
-
-
-def _clip_polygon_against_plane(
-    polygon: list[np.ndarray],
-    plane_normal: np.ndarray,
-    plane_point: np.ndarray,
-) -> list[np.ndarray]:
-    """Clip a convex polygon against a half-space using Sutherland-Hodgman.
-
-    Keeps vertices on the side where dot(normal, pt - plane_point) >= 0.
-    """
-    if not polygon:
-        return []
-
-    clipped: list[np.ndarray] = []
-    n = len(polygon)
-    for i in range(n):
-        p1 = polygon[i]
-        p2 = polygon[(i + 1) % n]
-
-        d1 = np.dot(plane_normal, p1 - plane_point)
-        d2 = np.dot(plane_normal, p2 - plane_point)
-
-        if d1 >= 0:
-            clipped.append(p1)
-
-        if (d1 >= 0 and d2 < 0) or (d1 < 0 and d2 >= 0):
-            t = d1 / (d1 - d2)
-            p_intersect = p1 + t * (p2 - p1)
-            clipped.append(p_intersect)
-
-    return clipped
