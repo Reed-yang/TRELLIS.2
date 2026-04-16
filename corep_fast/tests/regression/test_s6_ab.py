@@ -68,8 +68,8 @@ class TestS6AB:
         batch = s1_voxelize(mesh_ns, ab_resolution, gpu_device)
         batch = s2_components(batch, mesh_ns)
         batch = s3_edge_weights(batch, mesh_ns)
-        batch = s4_face_point(batch, mesh_ns)
-        return s6_collapse(batch)
+        batch = s4_face_point(batch, mesh_ns, pool=None)
+        return s6_collapse(batch, pool=None)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -183,3 +183,32 @@ class TestS6AB:
             f"{mismatches} OK cubes have loop mismatches. "
             f"First: {first_mismatch_info}"
         )
+
+    def test_uturn_assignment_populated(self, gpu_batch):
+        """Verify uturn_assignment: valid for slow-path OK cubes, all -1 for fast-path."""
+        N = gpu_batch.num_cubes
+        face_weights = gpu_batch.face_weights.cpu()           # (N, 12)
+        status = gpu_batch.status.cpu()                        # (N,)
+        uturn = gpu_batch.uturn_assignment.cpu()               # (N, 12, 3)
+
+        assert uturn.shape == (N, 12, 3)
+        assert uturn.dtype == torch.int32
+
+        for i in range(N):
+            has_face_weight = face_weights[i].any().item()
+
+            if has_face_weight and int(status[i]) == CubeStatus.OK:
+                # Slow-path OK cube: uturn_assignment should have valid values
+                # (not all -1). At least one facet must have a non-negative entry.
+                assert not (uturn[i] == -1).all().item(), (
+                    f"cube {i}: slow-path OK but uturn_assignment is all -1"
+                )
+                # All values must be >= 0 for slow-path OK cubes
+                assert (uturn[i] >= 0).all().item(), (
+                    f"cube {i}: slow-path OK but uturn_assignment has -1 entries"
+                )
+            else:
+                # Fast-path cubes or non-OK cubes: uturn_assignment should be all -1
+                assert (uturn[i] == -1).all().item(), (
+                    f"cube {i}: fast-path/non-OK but uturn_assignment is not all -1"
+                )
