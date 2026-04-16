@@ -20,6 +20,34 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
+# CSR helpers for direct-tensor s8 path (M2 P1)
+# ---------------------------------------------------------------------------
+
+def _csr_expand_to_items(offsets: torch.Tensor, total: int) -> torch.Tensor:
+    """Given CSR offsets (N+1,), return a (total,) tensor mapping each
+    item to its group index.
+
+    Equivalent to np.repeat(np.arange(N), np.diff(offsets)), but on GPU.
+
+    Args:
+        offsets: (N+1,) int64/int32 monotonic offsets, starting from 0.
+        total: int, the length of the output (should equal offsets[-1]).
+
+    Returns:
+        (total,) int64 group index per item.
+    """
+    device = offsets.device
+    if total <= 0:
+        return torch.zeros(0, dtype=torch.int64, device=device)
+    arange = torch.arange(total, dtype=offsets.dtype, device=device)
+    # bucketize with right=True: arange[i] lies in [offsets[b], offsets[b+1])
+    # offsets[1:] excludes the leading 0; bucketize returns b.
+    # With right=True, a value equal to offsets[b+1] advances to group b+1,
+    # matching CSR semantics where offsets[b] is inclusive, offsets[b+1] exclusive.
+    return torch.bucketize(arange, offsets[1:], right=True).to(torch.int64)
+
+
+# ---------------------------------------------------------------------------
 # CubeBatch → (vertices, faces) decoder entry point
 # ---------------------------------------------------------------------------
 
