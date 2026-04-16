@@ -844,3 +844,109 @@ def _expand_pairs_gpu(batch: CubeBatch, mesh: MeshTensors) -> dict:
         facet_vertices=facet_vertices,
         mesh_triangles=mesh_triangles,
     )
+
+
+def _clip_segment_to_triangle_vectorized(
+    P1: torch.Tensor, P2: torch.Tensor,
+    V0: torch.Tensor, V1: torch.Tensor, V2: torch.Tensor,
+    Nc: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """For each pair, clip segment P1->P2 to interior of triangle (V0, V1, V2).
+
+    Parametric Sutherland-Hodgman clip: t in [0, 1] represents P1 + t*(P2-P1).
+    For each of the 3 triangle edges, compute the half-plane crossing param
+    and narrow [t_min, t_max].
+
+    Mirrors the per-pair `_intersect_facet_with_mesh` clip block (lines
+    264-289) but vectorized over P pairs on GPU.
+
+    Args:
+        P1, P2:        (P, 3) segment endpoints.
+        V0, V1, V2:    (P, 3) facet triangle vertices.
+        Nc:            (P, 3) unit facet normal.
+
+    Returns:
+        A_out: (P, 3) clipped start endpoint.
+        B_out: (P, 3) clipped end endpoint.
+        valid: (P,)   bool — True if segment has nonzero length after clip.
+    """
+    P = P1.shape[0]
+    device = P1.device
+    dtype = P1.dtype
+    dP = P2 - P1
+
+    t_min = torch.zeros(P, device=device, dtype=dtype)
+    t_max = torch.ones(P, device=device, dtype=dtype)
+    valid = torch.ones(P, dtype=torch.bool, device=device)
+
+    facet_verts = torch.stack([V0, V1, V2], dim=1)  # (P, 3, 3)
+    for j in range(3):
+        A_j = facet_verts[:, j, :]
+        B_j = facet_verts[:, (j + 1) % 3, :]
+        edge_vec = B_j - A_j
+        # nk: half-plane normal pointing INSIDE the facet (Nc x edge)
+        nk = torch.cross(Nc, edge_vec, dim=1)
+
+        Ck_P1 = ((P1 - A_j) * nk).sum(dim=1)
+        dot = (dP * nk).sum(dim=1)
+
+        pos_dot = dot > 1e-8
+        neg_dot = dot < -1e-8
+        zero_dot = ~(pos_dot | neg_dot)
+
+        # Avoid division by zero; we mask the result via pos_dot/neg_dot.
+        safe_dot = torch.where(dot.abs() > 1e-12, dot, torch.ones_like(dot))
+        t_candidate = -Ck_P1 / safe_dot
+        t_min = torch.where(pos_dot, torch.maximum(t_min, t_candidate), t_min)
+        t_max = torch.where(neg_dot, torch.minimum(t_max, t_candidate), t_max)
+        # If parallel and the segment is on the outside half-space, drop it.
+        valid = valid & ~(zero_dot & (Ck_P1 < -1e-8))
+
+    valid = valid & (t_min <= t_max + 1e-8) & ((t_max - t_min) > 1e-8)
+    A_out = P1 + t_min.unsqueeze(1) * dP
+    B_out = P1 + t_max.unsqueeze(1) * dP
+    return A_out, B_out, valid
+
+
+def _batch_plane_tri_with_clip(
+    facet_vertices: torch.Tensor,  # (P, 3, 3) float32
+    mesh_triangles: torch.Tensor,  # (P, 3, 3) float32
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute plane-triangle intersection + clip to facet for each pair.
+
+    For each (facet, mesh_tri) pair:
+      1. Build the facet plane (V0, normal Nc).
+      2. Intersect mesh_tri with that plane via plane_triangle_intersect.
+      3. Clip the resulting segment to the facet triangle interior via
+         vectorized Sutherland-Hodgman.
+
+    Args:
+        facet_vertices: (P, 3, 3) facet triangle vertices.
+        mesh_triangles: (P, 3, 3) mesh triangle vertices.
+
+    Returns:
+        A:     (P, 3) clipped start point (float32).
+        B:     (P, 3) clipped end point.
+        valid: (P,)   bool — True if a usable segment exists.
+    """
+    V0 = facet_vertices[:, 0, :]
+    V1 = facet_vertices[:, 1, :]
+    V2 = facet_vertices[:, 2, :]
+
+    E1 = V1 - V0
+    E2 = V2 - V0
+    Nc_raw = torch.cross(E1, E2, dim=1)
+    len_Nc = torch.linalg.norm(Nc_raw, dim=1, keepdim=True).clamp_min(1e-12)
+    Nc = Nc_raw / len_Nc
+
+    from corep_fast.geom.plane_tri_intersect import plane_triangle_intersect
+    A, B, valid_pt = plane_triangle_intersect(
+        triangles=mesh_triangles,
+        plane_normals=Nc,
+        plane_points=V0,
+    )
+
+    A_clip, B_clip, valid_clip = _clip_segment_to_triangle_vectorized(
+        A, B, V0, V1, V2, Nc,
+    )
+    return A_clip, B_clip, valid_pt & valid_clip
