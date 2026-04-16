@@ -619,26 +619,104 @@ def _snap_centroids_to_components(
 ) -> torch.Tensor:
     """Snap each component centroid to its component's mesh surface.
 
-    Uses the GPU closest_point_on_mesh kernel for each component.
-    Groups components by triangle count for efficient batching.
+    BATCHED GPU implementation: pad components to max_k triangles, apply
+    Ericson §5.1.5 region decomposition across all (centroid, triangle) pairs
+    in a single kernel call. Replaces a per-centroid Python loop that caused
+    ~275K GPU kernel launches at res=256.
     """
     P = centroids.shape[0]
-    result = centroids.clone()  # (P, 3)
+    if P == 0:
+        return centroids
 
-    # For each component, find closest point on its triangles
-    # Process in batches to reduce kernel launch overhead
-    for k in range(P):
-        face_ids = comp_face_lists[k]
-        if len(face_ids) == 0:
-            continue  # keep centroid (cube center fallback) as-is
+    # Find max triangle count across components
+    max_k = 0
+    for f in comp_face_lists:
+        if len(f) > max_k:
+            max_k = len(f)
+    if max_k == 0:
+        # All components empty — keep centroids as-is (cube centers)
+        return centroids.clone()
 
-        face_ids_t = torch.from_numpy(face_ids.astype(np.int64)).to(device)
-        comp_tris = mesh.triangles[face_ids_t]  # (K, 3, 3)
+    # Build padded face ids (P, max_k) with -1 for padding
+    face_ids_padded = np.full((P, max_k), -1, dtype=np.int64)
+    for k, face_ids in enumerate(comp_face_lists):
+        n = len(face_ids)
+        if n > 0:
+            face_ids_padded[k, :n] = face_ids
 
-        query = centroids[k:k+1]  # (1, 3)
-        snapped, _ = closest_point_on_mesh(query, comp_tris.float())
-        result[k] = snapped[0]
+    face_ids_t = torch.from_numpy(face_ids_padded).to(device)  # (P, max_k)
+    mask = face_ids_t >= 0  # (P, max_k) bool
+    safe_ids = face_ids_t.clamp(min=0)  # replace -1 with 0 for safe indexing
 
+    # Gather triangles: (P, max_k, 3, 3)
+    all_triangles = mesh.triangles.float()  # (F, 3, 3)
+    comp_tris = all_triangles[safe_ids]  # (P, max_k, 3, 3)
+
+    # Batched closest-point-on-triangle (Ericson §5.1.5) for (P, max_k) pairs.
+    # Shape trick: each query is paired with its own row of max_k triangles.
+    q = centroids.unsqueeze(1)  # (P, 1, 3)
+    a = comp_tris[:, :, 0, :]   # (P, max_k, 3)
+    b = comp_tris[:, :, 1, :]
+    c = comp_tris[:, :, 2, :]
+
+    ab = b - a                  # (P, max_k, 3)
+    ac = c - a
+    aq = q - a                  # (P, max_k, 3)
+    bq = q - b
+    cq = q - c
+
+    d1 = (ab * aq).sum(dim=-1)  # (P, max_k)
+    d2 = (ac * aq).sum(dim=-1)
+    d3 = (ab * bq).sum(dim=-1)
+    d4 = (ac * bq).sum(dim=-1)
+    d5 = (ab * cq).sum(dim=-1)
+    d6 = (ac * cq).sum(dim=-1)
+
+    region_a = (d1 <= 0) & (d2 <= 0)
+    region_b = (d3 >= 0) & (d4 <= d3)
+    region_c = (d6 >= 0) & (d5 <= d6)
+
+    vc = d1 * d4 - d3 * d2
+    edge_ab = (vc <= 0) & (d1 >= 0) & (d3 <= 0)
+    v_ab = d1 / (d1 - d3 + 1e-30)
+
+    vb = d5 * d2 - d1 * d6
+    edge_ac = (vb <= 0) & (d2 >= 0) & (d6 <= 0)
+    w_ac = d2 / (d2 - d6 + 1e-30)
+
+    va2 = d3 * d6 - d5 * d4
+    edge_bc = (va2 <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)
+    w_bc = (d4 - d3) / ((d4 - d3) + (d5 - d6) + 1e-30)
+
+    denom = 1.0 / (va2 + vb + vc + 1e-30)
+    v_int = vb * denom
+    w_int = vc * denom
+
+    closest = a + v_int.unsqueeze(-1) * ab + w_int.unsqueeze(-1) * ac  # (P, max_k, 3)
+    closest = torch.where(edge_bc.unsqueeze(-1), b + w_bc.unsqueeze(-1) * (c - b), closest)
+    closest = torch.where(edge_ac.unsqueeze(-1), a + w_ac.unsqueeze(-1) * ac, closest)
+    closest = torch.where(edge_ab.unsqueeze(-1), a + v_ab.unsqueeze(-1) * ab, closest)
+    closest = torch.where(region_c.unsqueeze(-1), c, closest)
+    closest = torch.where(region_b.unsqueeze(-1), b, closest)
+    closest = torch.where(region_a.unsqueeze(-1), a, closest)
+
+    diff = q - closest                        # (P, max_k, 3)
+    sq_dists = (diff * diff).sum(dim=-1)      # (P, max_k)
+
+    # Mask out padding triangles (set distance to +inf)
+    sq_dists = torch.where(mask, sq_dists, torch.full_like(sq_dists, float('inf')))
+
+    # For each centroid, pick the triangle with minimum distance
+    min_idx = sq_dists.argmin(dim=1)  # (P,)
+
+    # Gather the best closest point per centroid
+    # closest: (P, max_k, 3) → pick closest[k, min_idx[k], :] for each k
+    best_idx = min_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, 3)  # (P, 1, 3)
+    snapped = closest.gather(1, best_idx).squeeze(1)  # (P, 3)
+
+    # Components with no triangles (all masked out) keep original centroid
+    any_valid = mask.any(dim=1)  # (P,) bool
+    result = torch.where(any_valid.unsqueeze(-1), snapped, centroids)
     return result
 
 
