@@ -764,3 +764,83 @@ def _get_local_components_np(
         groups.setdefault(root, []).append(int(fid))
 
     return list(groups.values())
+
+
+# ======================================================================
+# P2: GPU face_weights helpers
+# ======================================================================
+
+# Lazily-cached torch versions of FACET_VERTS / _V_OFFSETS, keyed by device.
+_FACET_VERTS_T: torch.Tensor | None = None
+_V_OFFSETS_T: torch.Tensor | None = None
+
+
+def _get_facet_constants(device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return (facet_verts_t, v_offsets_t) tensors on `device`, cached."""
+    global _FACET_VERTS_T, _V_OFFSETS_T
+    if (
+        _FACET_VERTS_T is None
+        or _V_OFFSETS_T is None
+        or _FACET_VERTS_T.device != device
+    ):
+        _FACET_VERTS_T = torch.tensor(FACET_VERTS, dtype=torch.int64, device=device)
+        _V_OFFSETS_T = torch.tensor(_V_OFFSETS, dtype=torch.float32, device=device)
+    return _FACET_VERTS_T, _V_OFFSETS_T
+
+
+def _csr_expand_to_items(offsets: torch.Tensor, total: int) -> torch.Tensor:
+    """CSR offsets (N+1,) → (total,) item-to-group mapping via bucketize."""
+    if total <= 0:
+        return torch.zeros(0, dtype=torch.int64, device=offsets.device)
+    arange = torch.arange(total, dtype=offsets.dtype, device=offsets.device)
+    return torch.bucketize(arange, offsets[1:], right=False).to(torch.int64)
+
+
+def _expand_pairs_gpu(batch: CubeBatch, mesh: MeshTensors) -> dict:
+    """Expand (cube, facet, mesh_tri) into flat pair tensors on GPU.
+
+    For each registered (cube, mesh_tri) pair (from batch.tri_*), produce
+    12 entries — one per facet of the cube. Returns dict with:
+        cube_id        : (P,)       int64 — cube index per pair
+        facet_id       : (P,)       int64 — facet 0..11
+        mesh_id        : (P,)       int64 — mesh triangle index
+        facet_vertices : (P, 3, 3)  float32 — V0, V1, V2 in world coords
+        mesh_triangles : (P, 3, 3)  float32 — M0, M1, M2
+    """
+    device = batch.device
+    T = batch.tri_values.shape[0]
+    if T == 0:
+        return dict(
+            cube_id=torch.zeros(0, dtype=torch.int64, device=device),
+            facet_id=torch.zeros(0, dtype=torch.int64, device=device),
+            mesh_id=torch.zeros(0, dtype=torch.int64, device=device),
+            facet_vertices=torch.zeros((0, 3, 3), dtype=torch.float32, device=device),
+            mesh_triangles=torch.zeros((0, 3, 3), dtype=torch.float32, device=device),
+        )
+
+    facet_verts_t, v_offsets_t = _get_facet_constants(device)
+
+    # Cube per tri via CSR
+    cube_per_tri = _csr_expand_to_items(batch.tri_offsets, T)  # (T,) int64
+
+    # Cross product with 12 facets
+    cube_per_pair = cube_per_tri.repeat_interleave(12)                              # (T*12,)
+    facet_per_pair = torch.arange(12, dtype=torch.int64, device=device).repeat(T)   # (T*12,)
+    mesh_per_pair = batch.tri_values.to(torch.int64).repeat_interleave(12)          # (T*12,)
+
+    # Facet vertices: cube_base + V_OFFSETS[facet_verts[facet_id]] * step
+    step = 1.0 / batch.resolution
+    cube_base = batch.cube_indices[cube_per_pair].to(torch.float32) * step          # (P, 3)
+    facet_v_idx = facet_verts_t[facet_per_pair]                                     # (P, 3)
+    facet_vertices = cube_base.unsqueeze(1) + v_offsets_t[facet_v_idx] * step       # (P, 3, 3)
+
+    # Mesh triangles
+    mesh_triangles = mesh.triangles[mesh_per_pair]  # (P, 3, 3)
+
+    return dict(
+        cube_id=cube_per_pair,
+        facet_id=facet_per_pair,
+        mesh_id=mesh_per_pair,
+        facet_vertices=facet_vertices,
+        mesh_triangles=mesh_triangles,
+    )
