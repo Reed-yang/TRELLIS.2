@@ -890,21 +890,34 @@ def s6_collapse(batch: CubeBatch, pool=None, num_workers: int | None = None) -> 
                 )
                 fastpath_gpu_results[cube_idx] = (loops, CubeStatus.OK)
 
-    work_items = []
-    for i in range(N):
-        if fast_fail_np[i]:
-            # GPU already determined this cube is unsolvable — skip worker
-            continue
-        if _cfg.S6_FASTPATH_GPU and fast_mask_np[i]:
-            # Fast-path cube was handled on GPU; skip CPU worker.
-            continue
-        if fast_mask_np[i] or slow_mask_np[i]:
-            work_items.append((
-                i,
-                ew_np[i].tolist(),
-                fw_np[i].tolist(),
-                bool(slow_mask_np[i]),
-            ))
+    # ------------------------------------------------------------------
+    # W3 / O7: tensor-native work-item dispatch.
+    # Replace per-cube Python iter with torch.nonzero + bulk numpy slicing.
+    # When S6_FASTPATH_GPU is on, fast-path cubes are excluded from the
+    # CPU worker queue (handled above); otherwise they go through workers.
+    # ------------------------------------------------------------------
+    if _cfg.S6_FASTPATH_GPU:
+        worker_mask = (fast_path_mask | slow_path_mask) & ~fast_gpu_fail \
+            & ~fast_path_mask
+        # = slow_path_mask & ~fast_gpu_fail (fast_gpu_fail is a subset of fast_path_mask
+        # so the second clause is moot, but kept for explicitness).
+    else:
+        worker_mask = (fast_path_mask | slow_path_mask) & ~fast_gpu_fail
+    worker_idx_t = torch.nonzero(worker_mask, as_tuple=False).squeeze(1)
+    worker_idx_np = worker_idx_t.cpu().numpy().astype(np.int64, copy=False)
+    n_work = int(worker_idx_np.shape[0])
+    if n_work > 0:
+        # Bulk gather rows once; .tolist() on the whole row block is much
+        # faster than per-cube .tolist() because the inner numpy loop is in C.
+        ew_rows = ew_np[worker_idx_np].tolist()       # list[list[int]] length n_work
+        fw_rows = fw_np[worker_idx_np].tolist()
+        slow_flags = slow_mask_np[worker_idx_np].astype(bool, copy=False).tolist()
+        work_items = [
+            (int(worker_idx_np[k]), ew_rows[k], fw_rows[k], slow_flags[k])
+            for k in range(n_work)
+        ]
+    else:
+        work_items = []
 
     # Dispatch via temp Pool (fork-inherited) or run serially
     if num_workers > 1 and len(work_items) > 500:
@@ -924,10 +937,8 @@ def s6_collapse(batch: CubeBatch, pool=None, num_workers: int | None = None) -> 
     per_cube_status = np.zeros(N, dtype=np.int32)  # default OK=0
     uturn_np = np.full((N, 12, 3), -1, dtype=np.int32)
 
-    # Mark GPU-failed fast-path cubes
-    for i in range(N):
-        if fast_fail_np[i]:
-            per_cube_status[i] = CubeStatus.UNSOLVABLE
+    # Mark GPU-failed fast-path cubes (W3 / O7: numpy mask assignment).
+    per_cube_status[fast_fail_np] = CubeStatus.UNSOLVABLE
 
     # Populate fast-path GPU results (W3 / O5)
     for cube_idx, (loops, status) in fastpath_gpu_results.items():
@@ -945,27 +956,51 @@ def s6_collapse(batch: CubeBatch, pool=None, num_workers: int | None = None) -> 
                 uturn_np[cube_idx, f_idx, 2] = u3
 
     # ------------------------------------------------------------------
-    # Pack into two-level CSR:
+    # Pack into two-level CSR (W3 / O7: numpy cumsum-driven, avoids per-loop
+    # list.append + extend on hot path).
     #   loop_cube_off[i] .. loop_cube_off[i+1]  → loops for cube i
     #   loop_edge_off[j] .. loop_edge_off[j+1]  → edges for loop j
     #   loop_edge_val[k]                          → edge index
     # ------------------------------------------------------------------
-    cube_offsets = [0]
-    edge_offsets = [0]
-    edge_vals: List[int] = []
+    # Step 1: per-cube loop count (vectorized via numpy)
+    n_loops_per_cube = np.fromiter(
+        (len(loops) for loops in per_cube_loops),
+        dtype=np.int64, count=N,
+    )
+    cube_offsets_np = np.empty(N + 1, dtype=np.int64)
+    cube_offsets_np[0] = 0
+    np.cumsum(n_loops_per_cube, out=cube_offsets_np[1:])
 
-    for loops in per_cube_loops:
-        cube_offsets.append(cube_offsets[-1] + len(loops))
-        for loop in loops:
-            edge_offsets.append(edge_offsets[-1] + len(loop))
-            edge_vals.extend(loop)
+    # Step 2: flatten loops into a single Python list-of-lists, then per-loop
+    # length and concatenated edge values.
+    flat_loops: List[List[int]] = []
+    if any(per_cube_loops):
+        for loops in per_cube_loops:
+            if loops:
+                flat_loops.extend(loops)
 
-    loop_cube_off = torch.tensor(cube_offsets, dtype=torch.int64, device=device)
-    loop_edge_off = torch.tensor(edge_offsets, dtype=torch.int64, device=device)
-    loop_edge_val = torch.tensor(edge_vals, dtype=torch.int32, device=device) if edge_vals else \
-        torch.zeros(0, dtype=torch.int32, device=device)
-    status_tensor = torch.tensor(per_cube_status, dtype=torch.int32, device=device)
-    uturn_tensor = torch.tensor(uturn_np, dtype=torch.int32, device=device)
+    n_edges_per_loop = np.fromiter(
+        (len(lp) for lp in flat_loops),
+        dtype=np.int64, count=len(flat_loops),
+    )
+    edge_offsets_np = np.empty(len(flat_loops) + 1, dtype=np.int64)
+    edge_offsets_np[0] = 0
+    np.cumsum(n_edges_per_loop, out=edge_offsets_np[1:])
+
+    total_edges = int(edge_offsets_np[-1]) if edge_offsets_np.size > 0 else 0
+    if total_edges > 0:
+        # Concatenate all loop edge sequences in one numpy call.
+        edge_vals_np = np.concatenate(
+            [np.asarray(lp, dtype=np.int32) for lp in flat_loops]
+        )
+    else:
+        edge_vals_np = np.zeros(0, dtype=np.int32)
+
+    loop_cube_off = torch.from_numpy(cube_offsets_np).to(device)
+    loop_edge_off = torch.from_numpy(edge_offsets_np).to(device)
+    loop_edge_val = torch.from_numpy(edge_vals_np).to(device)
+    status_tensor = torch.from_numpy(per_cube_status).to(device)
+    uturn_tensor = torch.from_numpy(uturn_np).to(device)
 
     return _replace_fields(
         batch,
