@@ -64,10 +64,12 @@ _V_OFFSETS = np.array([
 
 
 def s4_face_point(batch: CubeBatch, mesh: MeshTensors, pool=None,
-                  num_workers: int | None = None) -> CubeBatch:
+                  num_workers: int | None = None,
+                  use_gpu_fw: bool | None = None) -> CubeBatch:
     """Compute face_weights and component_points.
 
-    Part A: face_weights via CPU graph BFS, parallelized with multiprocessing.
+    Part A: face_weights via CPU graph BFS, parallelized with multiprocessing
+            (default), or GPU-accelerated batch path when ``use_gpu_fw`` is True.
     Part B: component_points via GPU-batched SH clip + fan centroid + closest-point snap.
 
     Args:
@@ -75,6 +77,8 @@ def s4_face_point(batch: CubeBatch, mesh: MeshTensors, pool=None,
         mesh: MeshTensors with vertices, faces, triangles, face_adj.
         pool: Legacy PersistentWorkerPool (only used to derive num_workers if passed).
         num_workers: Worker count for internal multiprocessing. If None, uses (cpu_count - 4).
+        use_gpu_fw: If True, use GPU-accelerated face_weights path (M2 P2).
+                    If None, defaults to corep_fast.config.USE_GPU_FW_S4.
     """
     N = batch.num_cubes
     device = batch.device
@@ -87,9 +91,16 @@ def s4_face_point(batch: CubeBatch, mesh: MeshTensors, pool=None,
         num_workers = pool._num_workers
 
     # ------------------------------------------------------------------
-    # Part 1: face_weights via CPU (multiprocessing over cubes)
+    # Part 1: face_weights — GPU batch path (M2 P2) or CPU MP fallback
     # ------------------------------------------------------------------
-    face_weights = _compute_face_weights_mp(batch, mesh, num_workers=num_workers)
+    if use_gpu_fw is None:
+        from corep_fast.config import USE_GPU_FW_S4
+        use_gpu_fw = USE_GPU_FW_S4
+
+    if use_gpu_fw:
+        face_weights = _compute_face_weights_gpu(batch, mesh)
+    else:
+        face_weights = _compute_face_weights_mp(batch, mesh, num_workers=num_workers)
 
     # ------------------------------------------------------------------
     # Part 2: component_points via GPU-batched kernels
@@ -789,11 +800,18 @@ def _get_facet_constants(device: torch.device) -> tuple[torch.Tensor, torch.Tens
 
 
 def _csr_expand_to_items(offsets: torch.Tensor, total: int) -> torch.Tensor:
-    """CSR offsets (N+1,) → (total,) item-to-group mapping via bucketize."""
+    """CSR offsets (N+1,) → (total,) item-to-group mapping via bucketize.
+
+    For item k (0..total-1), returns the smallest cube j such that
+    ``offsets[j] <= k < offsets[j+1]``. We compare against the right
+    boundaries (``offsets[1:]``) and need ``right=True`` so that an item
+    sitting exactly on a boundary is attributed to the cube whose segment
+    starts there (k=offsets[i] -> cube i, not cube i-1).
+    """
     if total <= 0:
         return torch.zeros(0, dtype=torch.int64, device=offsets.device)
     arange = torch.arange(total, dtype=offsets.dtype, device=offsets.device)
-    return torch.bucketize(arange, offsets[1:], right=False).to(torch.int64)
+    return torch.bucketize(arange, offsets[1:], right=True).to(torch.int64)
 
 
 def _expand_pairs_gpu(batch: CubeBatch, mesh: MeshTensors) -> dict:
@@ -914,24 +932,31 @@ def _batch_plane_tri_with_clip(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute plane-triangle intersection + clip to facet for each pair.
 
-    For each (facet, mesh_tri) pair:
-      1. Build the facet plane (V0, normal Nc).
-      2. Intersect mesh_tri with that plane via plane_triangle_intersect.
-      3. Clip the resulting segment to the facet triangle interior via
-         vectorized Sutherland-Hodgman.
-
-    Args:
-        facet_vertices: (P, 3, 3) facet triangle vertices.
-        mesh_triangles: (P, 3, 3) mesh triangle vertices.
-
-    Returns:
-        A:     (P, 3) clipped start point (float32).
-        B:     (P, 3) clipped end point.
-        valid: (P,)   bool — True if a usable segment exists.
+    Mirrors `_intersect_facet_with_mesh` (CPU numpy version) edge-case-by-edge-case.
+    Per pair we:
+      1. Build the facet plane (V0, unit normal Nc).
+      2. Compute signed distances d0/d1/d2 of mesh vertices to the plane.
+      3. Decide which mesh tris cross the plane:
+            (has_pos & has_neg) | coplanar_edge
+         where eps = 1e-8.
+      4. For coplanar-edge tris, return the on-plane edge as the segment.
+         For other crossings, walk the 3 edges and emit per-edge candidate
+         points: lerp when d_a*d_b<-1e-14, vertex `a` when |d_a|<=1e-8.
+         Take the first two distinct points.
+      5. Clip the segment to facet interior via vectorized SH.
     """
-    V0 = facet_vertices[:, 0, :]
-    V1 = facet_vertices[:, 1, :]
-    V2 = facet_vertices[:, 2, :]
+    P = facet_vertices.shape[0]
+    device = facet_vertices.device
+
+    # Promote to float64 so segment endpoints match the CPU reference path
+    # exactly (CPU uses float64 throughout). Sub-1e-8 float32 errors here
+    # otherwise cause downstream `_count_uturns` graph-node merging to differ.
+    fv64 = facet_vertices.to(torch.float64)
+    mt64 = mesh_triangles.to(torch.float64)
+
+    V0 = fv64[:, 0, :]
+    V1 = fv64[:, 1, :]
+    V2 = fv64[:, 2, :]
 
     E1 = V1 - V0
     E2 = V2 - V0
@@ -939,14 +964,234 @@ def _batch_plane_tri_with_clip(
     len_Nc = torch.linalg.norm(Nc_raw, dim=1, keepdim=True).clamp_min(1e-12)
     Nc = Nc_raw / len_Nc
 
-    from corep_fast.geom.plane_tri_intersect import plane_triangle_intersect
-    A, B, valid_pt = plane_triangle_intersect(
-        triangles=mesh_triangles,
-        plane_normals=Nc,
-        plane_points=V0,
+    M0 = mt64[:, 0, :]
+    M1 = mt64[:, 1, :]
+    M2 = mt64[:, 2, :]
+
+    d0 = ((M0 - V0) * Nc).sum(dim=1)
+    d1 = ((M1 - V0) * Nc).sum(dim=1)
+    d2 = ((M2 - V0) * Nc).sum(dim=1)
+
+    eps_plane = 1e-8
+    eps_cross = 1e-14
+
+    has_pos = (d0 > eps_plane) | (d1 > eps_plane) | (d2 > eps_plane)
+    has_neg = (d0 < -eps_plane) | (d1 < -eps_plane) | (d2 < -eps_plane)
+
+    d0_zero = d0.abs() <= eps_plane
+    d1_zero = d1.abs() <= eps_plane
+    d2_zero = d2.abs() <= eps_plane
+    coplanar01 = d0_zero & d1_zero
+    coplanar12 = d1_zero & d2_zero
+    coplanar20 = d2_zero & d0_zero
+    coplanar_edge = coplanar01 | coplanar12 | coplanar20
+
+    intersects_plane = (has_pos & has_neg) | coplanar_edge
+
+    # ---- Per-edge candidate points (3 edges per pair) ----
+    # Edge (m_a, m_b, d_a, d_b) produces:
+    #   - lerp point if d_a*d_b < -1e-14
+    #   - vertex m_a if |d_a| <= 1e-8
+    #   - else: no point
+    # Order: (M0,M1,d0,d1), (M1,M2,d1,d2), (M2,M0,d2,d0).
+    def _edge_cand(m_a, m_b, d_a, d_b):
+        cross = (d_a * d_b) < -eps_cross
+        on_plane = d_a.abs() <= eps_plane
+        # Lerp t = d_a / (d_a - d_b), but only meaningful when cross.
+        t = d_a / (d_a - d_b + 1e-30)
+        pt_lerp = m_a + t.unsqueeze(1) * (m_b - m_a)
+        # When on_plane (and not crossing), use m_a.
+        pt = torch.where(cross.unsqueeze(1), pt_lerp, m_a)
+        valid_e = cross | on_plane
+        return pt, valid_e
+
+    cand0_pt, cand0_v = _edge_cand(M0, M1, d0, d1)
+    cand1_pt, cand1_v = _edge_cand(M1, M2, d1, d2)
+    cand2_pt, cand2_v = _edge_cand(M2, M0, d2, d0)
+
+    # ---- Coplanar-edge handling (overrides per-edge candidates) ----
+    # When coplanar01: segment = (M0, M1); coplanar12: (M1, M2); coplanar20: (M2, M0).
+    # CPU spec: extends list with both endpoints in order, then dedup; the
+    # first 2 unique points are taken. So pick the first matching edge.
+    cop_P1 = torch.where(
+        coplanar01.unsqueeze(1), M0,
+        torch.where(coplanar12.unsqueeze(1), M1, M2),
+    )
+    cop_P2 = torch.where(
+        coplanar01.unsqueeze(1), M1,
+        torch.where(coplanar12.unsqueeze(1), M2, M0),
     )
 
-    A_clip, B_clip, valid_clip = _clip_segment_to_triangle_vectorized(
-        A, B, V0, V1, V2, Nc,
+    # ---- Compose P1, P2 from per-edge candidates with dedup ----
+    # Preference order matches CPU (m0/m1 edge first, then m1/m2, then m2/m0).
+    # P1 = first valid candidate.
+    P1 = torch.where(
+        cand0_v.unsqueeze(1), cand0_pt,
+        torch.where(cand1_v.unsqueeze(1), cand1_pt, cand2_pt),
     )
-    return A_clip, B_clip, valid_pt & valid_clip
+
+    # P2 = second valid distinct candidate.
+    # Helper to test if cand_X is "next available distinct from P1".
+    def _is_distinct(pt, p1, valid):
+        return valid & ((pt - p1).norm(dim=1) >= eps_plane)
+
+    use1 = _is_distinct(cand1_pt, P1, cand1_v)
+    use2 = _is_distinct(cand2_pt, P1, cand2_v)
+    # Was cand0 used as P1? Only if it was valid. Otherwise P1 = cand1 or cand2.
+    p1_is_cand0 = cand0_v
+    p1_is_cand1 = (~cand0_v) & cand1_v
+    # If P1 came from cand0, P2 is first distinct of (cand1, cand2).
+    # If P1 came from cand1, P2 must come from cand2.
+    # If P1 came from cand2, no P2 available.
+    P2_from_cand0_path = torch.where(use1.unsqueeze(1), cand1_pt, cand2_pt)
+    P2_valid_from_cand0_path = use1 | use2
+    P2_from_cand1_path = cand2_pt
+    P2_valid_from_cand1_path = use2
+
+    P2 = torch.where(
+        p1_is_cand0.unsqueeze(1), P2_from_cand0_path,
+        torch.where(
+            p1_is_cand1.unsqueeze(1), P2_from_cand1_path,
+            torch.zeros_like(P1),
+        ),
+    )
+    P2_valid = torch.where(
+        p1_is_cand0, P2_valid_from_cand0_path,
+        torch.where(p1_is_cand1, P2_valid_from_cand1_path, torch.zeros_like(p1_is_cand0)),
+    )
+    have_two_pts = (cand0_v.int() + cand1_v.int() + cand2_v.int()) >= 1
+    have_two_pts = cand0_v | cand1_v | cand2_v
+    have_two_pts = have_two_pts & P2_valid
+
+    # ---- Override with coplanar-edge segment when applicable ----
+    P1_final = torch.where(coplanar_edge.unsqueeze(1), cop_P1, P1)
+    P2_final = torch.where(coplanar_edge.unsqueeze(1), cop_P2, P2)
+    seg_present = (
+        intersects_plane & (coplanar_edge | have_two_pts)
+    )
+
+    # ---- Clip segment to facet triangle interior ----
+    A_clip, B_clip, valid_clip = _clip_segment_to_triangle_vectorized(
+        P1_final, P2_final, V0, V1, V2, Nc,
+    )
+
+    return A_clip, B_clip, seg_present & valid_clip
+
+
+# ----------------------------------------------------------------------
+# Module globals for fork-COW shared arrays in P2 BFS MP phase.
+# Set in the parent process BEFORE spawning the temporary Pool so workers
+# inherit them via copy-on-write (no pickle).
+# ----------------------------------------------------------------------
+_P2_CF = None         # (G,)        int64   — packed cube_id*12 + facet_id per group
+_P2_GROUP_OFF = None  # (G+1,)      int64   — CSR offsets into segment arrays
+_P2_SEGS_A = None     # (S, 3)      float64 — clipped segment start points
+_P2_SEGS_B = None     # (S, 3)      float64 — clipped segment end points
+_P2_CUBE_IDX = None   # (N, 3)      int32   — cube voxel indices
+_P2_STEP = None       # float                — 1.0 / resolution
+
+
+def _p2_uturn_worker(gi: int) -> tuple[int, int, int]:
+    """Worker: reconstruct facet from packed (cube_id, facet_id), call _count_uturns.
+
+    Reads from fork-inherited globals (no per-task pickle).
+    """
+    cf = int(_P2_CF[gi])
+    cube_id = cf // 12
+    facet_id = cf % 12
+    lo = int(_P2_GROUP_OFF[gi])
+    hi = int(_P2_GROUP_OFF[gi + 1])
+    segs = [(_P2_SEGS_A[i], _P2_SEGS_B[i]) for i in range(lo, hi)]
+
+    ix, iy, iz = _P2_CUBE_IDX[cube_id]
+    base = np.array([ix, iy, iz], dtype=np.float64) * _P2_STEP
+    cube_verts = base + _V_OFFSETS * _P2_STEP
+    v_ids = FACET_VERTS[facet_id]
+    e_ids = FACET_EDGES[facet_id]
+    V0 = cube_verts[v_ids[0]]
+    V1 = cube_verts[v_ids[1]]
+    V2 = cube_verts[v_ids[2]]
+
+    u = _count_uturns(segs, V0, V1, V2, cube_verts, v_ids, e_ids)
+    return cube_id, facet_id, u
+
+
+def _compute_face_weights_gpu(batch: CubeBatch, mesh: MeshTensors) -> torch.Tensor:
+    """GPU-accelerated face_weights computation.
+
+    Pipeline:
+      Stage A (GPU): pair expansion + plane-tri + SH clip → (P,) valid segments.
+      Stage B (GPU): compact + sort by (cube, facet) → groups.
+      Stage C (GPU→CPU): bulk transfer of segments + group offsets.
+      Stage D (CPU MP): per-group BFS + U-Turn count (fork-COW shared arrays).
+      Stage E (CPU): scatter results into (N, 12) fw array.
+
+    Returns:
+        face_weights: (N, 12) int32 on `batch.device` — same semantics as
+        `_compute_face_weights_mp`.
+    """
+    import os as _os
+
+    device = batch.device
+    N = batch.num_cubes
+    fw = np.zeros((N, 12), dtype=np.int32)
+
+    # Stage A: pair expansion + plane-tri + clip
+    pairs = _expand_pairs_gpu(batch, mesh)
+    if pairs['cube_id'].numel() == 0:
+        return torch.from_numpy(fw).to(device)
+
+    A_seg, B_seg, valid = _batch_plane_tri_with_clip(
+        pairs['facet_vertices'], pairs['mesh_triangles'],
+    )
+
+    # Stage B: compact + sort + group
+    if not bool(valid.any().item()):
+        return torch.from_numpy(fw).to(device)
+
+    cf_key = pairs['cube_id'][valid] * 12 + pairs['facet_id'][valid]
+    A_kept = A_seg[valid]
+    B_kept = B_seg[valid]
+
+    sorted_idx = torch.argsort(cf_key, stable=True)
+    sorted_cf = cf_key[sorted_idx]
+    sorted_A = A_kept[sorted_idx]
+    sorted_B = B_kept[sorted_idx]
+
+    unique_cf, counts = torch.unique_consecutive(sorted_cf, return_counts=True)
+    group_offsets = torch.cat([
+        torch.zeros(1, dtype=counts.dtype, device=device),
+        torch.cumsum(counts, dim=0),
+    ])
+    G = unique_cf.shape[0]
+
+    # Stage C: Bulk GPU→CPU transfer (one .cpu() per array)
+    cf_np = unique_cf.cpu().numpy()
+    off_np = group_offsets.cpu().numpy()
+    A_np = sorted_A.cpu().numpy().astype(np.float64)
+    B_np = sorted_B.cpu().numpy().astype(np.float64)
+    cube_idx_np = batch.cube_indices.cpu().numpy()
+
+    # Stage D: Set shared globals, fork MP
+    global _P2_CF, _P2_GROUP_OFF, _P2_SEGS_A, _P2_SEGS_B, _P2_CUBE_IDX, _P2_STEP
+    _P2_CF = cf_np
+    _P2_GROUP_OFF = off_np
+    _P2_SEGS_A = A_np
+    _P2_SEGS_B = B_np
+    _P2_CUBE_IDX = cube_idx_np
+    _P2_STEP = 1.0 / batch.resolution
+
+    num_workers = max(1, (_os.cpu_count() or 4) - 4)
+    if num_workers > 1 and G >= 5000:
+        from multiprocessing import Pool as _Pool
+        chunksize = max(1, G // (num_workers * 4))
+        with _Pool(num_workers) as p:
+            results = p.map(_p2_uturn_worker, range(G), chunksize=chunksize)
+    else:
+        results = [_p2_uturn_worker(gi) for gi in range(G)]
+
+    # Stage E: Scatter into fw
+    for ci, fi, u in results:
+        fw[ci, fi] = u
+
+    return torch.from_numpy(fw).to(device)
