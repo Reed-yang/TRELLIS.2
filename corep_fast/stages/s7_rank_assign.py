@@ -521,24 +521,27 @@ def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
     # Precompute uturn_assignment on CPU
     uturn_np = batch.uturn_assignment.cpu().numpy()  # (N, 12, 3) int32
 
-    # Precompute CSR offsets on CPU
-    loop_cube_off_cpu = batch.loop_cube_off.cpu()
-    loop_edge_off_cpu = batch.loop_edge_off.cpu()
-    loop_edge_val_cpu = batch.loop_edge_val.cpu()
-    status_cpu = batch.status.cpu()
+    # Precompute face_weights on CPU for work item building
+    fw_np = batch.face_weights.cpu().numpy()  # (N, 12) int32
 
     # ===================================================================
     # Phase 1: Rank re-tracing (CPU, optionally multiprocessing)
     # ===================================================================
+
+    # Convert CSR to numpy once (avoid per-cube .item() GPU syncs)
+    loop_cube_off_np = batch.loop_cube_off.cpu().numpy()
+    loop_edge_off_np = batch.loop_edge_off.cpu().numpy()
+    loop_edge_val_np = batch.loop_edge_val.cpu().numpy()
+    status_np = batch.status.cpu().numpy()
 
     # Build work items for OK cubes
     rank_work_items = []
     ok_cube_indices = []
 
     for i in range(N):
-        status_i = int(status_cpu[i].item())
-        l_lo = int(loop_cube_off_cpu[i].item())
-        l_hi = int(loop_cube_off_cpu[i + 1].item())
+        status_i = int(status_np[i])
+        l_lo = int(loop_cube_off_np[i])
+        l_hi = int(loop_cube_off_np[i + 1])
         n_loops = l_hi - l_lo
 
         if n_loops == 0 or status_i != CubeStatus.OK:
@@ -549,17 +552,15 @@ def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
         # Extract s6 loops (edge-only)
         s6_loops = []
         for li in range(l_lo, l_hi):
-            e_lo = int(loop_edge_off_cpu[li].item())
-            e_hi = int(loop_edge_off_cpu[li + 1].item())
-            s6_loops.append(loop_edge_val_cpu[e_lo:e_hi].tolist())
+            e_lo = int(loop_edge_off_np[li])
+            e_hi = int(loop_edge_off_np[li + 1])
+            s6_loops.append(loop_edge_val_np[e_lo:e_hi].tolist())
 
         # Determine fast-path vs slow-path from uturn_assignment
         uturn_row = uturn_np[i]  # (12, 3) int32
         if uturn_row[0, 0] == -1:
-            # Fast-path: all -1 means no U-turns
             uturn_assign = None
         else:
-            # Slow-path: use the stored assignment directly
             uturn_assign = tuple(
                 tuple(int(x) for x in uturn_row[t])
                 for t in range(12)
@@ -568,9 +569,13 @@ def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
         rank_work_items.append((i, ew_i, s6_loops, uturn_assign))
         ok_cube_indices.append(i)
 
-    # Dispatch rank work
-    if pool is not None and rank_work_items:
-        rank_results = pool.map_chunked(_s7_rank_worker, rank_work_items, chunk_size=500)
+    # Dispatch rank work — use temporary Pool with fork-inherited data
+    if pool is not None and len(rank_work_items) > 500:
+        from multiprocessing import Pool as _Pool
+        num_w = pool._num_workers
+        with _Pool(num_w) as p:
+            rank_results = p.map(_s7_rank_worker, rank_work_items,
+                                 chunksize=max(1, len(rank_work_items) // (num_w * 4)))
     else:
         rank_results = [_s7_rank_worker(item) for item in rank_work_items]
 
@@ -580,29 +585,24 @@ def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
 
     # Fill non-OK cubes with defaults
     for i in range(N):
-        status_i = int(status_cpu[i].item())
-        l_lo = int(loop_cube_off_cpu[i].item())
-        l_hi = int(loop_cube_off_cpu[i + 1].item())
+        status_i = int(status_np[i])
+        l_lo = int(loop_cube_off_np[i])
+        l_hi = int(loop_cube_off_np[i + 1])
         n_loops = l_hi - l_lo
 
         if n_loops == 0:
             continue
 
         if status_i != CubeStatus.OK:
-            for li in range(l_lo, l_hi):
-                e_lo = int(loop_edge_off_cpu[li].item())
-                e_hi = int(loop_edge_off_cpu[li + 1].item())
-                for k in range(e_lo, e_hi):
-                    all_ranks[k] = 0
             for li_off in range(n_loops):
                 all_matches[l_lo + li_off] = li_off
 
     # Write OK-cube rank results into flat array
     for cube_idx, rank_lists in rank_results:
-        l_lo = int(loop_cube_off_cpu[cube_idx].item())
+        l_lo = int(loop_cube_off_np[cube_idx])
         for li_off, ranks in enumerate(rank_lists):
             li = l_lo + li_off
-            e_lo = int(loop_edge_off_cpu[li].item())
+            e_lo = int(loop_edge_off_np[li])
             for k, r in enumerate(ranks):
                 all_ranks[e_lo + k] = r
 
@@ -624,13 +624,13 @@ def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
         crossing_cube_ids = []    # which cube (for cube_origin lookup)
 
         for cube_idx, rank_lists in rank_results:
-            l_lo = int(loop_cube_off_cpu[cube_idx].item())
-            l_hi = int(loop_cube_off_cpu[cube_idx + 1].item())
+            l_lo = int(loop_cube_off_np[cube_idx])
+            l_hi = int(loop_cube_off_np[cube_idx + 1])
             for li_off in range(l_hi - l_lo):
                 li = l_lo + li_off
-                e_lo = int(loop_edge_off_cpu[li].item())
-                e_hi = int(loop_edge_off_cpu[li + 1].item())
-                edges = loop_edge_val_cpu[e_lo:e_hi].tolist()
+                e_lo = int(loop_edge_off_np[li])
+                e_hi = int(loop_edge_off_np[li + 1])
+                edges = loop_edge_val_np[e_lo:e_hi].tolist()
                 ranks = rank_lists[li_off] if li_off < len(rank_lists) else [0] * (e_hi - e_lo)
                 for pos_k in range(len(edges)):
                     crossing_loop_ids.append(li)
@@ -691,20 +691,20 @@ def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
     # ===================================================================
 
     # Build cost matrices on GPU, then dispatch scipy per cube
-    point_offsets_cpu = batch.point_offsets.cpu()
+    point_offsets_np = batch.point_offsets.cpu().numpy()
     point_values_gpu = batch.point_values  # (P, 3) on device
 
     hungarian_work_items = []
 
     for cube_idx in ok_cube_indices:
-        l_lo = int(loop_cube_off_cpu[cube_idx].item())
-        l_hi = int(loop_cube_off_cpu[cube_idx + 1].item())
+        l_lo = int(loop_cube_off_np[cube_idx])
+        l_hi = int(loop_cube_off_np[cube_idx + 1])
         n_loops = l_hi - l_lo
         if n_loops == 0:
             continue
 
-        p_lo = int(point_offsets_cpu[cube_idx].item())
-        p_hi = int(point_offsets_cpu[cube_idx + 1].item())
+        p_lo = int(point_offsets_np[cube_idx])
+        p_hi = int(point_offsets_np[cube_idx + 1])
         n_points = p_hi - p_lo
 
         if n_points == 0:
@@ -724,16 +724,20 @@ def s7_rank_assign(batch: CubeBatch, pool=None) -> CubeBatch:
 
         hungarian_work_items.append((cube_idx, cost_np))
 
-    # Dispatch Hungarian work
-    if pool is not None and hungarian_work_items:
-        hungarian_results = pool.map_chunked(_hungarian_worker, hungarian_work_items, chunk_size=500)
+    # Dispatch Hungarian work — use temporary Pool
+    if pool is not None and len(hungarian_work_items) > 500:
+        from multiprocessing import Pool as _Pool
+        num_w = pool._num_workers
+        with _Pool(num_w) as p:
+            hungarian_results = p.map(_hungarian_worker, hungarian_work_items,
+                                      chunksize=max(1, len(hungarian_work_items) // (num_w * 4)))
     else:
         hungarian_results = [_hungarian_worker(item) for item in hungarian_work_items]
 
     # Write Hungarian results
     for cube_idx, match_indices in hungarian_results:
-        l_lo = int(loop_cube_off_cpu[cube_idx].item())
-        l_hi = int(loop_cube_off_cpu[cube_idx + 1].item())
+        l_lo = int(loop_cube_off_np[cube_idx])
+        l_hi = int(loop_cube_off_np[cube_idx + 1])
         n_loops = l_hi - l_lo
         for li_off in range(min(len(match_indices), n_loops)):
             all_matches[l_lo + li_off] = match_indices[li_off]
