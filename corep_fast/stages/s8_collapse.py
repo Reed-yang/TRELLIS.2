@@ -75,14 +75,30 @@ def _cubebatch_to_dicts(batch: 'CubeBatch') -> list[dict]:
     po_np = batch.point_offsets.cpu().numpy()
     pv_np = batch.point_values.cpu().numpy()
 
-    for i in range(N):
-        ci = tuple(int(x) for x in ci_np[i])
-        ew = [int(x) for x in ew_np[i]]
-        is_exception = int(status_np[i]) != CubeStatus.OK
+    # Pre-convert whole arrays to Python types ONCE with bulk tolist().
+    # np.tolist() is a C-optimized bulk conversion that produces native Python
+    # ints/floats, ~10x faster than per-element int(x) list comprehension.
+    ci_py = ci_np.tolist()           # list[list[int]]
+    ew_py = ew_np.tolist()           # list[list[int]]
+    status_py = status_np.tolist()   # list[int]
+    lco_py = lco_np.tolist()         # list[int]
+    leo_py = leo_np.tolist()         # list[int]
+    lev_py = lev_np.tolist()         # list[int]
+    ler_py = ler_np.tolist()         # list[int]
+    lpm_py = lpm_np.tolist()         # list[int]
+    po_py = po_np.tolist()           # list[int]
+    pv_py = pv_np.tolist()           # list[list[float]]
 
-        p_lo = int(po_np[i])
-        p_hi = int(po_np[i + 1])
-        comp_pts = pv_np[p_lo:p_hi].tolist()
+    OK = int(CubeStatus.OK)
+
+    for i in range(N):
+        ci = tuple(ci_py[i])
+        ew = ew_py[i]
+        is_exception = status_py[i] != OK
+
+        p_lo = po_py[i]
+        p_hi = po_py[i + 1]
+        comp_pts = pv_py[p_lo:p_hi]
 
         if is_exception:
             d = {
@@ -91,19 +107,19 @@ def _cubebatch_to_dicts(batch: 'CubeBatch') -> list[dict]:
                 'sorted_loops': [{'component_point': comp_pts[0] if comp_pts else [0, 0, 0]}],
             }
         else:
-            l_lo = int(lco_np[i])
-            l_hi = int(lco_np[i + 1])
+            l_lo = lco_py[i]
+            l_hi = lco_py[i + 1]
 
             sorted_loops = []
             for li in range(l_lo, l_hi):
-                e_lo = int(leo_np[li])
-                e_hi = int(leo_np[li + 1])
-                edges = [int(x) for x in lev_np[e_lo:e_hi]]
-                ranks = [int(x) for x in ler_np[e_lo:e_hi]]
+                e_lo = leo_py[li]
+                e_hi = leo_py[li + 1]
+                edges = lev_py[e_lo:e_hi]
+                ranks = ler_py[e_lo:e_hi]
 
-                match_idx = int(lpm_np[li])
+                match_idx = lpm_py[li]
                 if match_idx >= 0 and (p_lo + match_idx) < p_hi:
-                    cp = pv_np[p_lo + match_idx].tolist()
+                    cp = pv_py[p_lo + match_idx]
                 else:
                     cp = comp_pts[0] if comp_pts else [0, 0, 0]
 
