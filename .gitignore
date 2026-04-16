@@ -205,3 +205,22 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local pretrained models & inference outputs
+pretrained/
+sample.*
+*.mp4
+*.glb
+datasets
+results
+
+papers
+my-docs
+experiments/
+.trash
+project
+tmp
+docs
+
+# CoReP-Fast profiling outputs (large JSON, session-local)
+profiling/runs/

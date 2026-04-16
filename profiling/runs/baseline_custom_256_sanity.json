@@ -1,0 +1,128 @@
+[
+  {
+    "mesh": "gt.obj",
+    "resolution": 256,
+    "status": "ok",
+    "num_cubes": 276575,
+    "total_wall_s": 139.14324522018433,
+    "stages": {
+      "s1_voxelize": {
+        "wall_time_s": 2.4889930770732462,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s2_feature_volume": {
+        "wall_time_s": 2.544862285256386,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s3_feature_edge": {
+        "wall_time_s": 16.345972379203886,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s4_feature_face": {
+        "wall_time_s": 16.708230867050588,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s4_feature_point": {
+        "wall_time_s": 9.41134381480515,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s6_collapse_face": {
+        "wall_time_s": 12.977843071799725,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s7_collapse_point": {
+        "wall_time_s": 11.403239753097296,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s8_collapse": {
+        "wall_time_s": 65.11382215237245,
+        "peak_gpu_mem_bytes": 0
+      }
+    },
+    "total_pipeline_s": 136.99430740065873
+  },
+  {
+    "mesh": "gt.obj",
+    "resolution": 256,
+    "status": "ok",
+    "num_cubes": 118584,
+    "total_wall_s": 69.8390564918518,
+    "stages": {
+      "s1_voxelize": {
+        "wall_time_s": 0.18699407391250134,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s2_feature_volume": {
+        "wall_time_s": 1.70828314172104,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s3_feature_edge": {
+        "wall_time_s": 7.395373959094286,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s4_feature_face": {
+        "wall_time_s": 6.162069144193083,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s4_feature_point": {
+        "wall_time_s": 4.68989730020985,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s6_collapse_face": {
+        "wall_time_s": 6.550413470715284,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s7_collapse_point": {
+        "wall_time_s": 7.860307161696255,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s8_collapse": {
+        "wall_time_s": 34.878635791130364,
+        "peak_gpu_mem_bytes": 0
+      }
+    },
+    "total_pipeline_s": 69.43197404267266
+  },
+  {
+    "mesh": "gt.obj",
+    "resolution": 256,
+    "status": "ok",
+    "num_cubes": 344423,
+    "total_wall_s": 171.7089638710022,
+    "stages": {
+      "s1_voxelize": {
+        "wall_time_s": 1.911521322093904,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s2_feature_volume": {
+        "wall_time_s": 3.110759851988405,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s3_feature_edge": {
+        "wall_time_s": 21.536178646143526,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s4_feature_face": {
+        "wall_time_s": 19.831014276016504,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s4_feature_point": {
+        "wall_time_s": 12.279222814831883,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s6_collapse_face": {
+        "wall_time_s": 16.221941262017936,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s7_collapse_point": {
+        "wall_time_s": 13.884929737076163,
+        "peak_gpu_mem_bytes": 0
+      },
+      "s8_collapse": {
+        "wall_time_s": 81.75285256886855,
+        "peak_gpu_mem_bytes": 0
+      }
+    },
+    "total_pipeline_s": 170.52842047903687
+  }
+]
