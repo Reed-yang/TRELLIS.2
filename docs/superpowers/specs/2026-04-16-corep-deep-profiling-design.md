@@ -123,7 +123,7 @@ corep_fast.stages.s3_edge_weights.s3_edge_weights     (line 27)   → "s3_edge_w
 corep_fast.stages.s4_face_point.s4_face_point         (line 66)   → "s4_face_point"
 corep_fast.stages.s6_collapse.s6_collapse             (line 775)  → "s6_collapse"
 corep_fast.stages.s7_rank_assign.s7_rank_assign       (line 1082) → "s7_rank_assign"
-corep_fast.stages.s8_collapse.s8_collapse_to_ply      (line 2304) → "s8_decode"
+corep_fast.stages.s8_collapse.decode_from_cubebatch   (line 231)  → "s8_decode"
 ```
 
 **Sub-stage CUDA events**（细粒度 timing，不膨胀 trace 文件）：
