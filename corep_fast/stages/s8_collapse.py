@@ -1058,10 +1058,12 @@ def _process_shared_edges_torch(
                         grid.append(entry)
             grids.append(grid)
 
-        # Dispatch via multiprocessing for large batches
+        # Dispatch via multiprocessing for large batches only.
+        # Below ~100K candidates, the MP fork overhead (~0.8s) outweighs
+        # the parallelism gain. Benchmarked on H100 128-core node.
         import os as _os
         num_workers = max(1, (_os.cpu_count() or 4) - 4)
-        if num_workers > 1 and M >= 1000:
+        if num_workers > 1 and M >= 100_000:
             from multiprocessing import Pool as _Pool
             chunk_size = max(M // (num_workers * 4), 1)
             with _Pool(num_workers) as p:
