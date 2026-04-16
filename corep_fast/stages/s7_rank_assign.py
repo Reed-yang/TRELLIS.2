@@ -1188,21 +1188,11 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
             loop_to_cube=loop_to_cube,
         )
 
-        # Convert to per-cube rank_lists for Phase 2 consumer
-        loop_edge_rank_np = loop_edge_rank_gpu.cpu().numpy()
-        all_ranks = loop_edge_rank_np.tolist()
-
-        rank_results = []
-        for cube_idx in ok_cube_indices:
-            l_lo = int(loop_cube_off_np[cube_idx])
-            l_hi = int(loop_cube_off_np[cube_idx + 1])
-            cube_rank_lists = []
-            for li_off in range(l_hi - l_lo):
-                li = l_lo + li_off
-                e_lo = int(loop_edge_off_np[li])
-                e_hi = int(loop_edge_off_np[li + 1])
-                cube_rank_lists.append(loop_edge_rank_np[e_lo:e_hi].tolist())
-            rank_results.append((cube_idx, cube_rank_lists))
+        # GPU path skips both `all_ranks` Python list and the per-cube
+        # `rank_results` construction. The Phase 2 fast path reads
+        # loop_edge_rank_gpu directly; the final tensor pack also reuses it.
+        rank_results = []  # unused on this path; kept as empty for symmetry
+        all_ranks = None   # signal to final pack to use loop_edge_rank_gpu
 
     else:
         # ---- Legacy CPU MP path ----
@@ -1248,7 +1238,68 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
     # Phase 2: GPU batched centroid interpolation (scatter-mean)
     # ===================================================================
 
-    if total_edges > 0 and ok_cube_indices:
+    # Fast path: GPU Phase 1 already produced a flat (E,) loop_edge_rank tensor,
+    # which is exactly the data the downstream code reconstructs piecewise. Use
+    # it directly to skip the per-cube/per-loop/per-crossing Python loop.
+    if _cfg.S7_PHASE1_GPU and total_edges > 0:
+        loop_edge_rank_for_phase2 = loop_edge_rank_gpu  # already on device
+        # Build per-crossing (loop_id, edge_id, rank, weight, cube_id) tensors
+        # in one shot from CSR.
+        loop_off_t = batch.loop_edge_off.to(torch.int64)
+        loop_cube_off_t = batch.loop_cube_off.to(torch.int64)
+        loops_per_cube = loop_cube_off_t[1:] - loop_cube_off_t[:-1]
+        cube_arange = torch.arange(N, device=device, dtype=torch.int64)
+        loop_to_cube_t = torch.repeat_interleave(cube_arange, loops_per_cube)  # (L,)
+
+        # Per crossing: cube id and loop id
+        crossings_per_loop = loop_off_t[1:] - loop_off_t[:-1]   # (L,)
+        loop_arange = torch.arange(total_loops, device=device, dtype=torch.int64)
+        t_loop_ids = torch.repeat_interleave(loop_arange, crossings_per_loop)  # (E,)
+        t_cube_ids = torch.repeat_interleave(loop_to_cube_t, crossings_per_loop)  # (E,)
+        t_edge_ids = batch.loop_edge_val.to(torch.int64)        # (E,)
+        t_ranks = loop_edge_rank_for_phase2.to(torch.float32)   # (E,)
+        # Weight per crossing = edge_weights[cube, edge]
+        t_weights = batch.edge_weights.to(torch.float32)[t_cube_ids, t_edge_ids]
+
+        # Apply ok mask: rank/weight zero for non-OK cubes (no centroid contribution)
+        status_t = batch.status.to(torch.int64)
+        cube_ok_t = (status_t == CubeStatus.OK)
+        cross_ok = cube_ok_t[t_cube_ids]   # (E,) bool
+        # For non-OK crossings, set rank=0 and weight=1 to avoid NaN; but we'll
+        # still scatter into the loop centroid. To match CPU behavior (which
+        # only contributes OK cubes to centroids), we can mask these out from
+        # the scatter. Since the CPU path only iterates ok_cube_indices, we
+        # filter here too.
+        sel = cross_ok
+        t_loop_ids = t_loop_ids[sel]
+        t_edge_ids = t_edge_ids[sel]
+        t_ranks = t_ranks[sel]
+        t_weights = t_weights[sel]
+        t_cube_ids = t_cube_ids[sel]
+        n_crossings = int(t_loop_ids.shape[0])
+
+        if n_crossings > 0:
+            edge_starts = CUBE_EDGE_STARTS.to(device=device, dtype=torch.float32)
+            edge_ends = CUBE_EDGE_ENDS.to(device=device, dtype=torch.float32)
+            cube_indices_gpu = batch.cube_indices.to(dtype=torch.float32)
+            cube_origins = cube_indices_gpu / resolution
+            step = 1.0 / resolution
+
+            start_pts = edge_starts[t_edge_ids]
+            end_pts = edge_ends[t_edge_ids]
+            origins = cube_origins[t_cube_ids]
+            t_param = ((t_ranks + 1.0) / (t_weights + 1.0)).unsqueeze(1)
+            local_pos = start_pts + t_param * (end_pts - start_pts)
+            world_pos = origins + local_pos * step
+
+            loop_centroids = torch.zeros(total_loops, 3, dtype=torch.float32, device=device)
+            loop_counts = torch.zeros(total_loops, dtype=torch.float32, device=device)
+            loop_centroids.scatter_add_(0, t_loop_ids.unsqueeze(1).expand(-1, 3), world_pos)
+            loop_counts.scatter_add_(0, t_loop_ids, torch.ones(n_crossings, dtype=torch.float32, device=device))
+            loop_centroids = loop_centroids / loop_counts.clamp(min=1.0).unsqueeze(1)
+        else:
+            loop_centroids = torch.zeros(total_loops, 3, dtype=torch.float32, device=device)
+    elif total_edges > 0 and ok_cube_indices:
         # Build flat arrays for all edge crossings of OK cubes:
         #   For each crossing at (cube_i, loop_j, position_k):
         #     edge_idx, rank, edge_weight, cube_origin
@@ -1371,8 +1422,13 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
     # Pack results
     # ===================================================================
 
-    loop_edge_rank = torch.tensor(all_ranks, dtype=torch.int32, device=device) \
-        if total_edges > 0 else torch.zeros(0, dtype=torch.int32, device=device)
+    if all_ranks is None:
+        # GPU Phase 1 path: reuse the device tensor directly
+        loop_edge_rank = loop_edge_rank_gpu if total_edges > 0 \
+            else torch.zeros(0, dtype=torch.int32, device=device)
+    else:
+        loop_edge_rank = torch.tensor(all_ranks, dtype=torch.int32, device=device) \
+            if total_edges > 0 else torch.zeros(0, dtype=torch.int32, device=device)
     loop_point_match = torch.tensor(all_matches, dtype=torch.int32, device=device) \
         if total_loops > 0 else torch.zeros(0, dtype=torch.int32, device=device)
 
