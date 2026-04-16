@@ -30,6 +30,9 @@ USE_GPU_FW_S4 = os.environ.get('COREP_FAST_S4_GPU_FW', '1') == '1'
 # P3: Build grids directly from CubeBatch tensors in s8 (no cube_map dict).
 USE_DIRECT_GRIDS_S8 = os.environ.get('COREP_FAST_S8_DIRECT_GRIDS', '1') == '1'
 
+# W2: GPU batched parallel BFS for s7 Phase 1 rank tracing (default OFF until W2b implements).
+S7_PHASE1_GPU = os.environ.get('COREP_FAST_S7_PHASE1_GPU', '0') == '1'
+
 
 # ---------------------------------------------------------------------------
 # Mode (debug level)
