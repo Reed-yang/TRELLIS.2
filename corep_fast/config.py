@@ -30,6 +30,10 @@ USE_GPU_FW_S4 = os.environ.get('COREP_FAST_S4_GPU_FW', '1') == '1'
 # P3: Build grids directly from CubeBatch tensors in s8 (no cube_map dict).
 USE_DIRECT_GRIDS_S8 = os.environ.get('COREP_FAST_S8_DIRECT_GRIDS', '1') == '1'
 
+# Phase 2 W1: Vectorize 4-cube edge geometry, eliminating Python fallback.
+# Default OFF — safe baseline. Flip to "1" after A/B parity is confirmed in Phase 3.
+S8_4CUBE_VECTORIZED = os.environ.get('COREP_FAST_S8_4CUBE_VECTORIZED', '0') == '1'
+
 
 # ---------------------------------------------------------------------------
 # Mode (debug level)

@@ -1,0 +1,57 @@
+=== res=128 OFF ===
+  s6              3.608      1.396      2.58x
+  s7              2.638      2.066      1.28x
+  s1_s7          20.428      5.706      3.58x
+  s8             15.964      1.803      8.85x
+  e2e            36.392      7.585      4.80x ⭐
+
+--- vs e2e_torch (including triton-s8 optimization) ---
+  e2e         21.691      7.585      2.86x
+
+Saved to tmp/w1_off_res128.json
+=== res=128 ON ===
+  s6              3.608      1.372      2.63x
+  s7              2.638      2.275      1.16x
+  s1_s7          20.428      6.028      3.39x
+  s8             15.964      0.033    482.26x
+  e2e            36.392      6.138      5.93x ⭐
+
+--- vs e2e_torch (including triton-s8 optimization) ---
+  e2e         21.691      6.138      3.53x
+
+Saved to tmp/w1_on_res128.json
+=== res=256 OFF ===
+  s6             13.623      2.967      4.59x
+  s7             12.071      5.501      2.19x
+  s1_s7          77.160     13.503      5.71x
+  s8             63.886      8.147      7.84x
+  e2e           141.046     21.723      6.49x ⭐
+
+--- vs e2e_torch (including triton-s8 optimization) ---
+  e2e         81.195     21.723      3.74x
+
+Saved to tmp/w1_off_res256.json
+=== res=256 ON ===
+  s6             13.623      2.922      4.66x
+  s7             12.071      8.315      1.45x
+  s1_s7          77.160     16.250      4.75x
+  s8             63.886      0.087    734.80x
+  e2e           141.046     16.409      8.60x ⭐
+
+--- vs e2e_torch (including triton-s8 optimization) ---
+  e2e         81.195     16.409      4.95x
+
+Saved to tmp/w1_on_res256.json
+=== Summary ===
+res  stage      OFF      ON   delta
+128  s4       2.020   2.145  +0.125
+128  s6       1.396   1.372  -0.024
+128  s7       2.066   2.275  +0.210
+128  s8       1.803   0.033  -1.770
+128  e2e      7.585   6.138  -1.446
+256  s4       4.800   4.790  -0.010
+256  s6       2.967   2.922  -0.044
+256  s7       5.501   8.315  +2.814
+256  s8       8.147   0.087  -8.060
+256  e2e     21.723  16.409  -5.314
+DONE
