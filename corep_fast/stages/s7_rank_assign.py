@@ -24,6 +24,7 @@ from corep_fast.constants import (
     CUBE_EDGES, CUBE_EDGE_STARTS, CUBE_EDGE_ENDS, CUBE_FACETS, CUBE_VERTICES,
 )
 from corep_fast.containers import CubeBatch, CubeStatus, _replace_fields
+from corep_fast import config as _cfg
 
 # ---------------------------------------------------------------------------
 # Local topology tables (Python lists, for per-cube CPU work)
@@ -484,6 +485,597 @@ def _hungarian_worker(work_item):
 
 
 # ---------------------------------------------------------------------------
+# GPU batched parallel BFS (W2b)
+# ---------------------------------------------------------------------------
+#
+# Algorithm (per analysis E):
+#
+#   1. Build a per-cube (edge,rank) adjacency table on GPU.
+#      Each node is encoded as `node_id = edge_idx * W_MAX + rank`.
+#      Per-cube node space size = 18 * W_MAX = 288. Each node has at most 2
+#      neighbors (graph is 2-regular Eulerian).
+#
+#   2. For each s6 loop, walk along the adjacency starting from each candidate
+#      (rank0, neighbor_choice) on the loop's first edge, and verify that the
+#      walked edge sequence equals the s6 edge sequence. Up to 2 * ew[e0] <= 24
+#      candidates per loop, fully parallelizable.
+#
+#   3. Output rank per crossing into loop_edge_rank.
+#
+# This eliminates 275K Python-level graph builds + DFS traversals.
+
+# Maximum per-cube edge weight (12 is the theoretical maximum per the
+# triangle-inequality bound; 16 leaves room and aligns to a power of 2.)
+_W_MAX: int = 16
+_NODES_PER_CUBE: int = 18 * _W_MAX  # 288
+
+
+def _build_facet_pair_table() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Precompute per-facet, per-edge-pair lookup constants.
+
+    For each of 12 facets and each of 3 edge pairs (e1,e2), (e2,e3), (e3,e1),
+    return:
+      - pair_eA, pair_eB:  (12, 3) int64  — edge indices A and B
+      - pair_a_at_v0, pair_b_at_v0: (12, 3) bool — whether the common vertex
+        is the "v0" endpoint of edge A / B respectively.
+
+    These let us, for any facet/pair/cube, derive the rank-ordering of arc
+    endpoints from the per-edge weights.
+    """
+    edge_verts = CUBE_EDGES.tolist()
+    facets = CUBE_FACETS.tolist()
+
+    eA = torch.zeros(12, 3, dtype=torch.int64)
+    eB = torch.zeros(12, 3, dtype=torch.int64)
+    a_at_v0 = torch.zeros(12, 3, dtype=torch.bool)
+    b_at_v0 = torch.zeros(12, 3, dtype=torch.bool)
+
+    pair_seq = [(0, 1), (1, 2), (2, 0)]  # k12, k23, k31
+
+    for t_idx, (e1, e2, e3) in enumerate(facets):
+        edges = [e1, e2, e3]
+        for pi, (a, b) in enumerate(pair_seq):
+            ea, eb = edges[a], edges[b]
+            va0, va1 = edge_verts[ea]
+            vb0, vb1 = edge_verts[eb]
+            # Find common vertex
+            if va0 in (vb0, vb1):
+                cv = va0
+            elif va1 in (vb0, vb1):
+                cv = va1
+            else:
+                raise RuntimeError(f"Edges {ea} and {eb} of facet {t_idx} do not share a vertex")
+            eA[t_idx, pi] = ea
+            eB[t_idx, pi] = eb
+            a_at_v0[t_idx, pi] = (cv == va0)
+            b_at_v0[t_idx, pi] = (cv == vb0)
+
+    return eA, eB, a_at_v0, b_at_v0
+
+
+# Cache the table; materialized to GPU in s7_rank_assign_gpu.
+_FACET_PAIR_TABLE_CPU: tuple[torch.Tensor, ...] | None = None
+
+
+def _facet_pair_table(device: torch.device):
+    """Lazily build + cache the facet pair lookup table on a given device."""
+    global _FACET_PAIR_TABLE_CPU
+    if _FACET_PAIR_TABLE_CPU is None:
+        _FACET_PAIR_TABLE_CPU = _build_facet_pair_table()
+    eA, eB, a_at_v0, b_at_v0 = _FACET_PAIR_TABLE_CPU
+    return (
+        eA.to(device, non_blocking=True),
+        eB.to(device, non_blocking=True),
+        a_at_v0.to(device, non_blocking=True),
+        b_at_v0.to(device, non_blocking=True),
+    )
+
+
+def _build_uturn_pair_table() -> tuple[torch.Tensor, ...]:
+    """For each of 12 facets, return per-edge: (edge_idx, pair_idx_at_v0, pair_idx_at_v1).
+
+    For U-turn ordering on edge eA in facet T, we need to know how many "regular
+    arcs" emanate from each of eA's two endpoints — equivalently, which of the
+    three triangle pairs (k12, k23, k31) corresponds to each endpoint.
+
+    Returns:
+      uturn_edge:        (12, 3) int64 — edge index for each of the 3 edge slots
+      uturn_pair_at_v0:  (12, 3) int64 — pair_idx (0/1/2) whose common vertex == eA's v0; -1 if neither
+      uturn_pair_at_v1:  (12, 3) int64 — same for v1
+    """
+    edge_verts = CUBE_EDGES.tolist()
+    facets = CUBE_FACETS.tolist()
+    pair_seq = [(0, 1), (1, 2), (2, 0)]
+
+    uturn_edge = torch.zeros(12, 3, dtype=torch.int64)
+    pair_at_v0 = torch.full((12, 3), -1, dtype=torch.int64)
+    pair_at_v1 = torch.full((12, 3), -1, dtype=torch.int64)
+
+    for t_idx, (e1, e2, e3) in enumerate(facets):
+        edges = [e1, e2, e3]
+        for s_idx, eA in enumerate(edges):
+            uturn_edge[t_idx, s_idx] = eA
+            v0_A, v1_A = edge_verts[eA]
+            for pi, (a_pos, b_pos) in enumerate(pair_seq):
+                ea_pi, eb_pi = edges[a_pos], edges[b_pos]
+                va0, va1 = edge_verts[ea_pi]
+                vb0, vb1 = edge_verts[eb_pi]
+                if va0 in (vb0, vb1):
+                    cv = va0
+                elif va1 in (vb0, vb1):
+                    cv = va1
+                else:
+                    cv = -1
+                # We only count the arc count if eA is one of (ea_pi, eb_pi)
+                if eA == ea_pi or eA == eb_pi:
+                    if cv == v0_A:
+                        pair_at_v0[t_idx, s_idx] = pi
+                    elif cv == v1_A:
+                        pair_at_v1[t_idx, s_idx] = pi
+
+    return uturn_edge, pair_at_v0, pair_at_v1
+
+
+_UTURN_PAIR_TABLE_CPU: tuple[torch.Tensor, ...] | None = None
+
+
+def _uturn_pair_table(device: torch.device):
+    global _UTURN_PAIR_TABLE_CPU
+    if _UTURN_PAIR_TABLE_CPU is None:
+        _UTURN_PAIR_TABLE_CPU = _build_uturn_pair_table()
+    a, b, c = _UTURN_PAIR_TABLE_CPU
+    return (
+        a.to(device, non_blocking=True),
+        b.to(device, non_blocking=True),
+        c.to(device, non_blocking=True),
+    )
+
+
+def _build_adjacency_gpu(
+    edge_weights: torch.Tensor,        # (N, 18) int64
+    uturn_assignment: torch.Tensor,    # (N, 12, 3) int64; -1 sentinel = fast path
+) -> torch.Tensor:
+    """Build per-cube (edge,rank) adjacency on GPU.
+
+    Returns adj of shape (N, NODES_PER_CUBE, 2) int32 with -1 for empty slots.
+    Each row holds at most 2 neighbors (the graph is 2-regular).
+
+    Encodes node = edge_idx * W_MAX + rank.
+    """
+    device = edge_weights.device
+    N = edge_weights.shape[0]
+    NODES = _NODES_PER_CUBE
+    W = _W_MAX
+
+    # Output: pre-fill with -1
+    adj = torch.full((N, NODES, 2), -1, dtype=torch.int32, device=device)
+    # Per-node fill counter (for atomic 2-slot assignment)
+    fill_count = torch.zeros((N, NODES), dtype=torch.int32, device=device)
+
+    # ---- Effective edge weights for U-turn cubes ----
+    # For fast-path cubes (uturn[i,0,0] == -1), w' = w
+    # For slow-path cubes, w' = w - 2 * sum_t(u_for_edge_in_t)
+    # uturn_assignment has shape (N,12,3); each row [u1,u2,u3] for triangle t.
+    # u for edge in (e1,e2,e3) of triangle t needs scatter to per-edge sum.
+    # CUBE_FACETS gives us the (12,3) edge indices.
+    facets = CUBE_FACETS.to(device=device, dtype=torch.int64)  # (12, 3) edge idx
+
+    # Detect fast-path cubes: uturn_assignment[i, 0, 0] == -1
+    is_fast = (uturn_assignment[:, 0, 0] == -1)  # (N,) bool
+    # For fast-path rows, treat uturns as 0
+    uturn_clean = torch.where(
+        is_fast.view(N, 1, 1).expand(N, 12, 3),
+        torch.zeros_like(uturn_assignment),
+        uturn_assignment,
+    )
+
+    # Scatter sum of u into per-edge accumulator: u_per_edge (N, 18) int64
+    u_per_edge = torch.zeros((N, 18), dtype=torch.int64, device=device)
+    # Flatten facets edges to (36,) and uturn_clean to (N, 36)
+    facets_flat = facets.reshape(36)                   # (36,) edge idx
+    u_flat = uturn_clean.reshape(N, 36)                # (N, 36) u-counts
+    u_per_edge.scatter_add_(1, facets_flat.unsqueeze(0).expand(N, 36), u_flat)
+
+    # Effective weights
+    ew_eff = edge_weights - 2 * u_per_edge   # (N, 18) int64
+
+    # ---- Per-pair k values ----
+    eA_tab, eB_tab, a_at_v0_tab, b_at_v0_tab = _facet_pair_table(device)  # (12,3) each
+
+    # Gather per-cube w_a, w_b, w_c for each (T, pair):
+    # For pair pi=0 in T: A=e1, B=e2, C=e3 -> k12 = (w1+w2-w3)/2
+    # For pair pi=1: A=e2, B=e3, C=e1     -> k23 = (w2+w3-w1)/2
+    # For pair pi=2: A=e3, B=e1, C=e2     -> k31 = (w3+w1-w2)/2
+    # Need eC for each pair — derive from facets:
+    # In facet T with edges (e1,e2,e3):  pair_seq = [(0,1),(1,2),(2,0)]
+    # so C = the remaining slot. Slots: pi=0->2, pi=1->0, pi=2->1.
+    # We have eA (12,3) = edges[a_pos], eB = edges[b_pos]. For eC:
+    facet_edges = facets  # (12, 3) edge idx
+    # eC by pi: pi=0 -> facet_edges[:,2], pi=1 -> facet_edges[:,0], pi=2 -> facet_edges[:,1]
+    eC_tab = torch.stack(
+        [facet_edges[:, 2], facet_edges[:, 0], facet_edges[:, 1]], dim=1
+    )  # (12, 3) edge idx for the C edge of each pair
+
+    # Gather weights per (cube, T, pair): shape (N, 12, 3)
+    w_a = ew_eff.gather(1, eA_tab.reshape(36).unsqueeze(0).expand(N, 36)).reshape(N, 12, 3)
+    w_b = ew_eff.gather(1, eB_tab.reshape(36).unsqueeze(0).expand(N, 36)).reshape(N, 12, 3)
+    w_c = ew_eff.gather(1, eC_tab.reshape(36).unsqueeze(0).expand(N, 36)).reshape(N, 12, 3)
+
+    k_pair = (w_a + w_b - w_c).div(2, rounding_mode='floor')  # (N, 12, 3) int64
+    # Clamp to valid range [0, W_MAX]
+    k_pair = k_pair.clamp(min=0, max=W)
+
+    # Original w_a/w_b for endpoint flipping (we need w_a in original ew, but
+    # ranks live in 0..ew[e]-1 (the original weight, not the effective one!))
+    # CRITICAL: ranks address into the original (e, rank) node space using
+    # original edge_weights, not the effective weight. The slow-path U-turn
+    # logic in the CPU code uses `ew[eA]` as the bound for `_get_ordered_points`,
+    # i.e. the original full weight.
+    # So pts_A endpoints use full edge_weights, not ew_eff.
+    w_a_full = edge_weights.gather(1, eA_tab.reshape(36).unsqueeze(0).expand(N, 36)).reshape(N, 12, 3)
+    w_b_full = edge_weights.gather(1, eB_tab.reshape(36).unsqueeze(0).expand(N, 36)).reshape(N, 12, 3)
+
+    # ---- Generate arc connections ----
+    # For each (cube, T, pair, j), if j < k_pair[cube,T,pair]:
+    #   pts_A_j = j if A_at_v0 else (w_a_full - 1 - j)
+    #   pts_B_j = j if B_at_v0 else (w_b_full - 1 - j)
+    #   node_A = eA * W + pts_A_j
+    #   node_B = eB * W + pts_B_j
+    #   write adj[node_A] += node_B, adj[node_B] += node_A
+    j_idx = torch.arange(W, device=device, dtype=torch.int64)  # (W,)
+
+    # Broadcast: (N, 12, 3, W)
+    j_b = j_idx.view(1, 1, 1, W).expand(N, 12, 3, W)
+    k_b = k_pair.unsqueeze(-1)             # (N, 12, 3, 1)
+    valid_arc = (j_b < k_b)                # (N, 12, 3, W) bool
+
+    # eA / eB / orientation broadcast
+    eA_b = eA_tab.view(1, 12, 3, 1).expand(N, 12, 3, W)
+    eB_b = eB_tab.view(1, 12, 3, 1).expand(N, 12, 3, W)
+    a_at_v0_b = a_at_v0_tab.view(1, 12, 3, 1).expand(N, 12, 3, W)
+    b_at_v0_b = b_at_v0_tab.view(1, 12, 3, 1).expand(N, 12, 3, W)
+    w_a_full_b = w_a_full.unsqueeze(-1)    # (N, 12, 3, 1)
+    w_b_full_b = w_b_full.unsqueeze(-1)
+
+    pts_A = torch.where(a_at_v0_b, j_b, w_a_full_b - 1 - j_b)   # (N,12,3,W)
+    pts_B = torch.where(b_at_v0_b, j_b, w_b_full_b - 1 - j_b)
+
+    node_A = eA_b * W + pts_A   # (N, 12, 3, W) int64
+    node_B = eB_b * W + pts_B
+
+    # Now scatter arc connections (both directions) into adj.
+    # Each arc must claim slot 0 or 1 in adj[cube, src_node, :].
+    # Strategy: collect all (cube, src_node, dst_node) for VALID arcs (both
+    # directions), then assign slots via grouping. A cleaner serialized approach
+    # is to sort by (cube, src_node) and pair up; but simpler is to handle the 6
+    # potential incoming edges per node deterministically using fill_count.
+    #
+    # We process arcs in a fixed order with for-loops over (T, pair, j) to
+    # avoid race conditions. There are 12*3*W = 576 iterations -- modest, and
+    # each iteration is one batched scatter across N cubes.
+    #
+    # Performance-wise, 576 small kernel launches is acceptable (sub-millisecond
+    # each on modern GPUs). The masked scatter only writes into rows where
+    # valid_arc is True.
+
+    cube_arange = torch.arange(N, device=device, dtype=torch.int64)
+
+    for t_idx in range(12):
+        for pi in range(3):
+            for jj in range(W):
+                mask = valid_arc[:, t_idx, pi, jj]   # (N,) bool
+                if not mask.any():
+                    continue
+                idx = cube_arange[mask]              # (M,) cube indices
+                nA = node_A[mask, t_idx, pi, jj]     # (M,) int64 src node
+                nB = node_B[mask, t_idx, pi, jj]     # (M,) int64 dst node
+
+                # Write A -> B
+                slotA = fill_count[idx, nA]          # (M,) int32
+                # Use index_put_ with a mask to avoid OOB writes when slotA >= 2
+                ok_A = (slotA < 2)
+                if ok_A.all():
+                    adj[idx, nA, slotA.long()] = nB.to(torch.int32)
+                    fill_count[idx, nA] = slotA + 1
+                else:
+                    idx_ok = idx[ok_A]
+                    nA_ok = nA[ok_A]
+                    nB_ok = nB[ok_A]
+                    slotA_ok = slotA[ok_A]
+                    adj[idx_ok, nA_ok, slotA_ok.long()] = nB_ok.to(torch.int32)
+                    fill_count[idx_ok, nA_ok] = slotA_ok + 1
+
+                # Write B -> A
+                slotB = fill_count[idx, nB]
+                ok_B = (slotB < 2)
+                if ok_B.all():
+                    adj[idx, nB, slotB.long()] = nA.to(torch.int32)
+                    fill_count[idx, nB] = slotB + 1
+                else:
+                    idx_ok = idx[ok_B]
+                    nA_ok = nA[ok_B]
+                    nB_ok = nB[ok_B]
+                    slotB_ok = slotB[ok_B]
+                    adj[idx_ok, nB_ok, slotB_ok.long()] = nA_ok.to(torch.int32)
+                    fill_count[idx_ok, nB_ok] = slotB_ok + 1
+
+    # ---- U-turn arcs (slow-path cubes only) ----
+    # For each (cube i, facet T, edge slot s in [0,1,2]):
+    #   u = uturn_assignment[i, T, s]
+    #   if u > 0:
+    #     eA = facets[T, s]
+    #     k_v0 = k for pair adjacent to eA at v0 (or 0 if none)
+    #     k_v1 = k for pair adjacent to eA at v1 (or 0 if none)
+    #     start = k_v0; end = ew_full[eA] - k_v1
+    #     for ii in 0..u-1:
+    #       p1 = start + 2*ii; p2 = start + 2*ii + 1
+    #       node_p1 = eA*W + p1, node_p2 = eA*W + p2
+    #       Add edges (node_p1<->node_p2)
+    #
+    # Note: U-turn arcs use the ORIGINAL edge_weights (full w), not ew_eff.
+    if (~is_fast).any():
+        ut_edge_tab, ut_pair_v0_tab, ut_pair_v1_tab = _uturn_pair_table(device)
+        # uturn_assignment is (N, 12, 3) — already the u counts per (T, s).
+        # We need k_pair gathered at the right pair_idx.
+
+        # k_v0 per (cube, T, s): k_pair[cube, T, ut_pair_v0_tab[T, s]] if pair >= 0 else 0
+        # k_v1 same for v1
+        # Build via gather
+        # ut_pair_v0_tab: (12, 3) int64; replace -1 with 0 then mask out
+        pair_v0_safe = ut_pair_v0_tab.clamp(min=0)  # (12, 3)
+        pair_v1_safe = ut_pair_v1_tab.clamp(min=0)
+        # Gather k for each (T, s): we need k_pair[cube, T, pair_idx]
+        # Reshape: k_pair (N, 12, 3) — gather along dim=2
+        # idx (1, 12, 3) -> (N, 12, 3)
+        idx_v0 = pair_v0_safe.unsqueeze(0).expand(N, 12, 3)
+        idx_v1 = pair_v1_safe.unsqueeze(0).expand(N, 12, 3)
+        k_v0 = k_pair.gather(2, idx_v0)
+        k_v1 = k_pair.gather(2, idx_v1)
+        # Mask out invalid pair slots
+        valid_v0 = (ut_pair_v0_tab >= 0).unsqueeze(0).expand(N, 12, 3)
+        valid_v1 = (ut_pair_v1_tab >= 0).unsqueeze(0).expand(N, 12, 3)
+        k_v0 = torch.where(valid_v0, k_v0, torch.zeros_like(k_v0))
+        k_v1 = torch.where(valid_v1, k_v1, torch.zeros_like(k_v1))
+
+        # Get ew_full per (cube, T, s) using ut_edge_tab
+        ew_at_eA = edge_weights.gather(
+            1, ut_edge_tab.reshape(36).unsqueeze(0).expand(N, 36)
+        ).reshape(N, 12, 3)
+
+        # Per (cube, T, s): u count
+        u_count = uturn_clean  # (N, 12, 3) int64
+        start_idx = k_v0       # (N, 12, 3)
+
+        # For each ii in 0..(W//2 - 1), generate up to one U-turn pair per (cube,T,s)
+        # ii < u_count
+        max_u = W // 2  # safe bound
+        for ii in range(max_u):
+            mask_u = (u_count > ii) & (~is_fast.view(N, 1, 1).expand(N, 12, 3))
+            if not mask_u.any():
+                continue
+            # Indices of (cube, T, s) where mask_u is True
+            sel = mask_u.nonzero(as_tuple=False)  # (M, 3): [cube, T, s]
+            if sel.shape[0] == 0:
+                continue
+            ci_u = sel[:, 0]
+            t_u = sel[:, 1]
+            s_u = sel[:, 2]
+
+            eA_u = ut_edge_tab[t_u, s_u]                  # (M,) edge idx
+            ew_u = ew_at_eA[ci_u, t_u, s_u]               # (M,) full weight
+            start_u = start_idx[ci_u, t_u, s_u]           # (M,)
+            p1 = start_u + 2 * ii                         # (M,)
+            p2 = start_u + 2 * ii + 1
+            # Skip if p2 out of range
+            in_range = (p2 < ew_u) & (p1 >= 0)
+            if not in_range.any():
+                continue
+            ci_v = ci_u[in_range]
+            eA_v = eA_u[in_range]
+            p1_v = p1[in_range]
+            p2_v = p2[in_range]
+            n_p1 = eA_v * W + p1_v
+            n_p2 = eA_v * W + p2_v
+
+            # Write n_p1 -> n_p2
+            slot = fill_count[ci_v, n_p1]
+            ok = (slot < 2)
+            ci_ok = ci_v[ok]
+            n_p1_ok = n_p1[ok]
+            n_p2_ok = n_p2[ok]
+            slot_ok = slot[ok]
+            adj[ci_ok, n_p1_ok, slot_ok.long()] = n_p2_ok.to(torch.int32)
+            fill_count[ci_ok, n_p1_ok] = slot_ok + 1
+
+            # Write n_p2 -> n_p1
+            slot = fill_count[ci_v, n_p2]
+            ok = (slot < 2)
+            ci_ok = ci_v[ok]
+            n_p1_ok = n_p1[ok]
+            n_p2_ok = n_p2[ok]
+            slot_ok = slot[ok]
+            adj[ci_ok, n_p2_ok, slot_ok.long()] = n_p1_ok.to(torch.int32)
+            fill_count[ci_ok, n_p2_ok] = slot_ok + 1
+
+    return adj  # (N, NODES_PER_CUBE, 2) int32
+
+
+def _phase1_gpu_rank_assign(
+    batch: CubeBatch,
+    ok_loop_mask: torch.Tensor,            # (L,) bool — which loops to process
+    loop_to_cube: torch.Tensor,            # (L,) int64 — cube index for each loop
+) -> torch.Tensor:
+    """Compute rank for every crossing in OK cubes via batched walk on per-cube adj.
+
+    Returns:
+        loop_edge_rank tensor of shape (E,) int32, where E = batch.loop_edge_val.shape[0].
+        Non-OK cube crossings are set to 0.
+    """
+    device = batch.device
+    N = batch.num_cubes
+    E = int(batch.loop_edge_val.shape[0])
+    L = int(batch.loop_edge_off.shape[0]) - 1
+    W = _W_MAX
+
+    # ---- Build adjacency on GPU ----
+    edge_weights64 = batch.edge_weights.to(torch.int64)
+    uturn64 = batch.uturn_assignment.to(torch.int64)
+    adj = _build_adjacency_gpu(edge_weights64, uturn64)  # (N, NODES_PER_CUBE, 2) int32
+
+    # ---- Build per-loop max edge length K and per-loop padded edges ----
+    loop_off = batch.loop_edge_off.to(torch.int64)  # (L+1,)
+    loop_lengths = (loop_off[1:] - loop_off[:-1])   # (L,)
+    K_max = int(loop_lengths.max().item()) if L > 0 else 0
+    if K_max == 0 or L == 0 or E == 0:
+        return torch.zeros(E, dtype=torch.int32, device=device)
+
+    # Pad each loop's edge sequence to (L, K_max)
+    loop_edges_pad = torch.full((L, K_max), -1, dtype=torch.int64, device=device)
+    pos_in_loop = torch.arange(K_max, device=device, dtype=torch.int64)  # (K_max,)
+    pos_b = pos_in_loop.unsqueeze(0)                                      # (1, K_max)
+    valid_pos = pos_b < loop_lengths.unsqueeze(1)                         # (L, K_max)
+    flat_idx = loop_off[:-1].unsqueeze(1) + pos_b                         # (L, K_max)
+    flat_idx_clamped = flat_idx.clamp(max=E - 1)
+    loop_edges_pad = torch.where(
+        valid_pos,
+        batch.loop_edge_val.to(torch.int64)[flat_idx_clamped],
+        torch.full_like(flat_idx, -1),
+    )  # (L, K_max) int64
+
+    # Per-loop cube index already provided
+    cube_per_loop = loop_to_cube  # (L,) int64
+
+    # ---- Enumerate candidates: for each loop, up to 2 * W = 32 candidates ----
+    # candidate = (rank0, neighbor_choice) for the first edge
+    # We generate (L, 2*W, K_max) walk traces, then mask invalid and pick first valid.
+
+    # First edge per loop
+    e0 = loop_edges_pad[:, 0]   # (L,) int64; -1 if loop empty (filtered by ok_loop_mask)
+
+    # Number of candidates per loop = ew[cube, e0] * 2 (capped at 2*W)
+    # But we'll generate all 2*W and mask invalid.
+
+    # For loops with empty ok_loop_mask (non-OK cubes), we skip walk entirely.
+    # The output for those crossings will stay 0.
+
+    # rank0 candidates
+    r0_idx = torch.arange(W, device=device, dtype=torch.int64)            # (W,)
+    nbr_idx = torch.arange(2, device=device, dtype=torch.int64)           # (2,)
+    cand_r0 = r0_idx.view(1, W, 1).expand(L, W, 2).reshape(L, W * 2)      # (L, 2W)
+    cand_nbr = nbr_idx.view(1, 1, 2).expand(L, W, 2).reshape(L, W * 2)    # (L, 2W)
+
+    # Check: r0 < ew[cube, e0]
+    ew_e0 = edge_weights64[cube_per_loop, e0.clamp(min=0)]  # (L,) int64
+    cand_r0_valid = cand_r0 < ew_e0.unsqueeze(1)            # (L, 2W) bool
+
+    # Each loop must also be in ok_loop_mask
+    cand_r0_valid = cand_r0_valid & ok_loop_mask.unsqueeze(1)
+
+    # ---- Walk along the graph ----
+    # Initialize:
+    #   cur_node[L, 2W] = e0 * W + cand_r0
+    #   prev_node[L, 2W] = -1
+    #   walk_rank[L, 2W, K_max] = -1
+    #   alive[L, 2W] = cand_r0_valid
+    cur_node = e0.unsqueeze(1) * W + cand_r0  # (L, 2W) int64
+    cur_node = cur_node.clamp(min=0, max=_NODES_PER_CUBE - 1)  # safety
+    prev_node = torch.full_like(cur_node, -1)
+    alive = cand_r0_valid.clone()
+    walk_rank = torch.zeros((L, W * 2, K_max), dtype=torch.int32, device=device)
+    walk_rank[:, :, 0] = cand_r0.to(torch.int32)
+
+    cube_b = cube_per_loop.view(L, 1).expand(L, W * 2)  # (L, 2W) int64
+
+    for step in range(1, K_max):
+        # Within bounds
+        within = (pos_in_loop[step] < loop_lengths)  # (L,) bool
+        within_b = within.unsqueeze(1).expand(L, W * 2)
+        # Get the two neighbors of cur_node in each cube
+        nbr0 = adj[cube_b, cur_node, 0]  # (L, 2W) int32
+        nbr1 = adj[cube_b, cur_node, 1]
+
+        # Step selection:
+        #   step 1 (first walk): use cand_nbr (0 or 1)
+        #   step 2+: use the neighbor != prev_node
+        if step == 1:
+            chosen = torch.where(cand_nbr == 0, nbr0, nbr1)  # (L, 2W) int32
+        else:
+            # Choose neighbor that is NOT prev_node
+            chosen = torch.where(
+                nbr0.to(torch.int64) == prev_node, nbr1, nbr0
+            )
+
+        # Decode chosen node -> (edge, rank)
+        chosen_i64 = chosen.to(torch.int64)
+        # Mark dead if chosen == -1 (no neighbor)
+        no_nbr = (chosen == -1)
+        chosen_clamped = chosen_i64.clamp(min=0, max=_NODES_PER_CUBE - 1)
+        chosen_edge = chosen_clamped // W   # (L, 2W) int64
+        chosen_rank = chosen_clamped % W
+
+        # Compare against expected next edge in loop
+        expected_edge = loop_edges_pad[:, step].unsqueeze(1).expand(L, W * 2)  # (L, 2W) int64
+        edge_match = (chosen_edge == expected_edge)
+
+        # Step is valid if alive AND within AND not no_nbr AND edge_match
+        step_valid = alive & within_b & (~no_nbr) & edge_match
+        # Alive after step: alive AND (step_valid OR not within)
+        alive = alive & (step_valid | ~within_b)
+
+        # Write rank for valid steps; for invalid OR out-of-bounds keep 0
+        # Use scatter-style write through where()
+        prev_walk_rank_step = walk_rank[:, :, step]
+        new_step_rank = torch.where(step_valid, chosen_rank.to(torch.int32), prev_walk_rank_step)
+        walk_rank[:, :, step] = new_step_rank
+
+        # Update prev/cur (only for alive candidates that took a real step)
+        prev_node = torch.where(step_valid, cur_node, prev_node)
+        cur_node = torch.where(step_valid, chosen_i64, cur_node)
+
+    # ---- Verify cycle closure: for K-length loops, the (K-1)-th edge's
+    #      neighbor (other than prev_node) must equal the starting node
+    # This is implied by alive[..., K-1] && edge_match for the closing edge,
+    # but the loop already implicitly visited the cycle. We accept any walk
+    # that completes within bounds.
+
+    # ---- Pick first valid candidate per loop ----
+    # alive (L, 2W) — need the FIRST True index along dim 1.
+    # Use cumsum trick: find first True
+    any_alive = alive.any(dim=1)  # (L,) bool
+    # For each row, the first True position
+    # Trick: argmax on alive.int() returns first True (since the first 1 wins)
+    first_idx = alive.to(torch.int32).argmax(dim=1)  # (L,) int64
+    # Where no candidate alive, fallback to 0 (rank zero)
+
+    # Gather the chosen walk ranks
+    chosen_ranks = walk_rank[
+        torch.arange(L, device=device), first_idx
+    ]  # (L, K_max) int32
+
+    # Zero-out for loops where no candidate succeeded
+    chosen_ranks = torch.where(
+        any_alive.unsqueeze(1),
+        chosen_ranks,
+        torch.zeros_like(chosen_ranks),
+    )
+
+    # ---- Scatter chosen_ranks into flat loop_edge_rank tensor ----
+    loop_edge_rank = torch.zeros(E, dtype=torch.int32, device=device)
+    # For each loop l, copy chosen_ranks[l, 0:loop_lengths[l]] into
+    # loop_edge_rank[loop_off[l] : loop_off[l+1]]
+    # Use mask-based scatter:
+    flat_pos = loop_off[:-1].unsqueeze(1) + pos_b  # (L, K_max)
+    flat_pos_clamped = flat_pos.clamp(max=E - 1)
+    flat_pos_flat = flat_pos_clamped.reshape(-1)   # (L*K_max,)
+    rank_flat = chosen_ranks.reshape(-1)
+    valid_flat = valid_pos.reshape(-1)
+    # scatter only where valid_pos True. Use index_put_ with mask.
+    loop_edge_rank.scatter_(0, flat_pos_flat[valid_flat], rank_flat[valid_flat])
+
+    return loop_edge_rank
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -533,7 +1125,9 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
     fw_np = batch.face_weights.cpu().numpy()  # (N, 12) int32
 
     # ===================================================================
-    # Phase 1: Rank re-tracing (CPU, optionally multiprocessing)
+    # Phase 1: Rank re-tracing
+    #   - W2b GPU path: batched parallel walk on per-cube adjacency tensors
+    #   - Legacy CPU MP path: per-cube serial graph traversal
     # ===================================================================
 
     # Convert CSR to numpy once (avoid per-cube .item() GPU syncs)
@@ -542,82 +1136,170 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
     loop_edge_val_np = batch.loop_edge_val.cpu().numpy()
     status_np = batch.status.cpu().numpy()
 
-    # Build work items for OK cubes
-    rank_work_items = []
+    # Identify OK cubes upfront (used by both Phase 2 and Phase 3)
     ok_cube_indices = []
-
     for i in range(N):
         status_i = int(status_np[i])
         l_lo = int(loop_cube_off_np[i])
         l_hi = int(loop_cube_off_np[i + 1])
         n_loops = l_hi - l_lo
-
         if n_loops == 0 or status_i != CubeStatus.OK:
             continue
-
-        ew_i = ew_np[i].tolist()
-
-        # Extract s6 loops (edge-only)
-        s6_loops = []
-        for li in range(l_lo, l_hi):
-            e_lo = int(loop_edge_off_np[li])
-            e_hi = int(loop_edge_off_np[li + 1])
-            s6_loops.append(loop_edge_val_np[e_lo:e_hi].tolist())
-
-        # Determine fast-path vs slow-path from uturn_assignment
-        uturn_row = uturn_np[i]  # (12, 3) int32
-        if uturn_row[0, 0] == -1:
-            uturn_assign = None
-        else:
-            uturn_assign = tuple(
-                tuple(int(x) for x in uturn_row[t])
-                for t in range(12)
-            )
-
-        rank_work_items.append((i, ew_i, s6_loops, uturn_assign))
         ok_cube_indices.append(i)
 
-    # Dispatch rank work — use temporary Pool with fork-inherited data
-    if num_workers > 1 and len(rank_work_items) > 500:
-        from multiprocessing import Pool as _Pool
-        with _Pool(num_workers) as p:
-            rank_results = p.map(_s7_rank_worker, rank_work_items,
-                                 chunksize=max(1, len(rank_work_items) // (num_workers * 4)))
-    else:
-        rank_results = [_s7_rank_worker(item) for item in rank_work_items]
-
-    # Collect rank results into flat arrays
     all_ranks = [0] * total_edges
     all_matches = [0] * total_loops
 
-    # Fill non-OK cubes with defaults
+    # Fill non-OK cubes' loop_point_match with identity defaults
     for i in range(N):
         status_i = int(status_np[i])
         l_lo = int(loop_cube_off_np[i])
         l_hi = int(loop_cube_off_np[i + 1])
         n_loops = l_hi - l_lo
-
         if n_loops == 0:
             continue
-
         if status_i != CubeStatus.OK:
             for li_off in range(n_loops):
                 all_matches[l_lo + li_off] = li_off
 
-    # Write OK-cube rank results into flat array
-    for cube_idx, rank_lists in rank_results:
-        l_lo = int(loop_cube_off_np[cube_idx])
-        for li_off, ranks in enumerate(rank_lists):
-            li = l_lo + li_off
-            e_lo = int(loop_edge_off_np[li])
-            for k, r in enumerate(ranks):
-                all_ranks[e_lo + k] = r
+    # rank_results: per-OK-cube list of rank lists (parallel to ok_cube_indices).
+    # Both paths produce this for downstream Phase 2 to consume.
+    rank_results: list[tuple[int, list[list[int]]]]
+
+    if _cfg.S7_PHASE1_GPU and total_loops > 0:
+        # ---- W2b GPU path ----
+        # Build per-loop ok mask (only loops in OK cubes contribute)
+        L = total_loops
+        loop_to_cube = torch.zeros(L, dtype=torch.int64, device=device)
+        ok_loop_mask = torch.zeros(L, dtype=torch.bool, device=device)
+        # Compute loop_to_cube via repeat_interleave on loop_cube_off
+        loop_cube_off_t = batch.loop_cube_off.to(torch.int64)
+        loops_per_cube = (loop_cube_off_t[1:] - loop_cube_off_t[:-1])  # (N,)
+        cube_arange = torch.arange(N, device=device, dtype=torch.int64)
+        loop_to_cube = torch.repeat_interleave(cube_arange, loops_per_cube)
+        # ok mask: cube status == OK
+        status_t = batch.status.to(torch.int64)
+        cube_ok = (status_t == CubeStatus.OK)  # (N,)
+        ok_loop_mask = cube_ok[loop_to_cube]   # (L,) bool
+
+        loop_edge_rank_gpu = _phase1_gpu_rank_assign(
+            batch=batch,
+            ok_loop_mask=ok_loop_mask,
+            loop_to_cube=loop_to_cube,
+        )
+
+        # GPU path skips both `all_ranks` Python list and the per-cube
+        # `rank_results` construction. The Phase 2 fast path reads
+        # loop_edge_rank_gpu directly; the final tensor pack also reuses it.
+        rank_results = []  # unused on this path; kept as empty for symmetry
+        all_ranks = None   # signal to final pack to use loop_edge_rank_gpu
+
+    else:
+        # ---- Legacy CPU MP path ----
+        rank_work_items = []
+        for i in ok_cube_indices:
+            l_lo = int(loop_cube_off_np[i])
+            l_hi = int(loop_cube_off_np[i + 1])
+            ew_i = ew_np[i].tolist()
+            s6_loops = []
+            for li in range(l_lo, l_hi):
+                e_lo = int(loop_edge_off_np[li])
+                e_hi = int(loop_edge_off_np[li + 1])
+                s6_loops.append(loop_edge_val_np[e_lo:e_hi].tolist())
+            uturn_row = uturn_np[i]
+            if uturn_row[0, 0] == -1:
+                uturn_assign = None
+            else:
+                uturn_assign = tuple(
+                    tuple(int(x) for x in uturn_row[t])
+                    for t in range(12)
+                )
+            rank_work_items.append((i, ew_i, s6_loops, uturn_assign))
+
+        # Dispatch rank work — use temporary Pool with fork-inherited data
+        if num_workers > 1 and len(rank_work_items) > 500:
+            from multiprocessing import Pool as _Pool
+            with _Pool(num_workers) as p:
+                rank_results = p.map(_s7_rank_worker, rank_work_items,
+                                     chunksize=max(1, len(rank_work_items) // (num_workers * 4)))
+        else:
+            rank_results = [_s7_rank_worker(item) for item in rank_work_items]
+
+        # Write OK-cube rank results into flat array
+        for cube_idx, rank_lists in rank_results:
+            l_lo = int(loop_cube_off_np[cube_idx])
+            for li_off, ranks in enumerate(rank_lists):
+                li = l_lo + li_off
+                e_lo = int(loop_edge_off_np[li])
+                for k, r in enumerate(ranks):
+                    all_ranks[e_lo + k] = r
 
     # ===================================================================
     # Phase 2: GPU batched centroid interpolation (scatter-mean)
     # ===================================================================
 
-    if total_edges > 0 and ok_cube_indices:
+    # Fast path: GPU Phase 1 already produced a flat (E,) loop_edge_rank tensor,
+    # which is exactly the data the downstream code reconstructs piecewise. Use
+    # it directly to skip the per-cube/per-loop/per-crossing Python loop.
+    if _cfg.S7_PHASE1_GPU and total_edges > 0:
+        loop_edge_rank_for_phase2 = loop_edge_rank_gpu  # already on device
+        # Build per-crossing (loop_id, edge_id, rank, weight, cube_id) tensors
+        # in one shot from CSR.
+        loop_off_t = batch.loop_edge_off.to(torch.int64)
+        loop_cube_off_t = batch.loop_cube_off.to(torch.int64)
+        loops_per_cube = loop_cube_off_t[1:] - loop_cube_off_t[:-1]
+        cube_arange = torch.arange(N, device=device, dtype=torch.int64)
+        loop_to_cube_t = torch.repeat_interleave(cube_arange, loops_per_cube)  # (L,)
+
+        # Per crossing: cube id and loop id
+        crossings_per_loop = loop_off_t[1:] - loop_off_t[:-1]   # (L,)
+        loop_arange = torch.arange(total_loops, device=device, dtype=torch.int64)
+        t_loop_ids = torch.repeat_interleave(loop_arange, crossings_per_loop)  # (E,)
+        t_cube_ids = torch.repeat_interleave(loop_to_cube_t, crossings_per_loop)  # (E,)
+        t_edge_ids = batch.loop_edge_val.to(torch.int64)        # (E,)
+        t_ranks = loop_edge_rank_for_phase2.to(torch.float32)   # (E,)
+        # Weight per crossing = edge_weights[cube, edge]
+        t_weights = batch.edge_weights.to(torch.float32)[t_cube_ids, t_edge_ids]
+
+        # Apply ok mask: rank/weight zero for non-OK cubes (no centroid contribution)
+        status_t = batch.status.to(torch.int64)
+        cube_ok_t = (status_t == CubeStatus.OK)
+        cross_ok = cube_ok_t[t_cube_ids]   # (E,) bool
+        # For non-OK crossings, set rank=0 and weight=1 to avoid NaN; but we'll
+        # still scatter into the loop centroid. To match CPU behavior (which
+        # only contributes OK cubes to centroids), we can mask these out from
+        # the scatter. Since the CPU path only iterates ok_cube_indices, we
+        # filter here too.
+        sel = cross_ok
+        t_loop_ids = t_loop_ids[sel]
+        t_edge_ids = t_edge_ids[sel]
+        t_ranks = t_ranks[sel]
+        t_weights = t_weights[sel]
+        t_cube_ids = t_cube_ids[sel]
+        n_crossings = int(t_loop_ids.shape[0])
+
+        if n_crossings > 0:
+            edge_starts = CUBE_EDGE_STARTS.to(device=device, dtype=torch.float32)
+            edge_ends = CUBE_EDGE_ENDS.to(device=device, dtype=torch.float32)
+            cube_indices_gpu = batch.cube_indices.to(dtype=torch.float32)
+            cube_origins = cube_indices_gpu / resolution
+            step = 1.0 / resolution
+
+            start_pts = edge_starts[t_edge_ids]
+            end_pts = edge_ends[t_edge_ids]
+            origins = cube_origins[t_cube_ids]
+            t_param = ((t_ranks + 1.0) / (t_weights + 1.0)).unsqueeze(1)
+            local_pos = start_pts + t_param * (end_pts - start_pts)
+            world_pos = origins + local_pos * step
+
+            loop_centroids = torch.zeros(total_loops, 3, dtype=torch.float32, device=device)
+            loop_counts = torch.zeros(total_loops, dtype=torch.float32, device=device)
+            loop_centroids.scatter_add_(0, t_loop_ids.unsqueeze(1).expand(-1, 3), world_pos)
+            loop_counts.scatter_add_(0, t_loop_ids, torch.ones(n_crossings, dtype=torch.float32, device=device))
+            loop_centroids = loop_centroids / loop_counts.clamp(min=1.0).unsqueeze(1)
+        else:
+            loop_centroids = torch.zeros(total_loops, 3, dtype=torch.float32, device=device)
+    elif total_edges > 0 and ok_cube_indices:
         # Build flat arrays for all edge crossings of OK cubes:
         #   For each crossing at (cube_i, loop_j, position_k):
         #     edge_idx, rank, edge_weight, cube_origin
@@ -740,8 +1422,13 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
     # Pack results
     # ===================================================================
 
-    loop_edge_rank = torch.tensor(all_ranks, dtype=torch.int32, device=device) \
-        if total_edges > 0 else torch.zeros(0, dtype=torch.int32, device=device)
+    if all_ranks is None:
+        # GPU Phase 1 path: reuse the device tensor directly
+        loop_edge_rank = loop_edge_rank_gpu if total_edges > 0 \
+            else torch.zeros(0, dtype=torch.int32, device=device)
+    else:
+        loop_edge_rank = torch.tensor(all_ranks, dtype=torch.int32, device=device) \
+            if total_edges > 0 else torch.zeros(0, dtype=torch.int32, device=device)
     loop_point_match = torch.tensor(all_matches, dtype=torch.int32, device=device) \
         if total_loops > 0 else torch.zeros(0, dtype=torch.int32, device=device)
 

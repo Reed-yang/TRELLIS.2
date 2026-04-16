@@ -9,6 +9,96 @@ Reference: spec section 6.8 (s8_collapse Torch strategy).
 
 Public API:
     s8_collapse_to_ply(resolution, cube_data_list, output_filepath, merge_decimals)
+
+
+===============================================================================
+LOCAL-EDGE ENCODING CONVENTIONS — CRITICAL READ BEFORE TOUCHING s8 CODE
+===============================================================================
+
+There are TWO independent local-edge encoding conventions in this stage. Mixing
+them is the root cause of the 4-cube vectorized-path divergence documented in
+my-docs/20260415-corep-fast-stage2-analysis.md §4.1. Every gather that crosses
+between the two MUST go through the conversion table at the bottom of this
+docstring.
+
+(A) `_EDGE_OFFSET_TABLE` convention — geometry-side / "owner-derivation"
+    Used by:
+      - `_EDGE_OFFSET_TABLE` (this file, defined below)
+      - `compute_global_edge_keys` (computes the global edge ID per cube×edge)
+      - `EdgeNeighborTable.neighbor_local_edges` (one slot per neighbor cube,
+        the "local edge index" reported when that cube was discovered to
+        contribute to this global edge through `_EDGE_OFFSET_TABLE`)
+    Definition: index 0..11 over per-cube edges, listed in the order
+                  X-bottom-front (0), Z-back-right (1),  X-bottom-back (2),
+                  Z-back-left  (3), X-top-front  (4), Z-front-right (5),
+                  X-top-back   (6), Z-front-left (7), Y-bottom-left (8),
+                  Y-bottom-right (9), Y-top-right (10), Y-top-left (11).
+    Each row of `_EDGE_OFFSET_TABLE` stores `(axis, dx, dy, dz)` describing
+    *where* this local edge sits within the cube — e.g. axis=2 means a
+    Z-aligned edge, (dx,dy,dz) is the corner offset (each in {0,1}).
+
+(B) `custom/collapse.py::get_local_edge(dx, dy, dz)` convention — loop-side
+    Used by:
+      - `sorted_loops['loop']` entries inside `cube_data` (every value there
+        is a "local edge index" produced by get_local_edge)
+      - `_process_shared_edge_geometry` (the Python reference implementation)
+      - `tensors.loop_edges_flat` (CSR-flat copy of sorted_loops['loop'])
+    Definition: given an `edge_axis` (the axis of the SHARED global edge being
+    processed) and `(dx, dy, dz)` = `cube_xyz - edge_min_xyz`, returns the
+    local edge index 0..11 for THAT specific cube, but indexed by which
+    *quadrant* (around the shared edge) the cube occupies.
+
+Why they differ:
+    Convention (A) is a pure per-cube enumeration. Convention (B) only emits
+    edges that are *geometrically aligned* with `edge_axis`, so for a Y-axis
+    shared edge it returns values in {1, 3, 5, 7} (the four Y-aligned
+    Top/Bottom-Left/Right edges) — NEVER the {8,9,10,11} that convention (A)
+    uses for the same Y-axis edges. The two encodings agree on edge axis but
+    use different IDs for Y-axis edges.
+
+Conversion table — given `edge_axis` (of the shared global edge) and the
+`(dx, dy, dz)` of one neighbor cube relative to the edge's min corner, the
+"loop convention" local edge id (for use against sorted_loops['loop']) is:
+
+    edge_axis = 0 (X):  (dy, dz) → local_edge
+        (0, 0) → 6  ('Top-Back')
+        (1, 0) → 4  ('Top-Front')
+        (0, 1) → 2  ('Bottom-Back')
+        (1, 1) → 0  ('Bottom-Front')
+    edge_axis = 1 (Y):  (dx, dz) → local_edge
+        (0, 0) → 5  ('Top-Right')
+        (1, 0) → 7  ('Top-Left')
+        (0, 1) → 1  ('Bottom-Right')
+        (1, 1) → 3  ('Bottom-Left')
+    edge_axis = 2 (Z):  (dx, dy) → local_edge
+        (0, 0) → 10 ('Back-Right')
+        (1, 0) → 11 ('Back-Left')
+        (0, 1) → 9  ('Front-Right')
+        (1, 1) → 8  ('Front-Left')
+
+Negative-direction edges (need rank flip):  {2, 6, 3, 7} per custom/collapse.py
+"For X-axis edges 2,6 (-X direction) and Y-axis edges 3,7 (-Y direction),
+ normalized_rank = (W - 1) - rank".
+
+Where the conversion is currently applied:
+    `process_geometry_vectorized` (this file, around line 891) re-derives the
+    loop-convention local edge per (edge, neighbor-slot) using the table above
+    BEFORE matching against `gathered_edges` from `tensors.loop_edges_flat`.
+    Do NOT use `table.neighbor_local_edges` directly to index into loop edges.
+
+UV-slot vs table-slot:
+    `EdgeNeighborTable.neighbor_cube_ids` columns 0..3 follow the cyclic
+    `_NEIGHBOR_OFFSETS` order. The Python reference `_process_shared_edge_geometry`
+    indexes "uv slots" by `(dx,dy)/(dy,dz)/(dx,dz)` directly, with the mapping
+    (0,0)→0, (1,0)→1, (1,1)→2, (0,1)→3. The vectorized path therefore also
+    permutes table-slot → uv-slot before scatter. See `slot_id` derivation in
+    `process_geometry_vectorized`.
+
+If you add a new vectorized consumer of `tensors.loop_edges_flat` or
+`tensors.loop_ranks_flat`, you MUST insert the same conversion. The 9
+divergent edges observed historically (out of 16,980 4-cube edges on
+icosphere@res=64) all came from forgetting this exact step.
+===============================================================================
 """
 from __future__ import annotations
 
@@ -833,6 +923,7 @@ def process_geometry_vectorized(
     device: torch.device,
     max_rank: int = 16,
     exc_pt_per_cube_override: Optional[torch.Tensor] = None,
+    exc_present_per_cube_override: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Vectorized geometry processing: emit fan triangles for all owned edges.
 
@@ -850,6 +941,14 @@ def process_geometry_vectorized(
             from this per-cube tensor instead of `tensors.loop_component_point`
             (which in the dict path holds a virtual first-loop's point; in the
             direct path there is no such virtual loop).
+        exc_present_per_cube_override: Optional (N,) bool tensor marking which
+            cubes have a valid exception wildcard point. In the dict path the
+            virtual first loop guarantees `num_loops >= 1` for any exception
+            cube, but in the direct-tensor path exception cubes have
+            `num_loops == 0` even though their wildcard point is available
+            via `exc_pt_per_cube_override`. Pass this mask to relax the
+            `num_loops > 0` gating in Step 9 / rank-0 synthesis. When None,
+            the legacy `num_loops > 0` gate applies.
 
     Returns:
         (T*3, 3) float64 tensor of triangle vertex coordinates.
@@ -1071,13 +1170,29 @@ def process_geometry_vectorized(
     cube_exc_uv[e_flat, uv_flat] = cube_exc.reshape(-1)[valid_mask_flat]
     num_loops_uv[e_flat, uv_flat] = num_loops.reshape(-1)[valid_mask_flat]
 
-    # Fill missing slots where: cube is exception, slot is valid, cube has at least 1 loop,
-    # and the rank already has some presence (we don't invent new ranks from exceptions alone)
+    # "Has a valid exception wildcard point" per (edge, uv-slot).
+    # In the dict path, every exception cube has at least one virtual loop, so
+    # num_loops_uv > 0 is sufficient. In the direct-tensor path, exception
+    # cubes have num_loops_uv == 0 but the wildcard point lives in
+    # exc_pt_per_cube_override; we permute the per-cube presence flag the
+    # same way as exc_pt above.
+    if exc_present_per_cube_override is not None:
+        exc_present_per_slot = exc_present_per_cube_override[n_cube_safe] & valid_slot  # (E, 4)
+        exc_present_uv = torch.zeros((E, 4), dtype=torch.bool, device=device)
+        exc_present_uv[e_flat, uv_flat] = exc_present_per_slot.reshape(-1)[valid_mask_flat]
+        # Combine: cube is an exception AND a wildcard point is materially available.
+        exc_active_uv = cube_exc_uv & (exc_present_uv | (num_loops_uv > 0))
+    else:
+        # Legacy behaviour: rely on virtual loop produced by dict path.
+        exc_active_uv = cube_exc_uv & (num_loops_uv > 0)
+
+    # Fill missing slots where: cube has an active exception wildcard, slot is
+    # valid, and the rank already has some presence (we don't invent new ranks
+    # from exceptions alone here — that is handled by rank-0 synthesis below).
     fill_mask = (
         (~has_point) &
-        cube_exc_uv.unsqueeze(1) &
-        any_has_point.unsqueeze(2) &
-        (num_loops_uv.unsqueeze(1) > 0)
+        exc_active_uv.unsqueeze(1) &
+        any_has_point.unsqueeze(2)
     )
     points_by_rank = torch.where(
         fill_mask.unsqueeze(3),
@@ -1088,11 +1203,11 @@ def process_geometry_vectorized(
 
     # Rank-0 synthesis: if no rank has any points but exceptions exist
     no_rank = ~any_has_point.any(dim=1)                     # (E,)
-    has_exc = (cube_exc_uv & (num_loops_uv > 0)).any(dim=1)  # (E,)
+    has_exc = exc_active_uv.any(dim=1)                       # (E,)
     synth = no_rank & has_exc                                # (E,)
     if synth.any():
         idx = torch.nonzero(synth, as_tuple=False).squeeze(1)
-        valid_exc = cube_exc_uv[idx] & (num_loops_uv[idx] > 0)  # (M, 4)
+        valid_exc = exc_active_uv[idx]                       # (M, 4)
         has_point[idx, 0, :] = valid_exc
         pts_rank0 = torch.where(
             valid_exc.unsqueeze(2),
@@ -1108,12 +1223,18 @@ def process_geometry_vectorized(
 
     full_edges, full_ranks = torch.nonzero(full_mask, as_tuple=True)
 
-    pts_4 = points_by_rank[full_edges, full_ranks]  # (F, 4, 3)
-    proj = pts_4.mean(dim=1)                         # (F, 3)
-    p0 = pts_4[:, 0]
-    p1 = pts_4[:, 1]
-    p2 = pts_4[:, 2]
-    p3 = pts_4[:, 3]
+    pts_4 = points_by_rank[full_edges, full_ranks]  # (F, 4, 3) float32
+    # Promote to float64 BEFORE mean to match the Python reference path,
+    # which converts float32 point values to Python floats (float64) via
+    # tolist() before averaging. Without this promotion, the float32 mean
+    # introduces ULP-level drift that crosses merge_decimals=5 buckets and
+    # produces visible vertex-set divergence on 4-cube edges.
+    pts_4_64 = pts_4.to(torch.float64)
+    proj = pts_4_64.mean(dim=1)                      # (F, 3) float64
+    p0 = pts_4_64[:, 0]
+    p1 = pts_4_64[:, 1]
+    p2 = pts_4_64[:, 2]
+    p3 = pts_4_64[:, 3]
 
     # Fan: (proj,p0,p1), (proj,p1,p2), (proj,p2,p3), (proj,p3,p0)
     tris = torch.stack([
@@ -1121,9 +1242,9 @@ def process_geometry_vectorized(
         torch.stack([proj, p1, p2], dim=1),
         torch.stack([proj, p2, p3], dim=1),
         torch.stack([proj, p3, p0], dim=1),
-    ], dim=1)  # (F, 4, 3, 3)
+    ], dim=1)  # (F, 4, 3, 3) float64
 
-    return tris.reshape(-1, 3).to(torch.float64)
+    return tris.reshape(-1, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -1203,7 +1324,35 @@ def _process_shared_edges_torch(
     # Routing every 4-cube edge through the Python fallback produces
     # bit-exact parity while leaving the >=95% of partial-neighbor edges on
     # the fast vectorized path.
-    candidate_mask = kept_table.neighbor_counts == 4                   # (E,)
+    #
+    # Phase 2 W1: when COREP_FAST_S8_4CUBE_VECTORIZED=1, route 4-cube edges
+    # through the vectorized path (encoding mismatch fixed via the loop-
+    # convention conversion table re-derived inside process_geometry_vectorized).
+    # Hybrid predicate: 4-cube edges with any neighbor having num_loops >= 2
+    # still go through the Python fallback because conditional-promotion on
+    # multi-loop neighbor cubes is not handled by the vectorized path.
+    from corep_fast.config import S8_4CUBE_VECTORIZED as s8_4cube_vec
+
+    if s8_4cube_vec:
+        # Compute max neighbor num_loops per kept edge.
+        # tensors.loop_cube_offsets: (N+1,) CSR offsets into loop arrays.
+        n_cube_safe_for_pred = kept_table.neighbor_cube_ids.clamp(min=0).to(torch.int64)
+        valid_slot_for_pred = kept_table.neighbor_cube_ids >= 0          # (E, 4)
+        loop_start_pred = tensors.loop_cube_offsets[n_cube_safe_for_pred]
+        loop_end_pred = tensors.loop_cube_offsets[n_cube_safe_for_pred + 1]
+        per_slot_num_loops = (loop_end_pred - loop_start_pred).clamp(min=0)
+        per_slot_num_loops = torch.where(
+            valid_slot_for_pred,
+            per_slot_num_loops,
+            torch.zeros_like(per_slot_num_loops),
+        )                                                                 # (E, 4)
+        max_neighbor_num_loops = per_slot_num_loops.max(dim=1).values     # (E,)
+        # Hybrid: only 4-cube edges with multi-loop neighbors stay on fallback.
+        candidate_mask = (
+            (kept_table.neighbor_counts == 4) & (max_neighbor_num_loops >= 2)
+        )
+    else:
+        candidate_mask = kept_table.neighbor_counts == 4                   # (E,)
 
     # Step D: Non-candidate edges → vectorized Torch path
     non_candidate_mask = ~candidate_mask
@@ -1534,8 +1683,30 @@ def _process_shared_edges_from_tensors(
         edge_axes=table.edge_axes[keep],
     )
 
-    # 4-cube candidate edges: routed through Python fallback for bit-parity
-    candidate_mask = kept_table.neighbor_counts == 4
+    # 4-cube candidate edges: routed through Python fallback for bit-parity.
+    # Phase 2 W1: when COREP_FAST_S8_4CUBE_VECTORIZED=1, hybrid dispatch:
+    #   - 4-cube edges where every neighbor has num_loops < 2 → vectorized
+    #   - 4-cube edges where any neighbor has num_loops >= 2 → Python fallback
+    # Multi-loop neighbors are the case where conditional-promotion in
+    # custom/collapse.py can fire and the vectorized path lacks that logic.
+    from corep_fast.config import S8_4CUBE_VECTORIZED as s8_4cube_vec
+    if s8_4cube_vec:
+        n_cube_safe_for_pred = kept_table.neighbor_cube_ids.clamp(min=0).to(torch.int64)
+        valid_slot_for_pred = kept_table.neighbor_cube_ids >= 0
+        loop_start_pred = tensors.loop_cube_offsets[n_cube_safe_for_pred]
+        loop_end_pred = tensors.loop_cube_offsets[n_cube_safe_for_pred + 1]
+        per_slot_num_loops = (loop_end_pred - loop_start_pred).clamp(min=0)
+        per_slot_num_loops = torch.where(
+            valid_slot_for_pred,
+            per_slot_num_loops,
+            torch.zeros_like(per_slot_num_loops),
+        )
+        max_neighbor_num_loops = per_slot_num_loops.max(dim=1).values
+        candidate_mask = (
+            (kept_table.neighbor_counts == 4) & (max_neighbor_num_loops >= 2)
+        )
+    else:
+        candidate_mask = kept_table.neighbor_counts == 4
 
     # Build per-cube first-point tensor for Step 9 exception fallback.
     # In the dict path, the virtual first loop of an exception cube carries
@@ -1547,6 +1718,12 @@ def _process_shared_edges_from_tensors(
     if batch.point_values.shape[0] > 0 and has_pt.any():
         first_pt_per_cube[has_pt] = batch.point_values[po_lo[has_pt]]
 
+    # Per-cube "has a wildcard exception point" mask. In the dict path the
+    # virtual first loop already implies this for exception cubes, but the
+    # direct-tensor path doesn't add a virtual loop, so we plumb the mask
+    # explicitly so Step 9 / rank-0 synthesis still fire correctly.
+    exc_present_per_cube = tensors.cube_exception & has_pt
+
     # Step D: Non-candidate edges -> vectorized Torch path
     non_candidate_mask = ~candidate_mask
     if non_candidate_mask.any():
@@ -1557,9 +1734,14 @@ def _process_shared_edges_from_tensors(
             neighbor_local_edges=kept_table.neighbor_local_edges[non_candidate_mask],
             edge_axes=kept_table.edge_axes[non_candidate_mask],
         )
+        # Only relax the exception gating when the W1 flag is on, so the
+        # legacy OFF path's behaviour is preserved bit-for-bit.
         tri_verts_torch = process_geometry_vectorized(
             nc_table, tensors, device,
             exc_pt_per_cube_override=first_pt_per_cube,
+            exc_present_per_cube_override=(
+                exc_present_per_cube if s8_4cube_vec else None
+            ),
         )
     else:
         tri_verts_torch = torch.zeros((0, 3), dtype=torch.float64, device=device)
