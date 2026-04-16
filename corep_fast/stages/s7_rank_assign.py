@@ -694,14 +694,18 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
         loop_centroids = torch.zeros(total_loops, 3, dtype=torch.float32, device=device)
 
     # ===================================================================
-    # Phase 3: Hungarian matching (CPU, optionally multiprocessing)
+    # Phase 3: Hungarian matching (CPU, serial scipy — no MP overhead)
     # ===================================================================
+    # Key optimization: bulk-transfer loop_centroids and point_values to CPU
+    # ONCE, then do cost matrix construction + scipy.linear_sum_assignment
+    # serially per cube in numpy. Avoids 275K GPU→CPU syncs and MP pickle overhead.
+    # scipy's linear_sum_assignment is C-optimized; for small matrices (~3×5)
+    # running serially is faster than MP dispatch overhead.
 
-    # Build cost matrices on GPU, then dispatch scipy per cube
     point_offsets_np = batch.point_offsets.cpu().numpy()
-    point_values_gpu = batch.point_values  # (P, 3) on device
-
-    hungarian_work_items = []
+    loop_centroids_np = loop_centroids.cpu().numpy() if total_loops > 0 \
+        else np.zeros((0, 3), dtype=np.float32)
+    point_values_np = batch.point_values.cpu().numpy()
 
     for cube_idx in ok_cube_indices:
         l_lo = int(loop_cube_off_np[cube_idx])
@@ -720,33 +724,17 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
                 all_matches[l_lo + li_off] = li_off
             continue
 
-        # Get centroids for this cube's loops from GPU tensor
-        centroids_i = loop_centroids[l_lo:l_hi]          # (n_loops, 3) on device
-        comp_pts_i = point_values_gpu[p_lo:p_hi]          # (n_points, 3) on device
+        # Compute cost matrix in numpy (no GPU, no pickle)
+        centroids_i = loop_centroids_np[l_lo:l_hi]          # (n_loops, 3)
+        comp_pts_i = point_values_np[p_lo:p_hi]              # (n_points, 3)
+        diff = centroids_i[:, None, :] - comp_pts_i[None, :, :]
+        cost = (diff * diff).sum(axis=-1).astype(np.float64)  # (n_loops, n_points)
 
-        # Compute cost matrix on GPU: squared Euclidean distance
-        diff = centroids_i.unsqueeze(1) - comp_pts_i.unsqueeze(0)  # (n_loops, n_points, 3)
-        cost_gpu = (diff ** 2).sum(dim=-1)                          # (n_loops, n_points)
-        cost_np = cost_gpu.cpu().numpy().astype(np.float64)
-
-        hungarian_work_items.append((cube_idx, cost_np))
-
-    # Dispatch Hungarian work — use temporary Pool
-    if num_workers > 1 and len(hungarian_work_items) > 500:
-        from multiprocessing import Pool as _Pool
-        with _Pool(num_workers) as p:
-            hungarian_results = p.map(_hungarian_worker, hungarian_work_items,
-                                      chunksize=max(1, len(hungarian_work_items) // (num_workers * 4)))
-    else:
-        hungarian_results = [_hungarian_worker(item) for item in hungarian_work_items]
-
-    # Write Hungarian results
-    for cube_idx, match_indices in hungarian_results:
-        l_lo = int(loop_cube_off_np[cube_idx])
-        l_hi = int(loop_cube_off_np[cube_idx + 1])
-        n_loops = l_hi - l_lo
-        for li_off in range(min(len(match_indices), n_loops)):
-            all_matches[l_lo + li_off] = match_indices[li_off]
+        # scipy Hungarian (C-optimized)
+        row_ind, col_ind = linear_sum_assignment(cost)
+        for r, c in zip(row_ind, col_ind):
+            if r < n_loops:
+                all_matches[l_lo + int(r)] = int(c)
 
     # ===================================================================
     # Pack results
