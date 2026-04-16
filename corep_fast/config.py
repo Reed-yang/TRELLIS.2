@@ -34,6 +34,10 @@ USE_DIRECT_GRIDS_S8 = os.environ.get('COREP_FAST_S8_DIRECT_GRIDS', '1') == '1'
 # Default OFF — safe baseline. Flip to "1" after A/B parity is confirmed in Phase 3.
 S8_4CUBE_VECTORIZED = os.environ.get('COREP_FAST_S8_4CUBE_VECTORIZED', '0') == '1'
 
+# Phase 2 W2: GPU batched parallel BFS for s7 Phase 1 rank tracing.
+# Default OFF — safe baseline. Flip to "1" after A/B parity is confirmed in Phase 3.
+S7_PHASE1_GPU = os.environ.get('COREP_FAST_S7_PHASE1_GPU', '0') == '1'
+
 
 # ---------------------------------------------------------------------------
 # Mode (debug level)
