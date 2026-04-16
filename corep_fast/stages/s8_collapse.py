@@ -47,6 +47,93 @@ def _csr_expand_to_items(offsets: torch.Tensor, total: int) -> torch.Tensor:
     return torch.bucketize(arange, offsets[1:], right=True).to(torch.int64)
 
 
+def _derive_loop_component_point_gpu(batch) -> torch.Tensor:
+    """Derive (L, 3) float32 loop_component_point from CubeBatch point data.
+
+    Dict path does: for each loop in cube ci, take point_values[point_offsets[ci] + match_idx]
+    if match_idx is valid, else fallback to point_values[point_offsets[ci]] (first point),
+    else [0,0,0] if cube has no points.
+
+    Direct path: fully GPU vectorized.
+    """
+    device = batch.device
+    L = int(batch.loop_cube_off[-1].item())
+    if L == 0:
+        return torch.zeros((0, 3), dtype=torch.float32, device=device)
+
+    # Map each loop to its owning cube (CSR inverse)
+    loop_cube = _csr_expand_to_items(batch.loop_cube_off, L)  # (L,) int64
+
+    match = batch.loop_point_match.to(torch.int64)     # (L,)
+    cube_po_lo = batch.point_offsets[loop_cube]         # (L,)
+    cube_po_hi = batch.point_offsets[loop_cube + 1]     # (L,)
+    num_pts = cube_po_hi - cube_po_lo
+
+    valid = (match >= 0) & (match < num_pts) & (num_pts > 0)
+    global_idx_matched = cube_po_lo + match
+    global_idx_fallback = cube_po_lo  # first point of cube
+    empty = num_pts == 0
+    global_idx = torch.where(
+        valid, global_idx_matched,
+        torch.where(empty, torch.zeros_like(cube_po_lo), global_idx_fallback),
+    )
+
+    P = batch.point_values.shape[0]
+    if P == 0:
+        return torch.zeros((L, 3), dtype=torch.float32, device=device)
+
+    gathered = batch.point_values[global_idx.clamp(max=P - 1)]  # (L, 3)
+    # Zero out empty-cube loops (match dict path semantics)
+    return torch.where(
+        empty.unsqueeze(1), torch.zeros_like(gathered), gathered,
+    )
+
+
+def _pad_ragged_loops_gpu(
+    loop_edge_off: torch.Tensor,
+    loop_edge_val: torch.Tensor,
+    loop_edge_rank: torch.Tensor,
+    max_loop_len: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pad ragged CSR loop arrays to (L, max_loop_len) with -1, then flatten.
+
+    Args:
+        loop_edge_off: (L+1,) CSR offsets.
+        loop_edge_val: (E,) int32 edge ids.
+        loop_edge_rank: (E,) int32 ranks.
+        max_loop_len: int, target padded width.
+
+    Returns:
+        edges_flat: (L * max_loop_len,) int32, -1 padded.
+        ranks_flat: (L * max_loop_len,) int32, -1 padded.
+    """
+    device = loop_edge_val.device
+    L = loop_edge_off.numel() - 1
+    if L <= 0 or max_loop_len <= 0:
+        return (
+            torch.zeros((0,), dtype=torch.int32, device=device),
+            torch.zeros((0,), dtype=torch.int32, device=device),
+        )
+
+    E = loop_edge_val.numel()
+    if E == 0:
+        edges_padded = torch.full((L, max_loop_len), -1, dtype=torch.int32, device=device)
+        ranks_padded = edges_padded.clone()
+        return edges_padded.reshape(-1), ranks_padded.reshape(-1)
+
+    loop_id = _csr_expand_to_items(loop_edge_off, E)  # (E,) int64
+    base = loop_edge_off[loop_id]
+    pos = torch.arange(E, dtype=torch.int64, device=device) - base
+
+    edges_padded = torch.full((L, max_loop_len), -1, dtype=torch.int32, device=device)
+    ranks_padded = torch.full((L, max_loop_len), -1, dtype=torch.int32, device=device)
+    keep = pos < max_loop_len
+    edges_padded[loop_id[keep], pos[keep]] = loop_edge_val[keep]
+    ranks_padded[loop_id[keep], pos[keep]] = loop_edge_rank[keep]
+
+    return edges_padded.reshape(-1), ranks_padded.reshape(-1)
+
+
 # ---------------------------------------------------------------------------
 # CubeBatch → (vertices, faces) decoder entry point
 # ---------------------------------------------------------------------------
