@@ -520,6 +520,78 @@ def _cube_data_to_tensors(
     )
 
 
+def _cubebatch_to_tensors_direct(batch) -> 'CubeDataTensors':
+    """Directly convert CubeBatch CSR tensors to CubeDataTensors on GPU.
+
+    Bypasses the list[dict] intermediate that requires 275K Python iters.
+    All operations are vectorized; only 1 scalar sync (for max_loop_len).
+
+    Expected runtime: <50ms at res=256 (vs ~3.6s via dict path).
+
+    Args:
+        batch: CubeBatch with all stages (s1-s7) populated.
+
+    Returns:
+        CubeDataTensors equivalent to _cube_data_to_tensors(_cubebatch_to_dicts(batch)).
+    """
+    device = batch.device
+    N = batch.num_cubes
+
+    if N == 0:
+        return CubeDataTensors(
+            cube_indices=torch.zeros((0, 3), dtype=torch.int32, device=device),
+            cube_edge_weights=torch.zeros((0, 18), dtype=torch.int32, device=device),
+            cube_exception=torch.zeros((0,), dtype=torch.bool, device=device),
+            cube_num_components=torch.zeros((0,), dtype=torch.int32, device=device),
+            loop_cube_offsets=torch.zeros((1,), dtype=torch.int64, device=device),
+            loop_component_point=torch.zeros((0, 3), dtype=torch.float32, device=device),
+            max_loop_len=1,
+            loop_edges_flat=torch.zeros((0,), dtype=torch.int32, device=device),
+            loop_ranks_flat=torch.zeros((0,), dtype=torch.int32, device=device),
+        )
+
+    # max_loop_len (single scalar GPU->CPU sync)
+    if batch.loop_edge_off.numel() <= 1:
+        max_loop_len = 1
+    else:
+        lengths = batch.loop_edge_off[1:] - batch.loop_edge_off[:-1]
+        if lengths.numel() == 0:
+            max_loop_len = 1
+        else:
+            max_loop_len = max(int(lengths.max().item()), 1)
+
+    edges_flat, ranks_flat = _pad_ragged_loops_gpu(
+        batch.loop_edge_off, batch.loop_edge_val, batch.loop_edge_rank,
+        max_loop_len,
+    )
+    loop_component_point = _derive_loop_component_point_gpu(batch)
+
+    cube_exception = batch.status.ne(0)
+    # Match dict path semantics: _cubebatch_to_dicts does not emit edge_weights
+    # for exception cubes, so _cube_data_to_tensors zero-fills them. Preserve
+    # that behavior here for parity.
+    cube_edge_weights = torch.where(
+        cube_exception.unsqueeze(1),
+        torch.zeros_like(batch.edge_weights),
+        batch.edge_weights,
+    )
+    # Same for num_components: dict path never emits num_components, so the
+    # tensor path reads default 0. We match that for byte-level parity.
+    cube_num_components = torch.zeros_like(batch.num_components)
+
+    return CubeDataTensors(
+        cube_indices=batch.cube_indices,
+        cube_edge_weights=cube_edge_weights,
+        cube_exception=cube_exception,
+        cube_num_components=cube_num_components,
+        loop_cube_offsets=batch.loop_cube_off,
+        loop_component_point=loop_component_point,
+        max_loop_len=max_loop_len,
+        loop_edges_flat=edges_flat,
+        loop_ranks_flat=ranks_flat,
+    )
+
+
 def compute_global_edge_keys(
     cube_indices: torch.Tensor,
     resolution: int,
