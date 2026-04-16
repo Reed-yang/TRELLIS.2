@@ -267,6 +267,13 @@ class CubeBatch:
     # Per-cube status
     status: torch.Tensor           # (N,)     int32
 
+    # s2 output — component-face CSR (populated by s2_components)
+    comp_face_off:   torch.Tensor  # (N+1,) int64 — CSR offsets for comp_face_val
+    comp_face_val:   torch.Tensor  # (tot_CF,) int32 — flat face ids grouped by (cube, component)
+
+    # s6 output — U-turn assignment (populated by s6_collapse)
+    uturn_assignment: torch.Tensor  # (N, 12, 3) int32 — per-facet (u1,u2,u3); -1 for fast-path
+
     # Bookkeeping
     device:     torch.device
     resolution: int
@@ -311,6 +318,10 @@ class CubeBatch:
             loop_point_match=torch.zeros((0,), dtype=torch.int32, device=device),
 
             status=zeros_i32((N,)),
+
+            comp_face_off=zeros_i64((N + 1,)),
+            comp_face_val=zeros_i32((0,)),
+            uturn_assignment=torch.full((N, 12, 3), -1, dtype=torch.int32, device=device),
 
             device=device,
             resolution=resolution,
@@ -407,6 +418,19 @@ class CubeBatch:
         assert self.status.shape == (N,), f"[{stage}] status shape"
         assert (self.edge_weights >= 0).all(), f"[{stage}] negative edge_weights"
         assert (self.face_weights >= 0).all(), f"[{stage}] negative face_weights"
+
+        # comp_face CSR
+        assert self.comp_face_off.shape == (N + 1,), f"[{stage}] comp_face_off shape"
+        assert self.comp_face_off.dtype == torch.int64, f"[{stage}] comp_face_off dtype"
+        diffs = self.comp_face_off[1:] - self.comp_face_off[:-1]
+        assert (diffs >= 0).all(), f"[{stage}] comp_face_off is non-monotone"
+        assert self.comp_face_off[0].item() == 0, f"[{stage}] comp_face_off[0] must be 0"
+        assert self.comp_face_val.shape[0] == int(self.comp_face_off[-1].item()), \
+            f"[{stage}] comp_face_val size mismatch"
+
+        # uturn_assignment
+        assert self.uturn_assignment.shape == (N, 12, 3), f"[{stage}] uturn_assignment shape"
+        assert self.uturn_assignment.dtype == torch.int32, f"[{stage}] uturn_assignment dtype"
 
 
 # ---------------------------------------------------------------------------

@@ -193,3 +193,33 @@ def test_cube_batch_invariants_check_csr_monotone():
     cb_bad = cb.with_tri_offsets(bad_offsets)
     with pytest.raises(AssertionError):
         cb_bad.invariants_check('test_bad')
+
+
+def test_cubebatch_has_comp_face_fields():
+    """CubeBatch must have comp_face_off / comp_face_val / uturn_assignment."""
+    batch = CubeBatch.empty(num_cubes=4, resolution=64, device=torch.device('cpu'))
+    assert hasattr(batch, 'comp_face_off')
+    assert hasattr(batch, 'comp_face_val')
+    assert hasattr(batch, 'uturn_assignment')
+    assert batch.comp_face_off.shape == (5,)     # N+1
+    assert batch.comp_face_off.dtype == torch.int64
+    assert batch.comp_face_val.shape == (0,)
+    assert batch.comp_face_val.dtype == torch.int32
+    assert batch.uturn_assignment.shape == (4, 12, 3)
+    assert batch.uturn_assignment.dtype == torch.int32
+    # All uturn_assignment should be -1 (unset)
+    assert (batch.uturn_assignment == -1).all()
+
+
+def test_cubebatch_device_invariant():
+    """All tensor fields on CubeBatch must be on the same device."""
+    batch = CubeBatch.empty(num_cubes=2, resolution=32, device=torch.device('cpu'))
+    for name in ['cube_indices', 'cube_hash', 'tri_offsets', 'tri_values',
+                 'bnd_offsets', 'bnd_values', 'nm_offsets', 'nm_values',
+                 'num_components', 'num_boundary', 'edge_weights',
+                 'face_weights', 'point_offsets', 'point_values',
+                 'loop_cube_off', 'loop_edge_off', 'loop_edge_val',
+                 'loop_edge_rank', 'loop_point_match', 'status',
+                 'comp_face_off', 'comp_face_val', 'uturn_assignment']:
+        val = getattr(batch, name)
+        assert val.device == torch.device('cpu'), f"{name} on wrong device: {val.device}"
