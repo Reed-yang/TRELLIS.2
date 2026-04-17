@@ -1,0 +1,9 @@
+stage,device_us_res256,device_us_res128,ratio,flag
+__unassigned__,22.6,22.4,1.01,below_2x_fixed_cost_dominant
+s1_voxelize,7389.5,1456.8,5.07,ok_2x_to_10x
+s2_components,3458.5,1050.8,3.29,ok_2x_to_10x
+s3_edge_weights,1365.7,423.5,3.22,ok_2x_to_10x
+s4_face_point,36906.0,21997.1,1.68,below_2x_fixed_cost_dominant
+s6_collapse,17531.1,4325.2,4.05,ok_2x_to_10x
+s7_rank_assign,36585.9,33082.8,1.11,below_2x_fixed_cost_dominant
+s8_decode,15071.5,4271.9,3.53,ok_2x_to_10x

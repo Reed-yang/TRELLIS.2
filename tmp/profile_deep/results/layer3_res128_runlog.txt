@@ -1,0 +1,31 @@
+=== run 1 ===
+[warmup] pipeline at res=128...
+/mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/lib/python3.10/site-packages/torch/profiler/profiler.py:488: UserWarning: Profiler won't be using warmup, this can skew profiler results
+  warn("Profiler won't be using warmup, this can skew profiler results")
+[measure] layer=3 res=128...
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer3_res128_trace.json
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer3_res128_summary.json
+[done] e2e = 3.929s
+  -> saved run 1
+=== run 2 ===
+[warmup] pipeline at res=128...
+/mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/lib/python3.10/site-packages/torch/profiler/profiler.py:488: UserWarning: Profiler won't be using warmup, this can skew profiler results
+  warn("Profiler won't be using warmup, this can skew profiler results")
+[measure] layer=3 res=128...
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer3_res128_trace.json
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer3_res128_summary.json
+[done] e2e = 3.935s
+  -> saved run 2
+=== run 3 ===
+[warmup] pipeline at res=128...
+/mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/lib/python3.10/site-packages/torch/profiler/profiler.py:488: UserWarning: Profiler won't be using warmup, this can skew profiler results
+  warn("Profiler won't be using warmup, this can skew profiler results")
+[measure] layer=3 res=128...
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer3_res128_trace.json
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer3_res128_summary.json
+[done] e2e = 3.900s
+  -> saved run 3
+  tmp/profile_deep/results/layer3_res128_run1_summary.json: e2e=3.929s
+  tmp/profile_deep/results/layer3_res128_run2_summary.json: e2e=3.935s
+  tmp/profile_deep/results/layer3_res128_run3_summary.json: e2e=3.900s
+median: tmp/profile_deep/results/layer3_res128_run1_summary.json
