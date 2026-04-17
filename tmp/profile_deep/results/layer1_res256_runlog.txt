@@ -1,0 +1,41 @@
+=== run 1 ===
+[warmup] pipeline at res=256...
+/mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/lib/python3.10/site-packages/torch/profiler/profiler.py:488: UserWarning: Profiler won't be using warmup, this can skew profiler results
+  warn("Profiler won't be using warmup, this can skew profiler results")
+[measure] layer=1 res=256...
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer1_res256_trace.json
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer1_res256_summary.json
+[done] e2e = 12.790s
+  -> saved run 1
+=== run 2 ===
+[warmup] pipeline at res=256...
+/mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/lib/python3.10/site-packages/torch/profiler/profiler.py:488: UserWarning: Profiler won't be using warmup, this can skew profiler results
+  warn("Profiler won't be using warmup, this can skew profiler results")
+[measure] layer=1 res=256...
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer1_res256_trace.json
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer1_res256_summary.json
+[done] e2e = 12.230s
+  -> saved run 2
+=== run 3 ===
+[warmup] pipeline at res=256...
+/mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/lib/python3.10/site-packages/torch/profiler/profiler.py:488: UserWarning: Profiler won't be using warmup, this can skew profiler results
+  warn("Profiler won't be using warmup, this can skew profiler results")
+[measure] layer=1 res=256...
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer1_res256_trace.json
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer1_res256_summary.json
+[done] e2e = 11.076s
+  -> saved run 3
+  tmp/profile_deep/results/layer1_res256_run1_summary.json: e2e=12.790s
+  tmp/profile_deep/results/layer1_res256_run2_summary.json: e2e=12.230s
+  tmp/profile_deep/results/layer1_res256_run3_summary.json: e2e=11.076s
+median: tmp/profile_deep/results/layer1_res256_run2_summary.json
+
+=== TRACE FILE SIZE CONCERNS ===
+Each trace file = 3.8 GiB (run1=3994232578 run2=3994245933 run3=3994293371 bytes)
+Total = 11.4 GiB. Vastly exceeds plan's 200MB threshold.
+Root cause: res=256 produces ~11x more CUDA kernels vs res=64 (345MB -> 3.8GB)
++ with_stack=True doubles JSON size per event.
+GitHub enforces 2GB/file hard limit; these CANNOT be committed.
+Traces are left on-disk at tmp/profile_deep/results/layer1_res256_run{1,2,3}_trace.json
+(shared filesystem, visible on 116 + dev node) for Task 8/9 analysis.
+Flagging DONE_WITH_CONCERNS per plan Step 7.4.

@@ -1,0 +1,31 @@
+{
+  "header": {
+    "git_sha": "e876acc07ab1afda9bed3c9ac403ee11aa6dd2a4",
+    "timestamp": "2026-04-17T02:18:22",
+    "nvidia_smi": "0, NVIDIA H100 80GB HBM3, 20 %, 1853 MiB\n1, NVIDIA H100 80GB HBM3, 0 %, 4 MiB\n2, NVIDIA H100 80GB HBM3, 100 %, 62962 MiB\n3, NVIDIA H100 80GB HBM3, 100 %, 62962 MiB\n4, NVIDIA H100 80GB HBM3, 100 %, 62962 MiB\n5, NVIDIA H100 80GB HBM3, 100 %, 62962 MiB\n6, NVIDIA H100 80GB HBM3, 100 %, 62962 MiB\n7, NVIDIA H100 80GB HBM3, 100 %, 62962 MiB",
+    "torch_version": "2.6.0+cu124",
+    "cuda_version": "12.4",
+    "layer": "1",
+    "resolution": 256,
+    "seeds": {
+      "torch": 42,
+      "numpy": 42
+    }
+  },
+  "stage_walltime_sec": {
+    "load": 0.015852930955588818,
+    "s1": 0.05782018369063735,
+    "s2": 0.007504303939640522,
+    "s3": 0.0022128932178020477,
+    "s4": 7.104346220847219,
+    "s6": 3.3119347589090466,
+    "s7": 2.1923910239711404,
+    "s8": 0.09788815677165985,
+    "s1_s7": 12.676209384575486,
+    "e2e": 12.789950472302735,
+    "_cubes": 275541,
+    "_V": 551079,
+    "_F": 1102152
+  },
+  "substage_ms": {}
+}
