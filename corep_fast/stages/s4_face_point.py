@@ -972,44 +972,93 @@ def _labels_to_list_of_lists(
     per-cube canonical ordering. Shape: outer list is per-cube components,
     each component is a list of face ids in slot-ascending order.
     """
-    device = batched_labels.device
+    from corep_fast import config as _cfg  # lazy to avoid circular import
+
     N, M = batched_labels.shape
     if N == 0:
         return []
 
-    # Stable-sort by labels per row. Padded entries (label=M) sort last.
+    # Stable-sort by labels per row. Padded entries (label=M=SENTINEL) sort last.
     order = torch.argsort(batched_labels, dim=1, stable=True)    # (N, M)
     sorted_labels = batched_labels.gather(1, order)              # (N, M)
     sorted_fids = batched_face_ids.gather(1, order)              # (N, M)
 
-    # Move to CPU in one shot to minimize round-trips.
     sorted_labels_cpu = sorted_labels.cpu().numpy()
     sorted_fids_cpu = sorted_fids.cpu().numpy()
     counts_cpu = face_counts.cpu().numpy()
 
-    # Per row: iterate over first counts[i] entries (they're all valid because
-    # padded entries are sorted to the end via SENTINEL=M).
-    result: list[list[list[int]]] = []
+    if not _cfg.LABELS_TO_LIST_VECTORIZED:
+        # Legacy path (retained for rollback)
+        result: list[list[list[int]]] = []
+        for i in range(N):
+            n_i = int(counts_cpu[i])
+            if n_i == 0:
+                result.append([])
+                continue
+            row_labels = sorted_labels_cpu[i, :n_i]
+            row_fids = sorted_fids_cpu[i, :n_i]
+            components: list[list[int]] = []
+            cur_label = int(row_labels[0])
+            cur_comp: list[int] = [int(row_fids[0])]
+            for k in range(1, n_i):
+                lbl = int(row_labels[k])
+                if lbl != cur_label:
+                    components.append(cur_comp)
+                    cur_comp = []
+                    cur_label = lbl
+                cur_comp.append(int(row_fids[k]))
+            components.append(cur_comp)
+            result.append(components)
+        return result
+
+    # ---- Vectorized path ----
+    # valid_mask[i, k] = k < counts_cpu[i]
+    k_idx = np.arange(M, dtype=np.int64)
+    valid_mask = k_idx[None, :] < counts_cpu[:, None]  # (N, M) bool
+
+    # Component boundary: slot k starts a new component iff
+    # (k == 0 OR sorted_labels[i, k] != sorted_labels[i, k-1]) AND valid_mask[i, k]
+    prev_labels = np.concatenate(
+        [np.full((N, 1), -1, dtype=np.int64), sorted_labels_cpu[:, :-1]],
+        axis=1,
+    )  # (N, M)
+    is_new_component = (sorted_labels_cpu != prev_labels) & valid_mask  # (N, M)
+
+    comps_per_cube = is_new_component.sum(axis=1).astype(np.int64)  # (N,)
+
+    # Per-slot local component index within cube (only meaningful at valid slots)
+    comp_idx_flat = (is_new_component.cumsum(axis=1) - 1).reshape(-1)  # (N*M,)
+    fids_flat = sorted_fids_cpu.reshape(-1)
+    valid_flat = valid_mask.reshape(-1)
+
+    # Per-cube base offset into global component array
+    cumsum_comps = comps_per_cube.cumsum()
+    comp_off_per_cube = np.concatenate(
+        [np.array([0], dtype=np.int64), cumsum_comps[:-1]]
+    )  # (N,)
+    cube_idx_flat = np.repeat(np.arange(N, dtype=np.int64), M)
+    global_comp_idx = comp_off_per_cube[cube_idx_flat] + comp_idx_flat  # (N*M,)
+
+    # Restrict to valid slots then group by global_comp_idx via split.
+    valid_gci = global_comp_idx[valid_flat]
+    valid_fids = fids_flat[valid_flat]
+
+    if valid_gci.size == 0:
+        return [[] for _ in range(N)]
+    split_at = np.flatnonzero(np.diff(valid_gci) > 0) + 1
+    fids_per_comp = np.split(valid_fids, split_at)  # list of C numpy arrays
+
+    # Rebuild nested list shape (one tolist() per component, not per fid).
+    result_out: list[list[list[int]]] = [None] * N  # type: ignore
+    cursor = 0
     for i in range(N):
-        n_i = int(counts_cpu[i])
-        if n_i == 0:
-            result.append([])
-            continue
-        row_labels = sorted_labels_cpu[i, :n_i]
-        row_fids = sorted_fids_cpu[i, :n_i]
-        components: list[list[int]] = []
-        cur_label = int(row_labels[0])
-        cur_comp: list[int] = [int(row_fids[0])]
-        for k in range(1, n_i):
-            lbl = int(row_labels[k])
-            if lbl != cur_label:
-                components.append(cur_comp)
-                cur_comp = []
-                cur_label = lbl
-            cur_comp.append(int(row_fids[k]))
-        components.append(cur_comp)
-        result.append(components)
-    return result
+        c_i = int(comps_per_cube[i])
+        if c_i == 0:
+            result_out[i] = []
+        else:
+            result_out[i] = [fids_per_comp[cursor + j].tolist() for j in range(c_i)]
+            cursor += c_i
+    return result_out
 
 
 # ======================================================================
