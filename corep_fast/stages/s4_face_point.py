@@ -777,6 +777,31 @@ def _get_local_components_np(
     return list(groups.values())
 
 
+def _get_local_components_gpu(
+    face_ids: "torch.Tensor",  # (n,) int32 — global face ids
+    face_adj: "torch.Tensor",  # (F, 3) int32 — GLOBAL face->3-neighbor table, -1 pad
+) -> list[list[int]]:
+    """Per-cube local connected components — T6c first-pass stub.
+
+    Delegates to `_get_local_components_np`. The numpy reference accepts
+    numpy arrays and a global `face_adj` table; we round-trip the GPU
+    tensors back to numpy, call it, and return the result unchanged.
+    No perf gain — this is the TDD green-phase stub that locks the
+    output contract for T6d's batched GPU label-propagation.
+
+    Signature note: `face_adj` is a GLOBAL face->neighbor table (per
+    T6a spike + numpy impl audit at s4_face_point.py:764-769), not
+    local indices. The GPU version keeps the same contract so callers
+    can pass the same tensor they already build.
+    """
+    import numpy as _np
+
+    fids_cpu = face_ids.detach().cpu().numpy()
+    fadj_cpu = face_adj.detach().cpu().numpy()
+    # mesh_faces is a dead arg in the numpy impl; pass an empty placeholder.
+    return _get_local_components_np(fids_cpu, _np.empty((0, 3), dtype=_np.int32), fadj_cpu)
+
+
 # ======================================================================
 # P2: GPU face_weights helpers
 # ======================================================================
