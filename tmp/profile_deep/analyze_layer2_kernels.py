@@ -39,7 +39,9 @@ STAGE_FN_MAP = {
 }
 
 MMB_PATTERNS = re.compile(
-    r"(copy|memset|scatter|gather|^index|cat|slice|contiguous|view|as_strided)",
+    r"(copy|memset|scatter|gather|^index|index_elementwise|cat|slice|"
+    r"contiguous|view|as_strided|reduce|scan|"
+    r"devicereduce|deviceselect|devicescan)",
     re.IGNORECASE,
 )
 CMB_PATTERNS = re.compile(r"(gemm|conv|reduce|sum|matmul|bmm)", re.IGNORECASE)
@@ -102,16 +104,21 @@ def extract_py_line(ev):
 
 def classify(name: str, mean_us: float, count: int,
              stage_wall_us: float, stage_gpu_us: float) -> str:
+    name_s = name or ""
+    # 1. LNB — launch-bound: many small kernels
+    if mean_us < 10 and count > 1000:
+        return "LNB"
+    # 2. CMB — compute-bound: gemm/conv/matmul AND large enough per call
+    if CMB_PATTERNS.search(name_s) and mean_us > 100:
+        return "CMB"
+    # 3. MMB — memory-bound by kernel name pattern
+    if MMB_PATTERNS.search(name_s):
+        return "MMB"
+    # 4. CPU — fallback for small incidental GPU work in CPU-dominated stages
     if stage_wall_us > 0:
         cpu_frac = (stage_wall_us - stage_gpu_us) / stage_wall_us
         if cpu_frac > 0.30 and mean_us < 50:
             return "CPU"
-    if MMB_PATTERNS.search(name or ""):
-        return "MMB"
-    if CMB_PATTERNS.search(name or "") and mean_us > 100:
-        return "CMB"
-    if mean_us < 10 and count > 1000:
-        return "LNB"
     return "UNK"
 
 
@@ -178,8 +185,6 @@ def main():
     print(f"[write] {out_csv}", file=sys.stderr)
 
     unk = sum(1 for r in top20 if r["class"] == "UNK")
-    print(f"Class distribution: {sum(1 for r in top20 if r['class']==c):d} {c}"
-          for c in ("CMB", "MMB", "LNB", "CPU", "UNK"))
     dist = {c: sum(1 for r in top20 if r["class"] == c) for c in ("CMB", "MMB", "LNB", "CPU", "UNK")}
     print(f"[class distribution] {dist}", file=sys.stderr)
     print(f"[UNK rate] {unk}/20 = {100*unk/20:.0f}%", file=sys.stderr)
