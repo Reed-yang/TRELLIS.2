@@ -1,14 +1,21 @@
 # corep_fast/tests/regression/test_e2e_gpu_ab.py
 """End-to-end A/B: full GPU pipeline vs custom/ pipeline.
 
-The GPU pipeline uses MeshTensors.from_trimesh normalization (symmetric 0.5
-centering) while custom/ uses custom/voxelize.normalize_mesh (per-axis
-centering). This means different sets of occupied cubes, edge weights,
-loops, and output meshes. So the E2E test checks for approximate count
-matching (within 5%), not exact match.
+Both pipelines now share the same per-axis (0.489, 0.506, 0.513) centering
+in MeshTensors.from_trimesh and custom/voxelize.normalize_mesh. With matching
+normalization the two pipelines register the same set of occupied cubes for
+typical inputs, and V/F counts agree to within ~0.01% (residual is from
+floating-point order of operations in the CSR-flattening / vertex-welding
+paths). Tolerance is 0.1% — 10x the observed gap, kept loose enough to absorb
+hardware/driver-level FP nondeterminism.
 
-Per-stage A/B tests (Tasks 3, 5, 7, 9, 11, 13) already verified exact
-matching when using the same normalization.
+Per-stage A/B tests (Tasks 3, 5, 7, 9, 11, 13) verify exact matching when
+the same normalization is applied to both pipelines.
+
+History: prior to commit d780be8 the GPU path used symmetric `+0.5` centering
+which caused V/F ratios to drift to 0.5–0.2% on icosphere @ res=64-256, and
+required a 5% tolerance here. See my-docs/20260416-* for context on the
+remaining cleanup-port and SAT-hardening follow-ups.
 """
 import pytest
 import torch
@@ -45,17 +52,19 @@ class TestE2EGPUAB:
     def test_vertex_count_matches(self, custom_mesh, gpu_mesh):
         v_custom, _ = custom_mesh
         v_gpu, _ = gpu_mesh
-        # Allow small difference due to normalization divergence
+        # Tight 0.1% tolerance — both pipelines now share centering offset
+        # (commit d780be8). Observed V ratio on icosphere res=64-256 is
+        # 1.0000-1.0001; 0.1% leaves 10x margin for FP nondeterminism.
         ratio = v_gpu.shape[0] / max(v_custom.shape[0], 1)
-        assert 0.95 <= ratio <= 1.05, \
-            f"Vertex count: custom={v_custom.shape[0]} vs gpu={v_gpu.shape[0]} (ratio={ratio:.3f})"
+        assert 0.999 <= ratio <= 1.001, \
+            f"Vertex count: custom={v_custom.shape[0]} vs gpu={v_gpu.shape[0]} (ratio={ratio:.4f})"
 
     def test_face_count_matches(self, custom_mesh, gpu_mesh):
         _, f_custom = custom_mesh
         _, f_gpu = gpu_mesh
         ratio = f_gpu.shape[0] / max(f_custom.shape[0], 1)
-        assert 0.95 <= ratio <= 1.05, \
-            f"Face count: custom={f_custom.shape[0]} vs gpu={f_gpu.shape[0]} (ratio={ratio:.3f})"
+        assert 0.999 <= ratio <= 1.001, \
+            f"Face count: custom={f_custom.shape[0]} vs gpu={f_gpu.shape[0]} (ratio={ratio:.4f})"
 
     def test_output_is_valid_mesh(self, gpu_mesh):
         """Verify the GPU output forms a valid mesh (no degenerate faces)."""
