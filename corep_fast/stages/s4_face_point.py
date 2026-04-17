@@ -472,47 +472,70 @@ def _compute_component_points_gpu(
     # We process this by iterating over cubes on CPU to build the
     # (cube_component -> face_ids) mapping, then batch the GPU work.
 
-    # Collect all per-component triangle indices and their cube assignments
-    comp_cube_idx = []    # which cube each component belongs to
-    comp_face_lists = []  # list of face-id arrays per component
+    # Collect all per-component triangle indices and their cube assignments.
+    # T6d (W5) path: batched GPU label-propagation UF across all cubes in
+    # parallel, replacing the former per-cube Python loop that called
+    # _get_local_components_np() 275k times (T0 #2 CPU hotspot: 1030 ms
+    # self-time at res=256).
 
     comp_face_off_cpu = comp_face_off_np
-    comp_face_val_cpu = comp_face_val.cpu().numpy()
-    mesh_faces_cpu = mesh_faces.cpu().numpy()
-    face_adj_cpu = face_adj.cpu().numpy()
 
-    for ci in range(N):
-        nc = int(num_components_np[ci])
-        if nc == 0:
-            continue
+    # Build a padded (N, max_f) view of comp_face_val directly on device.
+    face_counts = (batch.comp_face_off[1:] - batch.comp_face_off[:-1]).to(torch.int64)  # (N,)
+    max_f = int(face_counts.max().item()) if N > 0 else 0
 
-        lo = int(comp_face_off_cpu[ci])
-        hi = int(comp_face_off_cpu[ci + 1])
-        face_ids = comp_face_val_cpu[lo:hi]
+    if max_f == 0:
+        # All cubes empty (degenerate pipeline state).
+        comp_cube_idx_np = np.array([], dtype=np.int64)
+        comp_face_lists: list = []
+    else:
+        col_idx = torch.arange(max_f, device=device, dtype=torch.int64).unsqueeze(0)   # (1, max_f)
+        counts_exp = face_counts.unsqueeze(1)                                          # (N, 1)
+        valid = col_idx < counts_exp                                                   # (N, max_f)
+        flat_idx = batch.comp_face_off[:-1].to(torch.int64).unsqueeze(1) + col_idx     # (N, max_f)
+        safe_flat = flat_idx.clamp(max=comp_face_val.numel() - 1 if comp_face_val.numel() > 0 else 0)
+        padded_fids = torch.where(
+            valid,
+            comp_face_val.to(torch.int64)[safe_flat],
+            torch.full_like(safe_flat, -1),
+        )                                                                               # (N, max_f) int64
 
-        if len(face_ids) == 0:
-            # Pad with empty components
-            for _ in range(nc):
+        # Run batched GPU label propagation.
+        batched_labels = _get_local_components_gpu_batched(
+            padded_fids, face_adj, face_counts
+        )                                                                               # (N, max_f) int64
+
+        # Adapter: convert to list[list[list[int]]] per cube.
+        per_cube_components = _labels_to_list_of_lists(
+            batched_labels, padded_fids, face_counts
+        )
+
+        # Expand per-cube components into flat (comp_cube_idx, comp_face_lists)
+        # arrays, honoring num_components[ci]: take at most nc, pad empty if
+        # fewer found. Mirrors the former numpy loop semantics exactly.
+        comp_cube_idx: list[int] = []
+        comp_face_lists = []
+        for ci in range(N):
+            nc = int(num_components_np[ci])
+            if nc == 0:
+                continue
+            components = per_cube_components[ci]
+            if not components:
+                for _ in range(nc):
+                    comp_cube_idx.append(ci)
+                    comp_face_lists.append(np.array([], dtype=np.int32))
+                continue
+            for comp_faces in components[:nc]:
+                comp_cube_idx.append(ci)
+                comp_face_lists.append(np.asarray(comp_faces, dtype=np.int32))
+            for _ in range(nc - len(components[:nc])):
                 comp_cube_idx.append(ci)
                 comp_face_lists.append(np.array([], dtype=np.int32))
-            continue
 
-        # Split face_ids into connected components using face_adj
-        components = _get_local_components_np(face_ids, mesh_faces_cpu, face_adj_cpu)
+        comp_cube_idx_np = np.asarray(comp_cube_idx, dtype=np.int64)
 
-        # Take at most nc components; pad with empty if fewer found
-        for k, comp_faces in enumerate(components[:nc]):
-            comp_cube_idx.append(ci)
-            comp_face_lists.append(np.array(comp_faces, dtype=np.int32))
-        # Pad with empty components if union-find found fewer than expected
-        for _ in range(nc - len(components[:nc])):
-            comp_cube_idx.append(ci)
-            comp_face_lists.append(np.array([], dtype=np.int32))
-
-    assert len(comp_cube_idx) == total_points, \
-        f"Component count mismatch: got {len(comp_cube_idx)}, expected {total_points}"
-
-    comp_cube_idx_np = np.array(comp_cube_idx, dtype=np.int64)
+    assert len(comp_face_lists) == total_points, \
+        f"Component count mismatch: got {len(comp_face_lists)}, expected {total_points}"
 
     # ------------------------------------------------------------------
     # Step 3: Flatten all (component, triangle) pairs for GPU batch clip
@@ -781,25 +804,212 @@ def _get_local_components_gpu(
     face_ids: "torch.Tensor",  # (n,) int32 — global face ids
     face_adj: "torch.Tensor",  # (F, 3) int32 — GLOBAL face->3-neighbor table, -1 pad
 ) -> list[list[int]]:
-    """Per-cube local connected components — T6c first-pass stub.
+    """Per-cube local connected components via GPU label propagation.
 
-    Delegates to `_get_local_components_np`. The numpy reference accepts
-    numpy arrays and a global `face_adj` table; we round-trip the GPU
-    tensors back to numpy, call it, and return the result unchanged.
-    No perf gain — this is the TDD green-phase stub that locks the
-    output contract for T6d's batched GPU label-propagation.
+    Bit-identical to `_get_local_components_np` in externally-visible
+    output (per T6a audit):
+      - Component ordering = first-occurrence of root by slot index
+      - Face ordering within component = slot-ascending (input order)
 
-    Signature note: `face_adj` is a GLOBAL face->neighbor table (per
-    T6a spike + numpy impl audit at s4_face_point.py:764-769), not
-    local indices. The GPU version keeps the same contract so callers
-    can pass the same tensor they already build.
+    Algorithm:
+      1. Seed labels[j] = j (local slot idx).
+      2. Iterate min-propagation over the 3 GLOBAL neighbors in face_adj:
+         for each slot j, lookup its 3 neighbors; if a neighbor's global
+         face id also appears in face_ids, adopt min(labels[j], labels[k])
+         where k is the slot of that neighbor. Converges in <= n iters.
+      3. Stable-sort (labels, slot) to emit components in the canonical
+         order (ascending root = first-occurrence, ascending slot within).
+
+    All ops deterministic CUDA (sort, min, elementwise, gather). No atomics.
     """
-    import numpy as _np
+    n = int(face_ids.numel())
+    if n == 0:
+        return []
+    device = face_ids.device
 
-    fids_cpu = face_ids.detach().cpu().numpy()
-    fadj_cpu = face_adj.detach().cpu().numpy()
-    # mesh_faces is a dead arg in the numpy impl; pass an empty placeholder.
-    return _get_local_components_np(fids_cpu, _np.empty((0, 3), dtype=_np.int32), fadj_cpu)
+    fids_i64 = face_ids.to(torch.int64)
+    # Look up 3 global neighbors per slot: (n, 3)
+    neighbors = face_adj[fids_i64].to(torch.int64)  # (n, 3), -1 pad
+
+    # Membership test: for each (j, e), find the slot k in face_ids where
+    # face_ids[k] == neighbors[j, e], else -1. Done via broadcast equality.
+    # Shape: (n, 3, n) — for small n (typical 2-20) this is cheap.
+    fids_bcast = fids_i64.view(1, 1, n)           # (1, 1, n)
+    nbr_bcast = neighbors.unsqueeze(-1)            # (n, 3, 1)
+    # Also mask out padding (nbr == -1) and self-matches won't arise because
+    # face_adj never references a face to itself.
+    match = (nbr_bcast == fids_bcast) & (nbr_bcast >= 0)  # (n, 3, n) bool
+    # For each (j, e), the first (and only) k where match is True. If no
+    # match, nbr_local = n (sentinel). Take argmax over last dim; when all
+    # False, argmax returns 0, so guard with any() mask.
+    any_match = match.any(dim=-1)                  # (n, 3)
+    # Convert bool to int8 for argmax (argmax on bool OK but explicit is fine)
+    nbr_local = match.to(torch.int8).argmax(dim=-1)  # (n, 3) int64->int
+    nbr_local = torch.where(any_match, nbr_local.to(torch.int64),
+                            torch.full_like(nbr_local, n, dtype=torch.int64))  # (n, 3)
+
+    # Label propagation: labels[j] = min slot id reachable from j.
+    labels = torch.arange(n, device=device, dtype=torch.int64)  # (n,)
+    # sentinel label for "no neighbor"
+    SENTINEL = n
+
+    # Gather neighbor labels with sentinel for invalid slots.
+    # Pad labels with one extra entry at index n = SENTINEL (== n).
+    padded_labels = torch.cat([labels, torch.tensor([SENTINEL], device=device, dtype=torch.int64)])
+    for _ in range(n + 1):
+        # nbr_labels[j, e] = padded_labels[nbr_local[j, e]]
+        nbr_labels = padded_labels[nbr_local]  # (n, 3)
+        min_nbr = nbr_labels.min(dim=-1).values  # (n,)
+        new_labels = torch.minimum(labels, min_nbr)
+        if torch.equal(new_labels, labels):
+            break
+        labels = new_labels
+        padded_labels = torch.cat([labels, torch.tensor([SENTINEL], device=device, dtype=torch.int64)])
+
+    # Stable-sort by (label, slot). Since we seeded labels=slot and min-prop
+    # keeps labels <= slot, labels already encode first-occurrence roots.
+    # A stable sort by label preserves slot order within each component,
+    # matching numpy's enumerate-order tiebreaker (T6a audit row 3).
+    order = torch.argsort(labels, stable=True)  # (n,)
+    sorted_labels = labels[order]
+    sorted_fids = fids_i64[order]
+
+    # Group by run of equal labels. Compute boundaries via diff.
+    # boundaries[i] = True when sorted_labels[i] != sorted_labels[i-1].
+    if n == 1:
+        return [[int(sorted_fids[0].item())]]
+    diff = sorted_labels[1:] != sorted_labels[:-1]
+    # Group ids: cumsum of diff.
+    first_bnd = torch.zeros(1, dtype=torch.int64, device=device)
+    rest_bnd = diff.to(torch.int64).cumsum(0)
+    group_ids = torch.cat([first_bnd, rest_bnd])  # (n,), 0..(ncomp-1)
+
+    # Move to CPU once and bucket into list[list[int]].
+    sorted_fids_cpu = sorted_fids.cpu().numpy()
+    group_ids_cpu = group_ids.cpu().numpy()
+    ncomp = int(group_ids_cpu[-1]) + 1
+    components: list[list[int]] = [[] for _ in range(ncomp)]
+    for i in range(n):
+        components[int(group_ids_cpu[i])].append(int(sorted_fids_cpu[i]))
+    return components
+
+
+def _get_local_components_gpu_batched(
+    batched_face_ids: "torch.Tensor",    # (N, max_f) int64, -1 pad
+    face_adj: "torch.Tensor",            # (F, 3) int32/int64 — GLOBAL adj
+    face_counts: "torch.Tensor",         # (N,) int64 — valid count per cube
+) -> "torch.Tensor":
+    """Batched GPU label propagation over N cubes, each with up to max_f faces.
+
+    Returns:
+        labels: (N, max_f) int64 — canonicalized first-occurrence label per
+                slot. Padding entries get label = SENTINEL = max_f.
+
+    Matches numpy reference's externally-visible output when combined with a
+    stable_sort-by-label downstream step — see T6a audit.
+
+    Memory: builds (N, max_f, max_f) broadcast equality for membership. At
+    max_f = 64, N = 275k -> ~1.1 GB int8 (as bool stored byte-wise). We cap
+    max_f for safety; outliers can fall back to per-cube if needed.
+    """
+    device = batched_face_ids.device
+    N, M = batched_face_ids.shape
+    if N == 0 or M == 0:
+        return torch.full(batched_face_ids.shape, 0, device=device, dtype=torch.int64)
+
+    fids = batched_face_ids.to(torch.int64)                    # (N, M)
+    mask = fids >= 0                                           # (N, M) bool
+
+    # Guard -1 lookups for face_adj (invalid slots still need a valid index).
+    safe_fids = fids.clamp(min=0)
+    neighbors = face_adj.to(torch.int64)[safe_fids]            # (N, M, 3)
+
+    # Membership: for each (i, j, e), find slot k in cube i where
+    # fids[i, k] == neighbors[i, j, e].
+    # Shape (N, M, 3, M) via broadcast eq.
+    # Memory: N * M^2 * 3 bool. At M=32, N=275k -> 844 MB — acceptable.
+    #          at M=64, N=275k -> 3.4 GB — tight; we expect M typically << 32.
+    nbr_bcast = neighbors.unsqueeze(-1)                        # (N, M, 3, 1)
+    fids_bcast = fids.unsqueeze(1).unsqueeze(2)                # (N, 1, 1, M)
+    match = (nbr_bcast == fids_bcast) & (nbr_bcast >= 0) & mask.unsqueeze(1).unsqueeze(2)
+    # (N, M, 3, M) bool
+    any_match = match.any(dim=-1)                              # (N, M, 3)
+    nbr_local = match.to(torch.int8).argmax(dim=-1).to(torch.int64)  # (N, M, 3)
+    # SENTINEL = M (index into padded label vector)
+    nbr_local = torch.where(any_match, nbr_local,
+                            torch.full_like(nbr_local, M))     # (N, M, 3)
+    # Release the big (N, M, 3, M) intermediate.
+    del match, nbr_bcast, fids_bcast
+
+    # Label propagation. labels[i, j] = j for valid, M (sentinel) for pad.
+    col_idx = torch.arange(M, device=device, dtype=torch.int64).unsqueeze(0).expand(N, M)
+    labels = torch.where(mask, col_idx, torch.full_like(col_idx, M))  # (N, M)
+    SENTINEL = M
+
+    # Pad labels with 1 extra column (SENTINEL) for neighbor gather.
+    pad_col = torch.full((N, 1), SENTINEL, device=device, dtype=torch.int64)
+    max_iters = min(M + 1, 64)  # diameter of intra-cube graph, capped
+    for _ in range(max_iters):
+        padded_labels = torch.cat([labels, pad_col], dim=1)      # (N, M+1)
+        # Gather neighbor labels: padded_labels[i, nbr_local[i, j, e]]
+        nbr_labels = padded_labels.gather(1, nbr_local.reshape(N, M * 3)).reshape(N, M, 3)
+        min_nbr = nbr_labels.min(dim=-1).values                  # (N, M)
+        new_labels = torch.minimum(labels, min_nbr)
+        # Keep sentinel for pad slots.
+        new_labels = torch.where(mask, new_labels, torch.full_like(new_labels, SENTINEL))
+        if torch.equal(new_labels, labels):
+            break
+        labels = new_labels
+    return labels
+
+
+def _labels_to_list_of_lists(
+    batched_labels: "torch.Tensor",     # (N, M) int64, SENTINEL=M for pad
+    batched_face_ids: "torch.Tensor",   # (N, M) int64, -1 pad
+    face_counts: "torch.Tensor",        # (N,) int64
+) -> list[list[list[int]]]:
+    """Adapter: convert batched label tensor into List[List[List[int]]] with
+    per-cube canonical ordering. Shape: outer list is per-cube components,
+    each component is a list of face ids in slot-ascending order.
+    """
+    device = batched_labels.device
+    N, M = batched_labels.shape
+    if N == 0:
+        return []
+
+    # Stable-sort by labels per row. Padded entries (label=M) sort last.
+    order = torch.argsort(batched_labels, dim=1, stable=True)    # (N, M)
+    sorted_labels = batched_labels.gather(1, order)              # (N, M)
+    sorted_fids = batched_face_ids.gather(1, order)              # (N, M)
+
+    # Move to CPU in one shot to minimize round-trips.
+    sorted_labels_cpu = sorted_labels.cpu().numpy()
+    sorted_fids_cpu = sorted_fids.cpu().numpy()
+    counts_cpu = face_counts.cpu().numpy()
+
+    # Per row: iterate over first counts[i] entries (they're all valid because
+    # padded entries are sorted to the end via SENTINEL=M).
+    result: list[list[list[int]]] = []
+    for i in range(N):
+        n_i = int(counts_cpu[i])
+        if n_i == 0:
+            result.append([])
+            continue
+        row_labels = sorted_labels_cpu[i, :n_i]
+        row_fids = sorted_fids_cpu[i, :n_i]
+        components: list[list[int]] = []
+        cur_label = int(row_labels[0])
+        cur_comp: list[int] = [int(row_fids[0])]
+        for k in range(1, n_i):
+            lbl = int(row_labels[k])
+            if lbl != cur_label:
+                components.append(cur_comp)
+                cur_comp = []
+                cur_label = lbl
+            cur_comp.append(int(row_fids[k]))
+        components.append(cur_comp)
+        result.append(components)
+    return result
 
 
 # ======================================================================
