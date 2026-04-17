@@ -19,7 +19,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 from tmp.profile_deep import monkeypatch_nvtx
 monkeypatch_nvtx.apply_stage_nvtx()
-monkeypatch_nvtx.apply_substage_events()
+# NOTE: apply_substage_events() intentionally DISABLED — Task 5 smoke check
+# (commit 3af0d99) measured 41.3% patch overhead at res=128, far above the
+# 10% decision-gate threshold. Per Plan Appendix A, fall back to NVTX-only
+# for Tasks 6-11. Sub-stage breakdown in s4/s6/s7 will rely on NVTX ranges
+# + torch.profiler kernel trace analysis (Task 8/9) rather than explicit
+# Event timing. See results/smoke_overhead.log.
+# monkeypatch_nvtx.apply_substage_events()  # DISABLED
 
 import numpy as np
 import torch
