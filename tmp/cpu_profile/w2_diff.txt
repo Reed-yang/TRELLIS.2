@@ -1,0 +1,18 @@
+
+=== pre_w2 (total self_tt=12362.6ms) ===
+  cc=    19  self= 2710.8ms  cum=  2710.8ms  ~:0:<method 'acquire' of '_thread.lock' objects>
+  cc=275426  self= 1890.8ms  cum=  2675.9ms  s6_collapse.py:379:_fastpath_trace_loops_numpy
+  cc=275541  self= 1029.5ms  cum=  1562.0ms  s4_face_point.py:734:_get_local_components_np
+  cc=   124  self=  816.3ms  cum=   818.6ms  ~:0:<built-in method posix.fork>
+  cc=   124  self=  816.3ms  cum=   818.6ms  ~:0:<built-in method posix.fork>
+  cc=     1  self=   42.0ms  cum=    42.0ms  ~:0:<method 'acquire' of '_multiprocessing.SemLock' objects>
+  cc=   124  self=    0.2ms  cum=     0.2ms  ~:0:<method 'acquire' of '_thread.RLock' objects>
+  cc=   124  self=    0.1ms  cum=     0.2ms  __init__.py:219:_acquireLock
+  cc=     6  self=    0.0ms  cum=     0.0ms  util.py:171:register_after_fork
+  cc=     4  self=    0.0ms  cum=     0.0ms  threading.py:276:_acquire_restore
+
+=== post_w2 (total self_tt=14925.2ms) ===
+  cc=275426  self= 1822.5ms  cum=  2582.0ms  s6_collapse.py:379:_fastpath_trace_loops_numpy
+  cc=     4  self= 1666.2ms  cum=  1666.2ms  ~:0:<method 'acquire' of '_thread.lock' objects>
+  cc=275541  self= 1014.2ms  cum=  1540.5ms  s4_face_point.py:734:_get_local_components_np
+  cc=     1  self=    0.0ms  cum=     0.0ms  threading.py:276:_acquire_restore
