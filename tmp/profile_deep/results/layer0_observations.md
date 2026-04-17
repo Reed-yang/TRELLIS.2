@@ -28,6 +28,8 @@ nsys captured 2 instances per range (warmup + measure). The min column = measure
 
 Sum of measure-run stages = **9 794 ms** (vs. 10 056 ms e2e → ~262 ms glue outside NVTX ranges, consistent with the Python driver's pre/post-stage book-keeping).
 
+Note: CoReP pipeline has no s5 stage — numbering goes s1-s4, s6-s8 by project convention (s5 historical; absent from corep_fast). All 7 stages captured.
+
 ## Top 10 CUDA kernels by total time (from CUDA Kernel Summary, both runs)
 
 | Rank | Name (shortened) | Total ms | Count | Avg µs | % |
@@ -78,13 +80,13 @@ From `cuda_gpu_trace`: every one of the 29 334 GPU ops (kernels + memcpy + memse
 ## Three concrete observations (DoD #2)
 
 **1. GPU is idle ~96 % of wall time — kernels do only ~3 % of the work.**
-Sum of CUDA kernel execution time for both warmup+measure = 259.7 ms; sum of all memcpy/memset = 434.0 ms → total GPU-occupied time ≈ 694 ms across two runs, i.e. **~347 ms per run** against a 10 056 ms e2e → **GPU utilisation ≈ 3.5 %**. Driver CPU logic, CUB index gymnastics, and D2H syncs dominate; the H100 spends the other 9.7 s per run doing nothing. Layer 1/2 (torch.profiler) must pinpoint where the CPU spins — strongest suspects are s4_face_point (~5.8 s) and s6_collapse (~2.4 s).
+Sum of CUDA kernel execution time for both warmup+measure = 259.7 ms; sum of all memcpy/memset = 435.0 ms (D2H 404.97 + H2D 28.34 + D2D 0.50 + memset 1.15) → total GPU-occupied time ≈ 694.7 ms across two runs, i.e. **~347.3 ms per run** against a 10 056 ms e2e → **GPU utilisation ≈ 3.5 %**. Driver CPU logic, CUB index gymnastics, and D2H syncs dominate; the H100 spends the other 9.7 s per run doing nothing. Layer 1/2 (torch.profiler) must pinpoint where the CPU spins — strongest suspects are s4_face_point (~5.8 s) and s6_collapse (~2.4 s).
 
 **2. 4 022 D2H transfers per pair-of-runs = one sync every ~2.5 ms — likely `.item()` / `.cpu()` leaks.**
 The CUDA Memory Ops Summary shows **4 022 D2H memcpies averaging 301 KB each** (1.21 GB total, 93.1 % of memcpy time) plus **4 128 `cudaStreamSynchronize` calls**. That 4128 ≈ 4022 ratio is too clean to be coincidence: almost every D2H has a matching stream-sync before/after it, i.e. these are **blocking scalar reads** (`t.item()`, Python `if scalar_tensor:` comparisons, `.tolist()`), not bulk transfers. Each forces a round-trip CPU-GPU sync. A Phase-3 optimisation pass should hunt these in s4/s6/s7 — candidates include bitmap counts, rank min/max, and per-component loop guards.
 
 **3. Entire pipeline runs on a single default stream (stream 7) with one ~1.0 s `cudaDeviceSynchronize`.**
-`cuda_gpu_trace` confirms all 29 334 GPU ops live on stream 7 — **zero cross-stream concurrency**. On top of that, one `cudaDeviceSynchronize` call costs **1 048 ms** by itself (the other 19 calls sum to ~1 ms), meaning one specific host-side barrier is draining a fully-queued GPU in a single flush. This is a smoking gun for a batched-then-blocked pattern (likely end of s4_face_point or start of s6_collapse). Two concrete wins are now visible: (a) break the default-stream dependency for independent work (e.g. edge-weight construction vs. face-point picking), and (b) locate the one giant sync point and either push work past it or pipeline it.
+`cuda_gpu_trace` confirms all 29 334 GPU ops live on stream 7 — **zero cross-stream concurrency**. (Data source: `nsys_res256_full.sqlite` CUPTI activity tables — per-stream breakdown not exposed in the per-report CSVs.) On top of that, one `cudaDeviceSynchronize` call costs **1 048 ms** by itself (the other 19 calls sum to ~1 ms), meaning one specific host-side barrier is draining a fully-queued GPU in a single flush. This is a smoking gun for a batched-then-blocked pattern (likely end of s4_face_point or start of s6_collapse). Two concrete wins are now visible: (a) break the default-stream dependency for independent work (e.g. edge-weight construction vs. face-point picking), and (b) locate the one giant sync point and either push work past it or pipeline it.
 
 ## Caveats
 - nsys overhead proved far lower than the 2-3× in the plan (driver's `[done] e2e = 10.056 s` vs. expected ~20-30 s with overhead). The `.nsys-rep` is only 2.6 MB because of `osrt,cuda,nvtx` trace + no CPU sampling (warning messages in runlog confirm `CPU IP/backtrace sampling not supported, disabling` and `CPU context switch tracing not supported, disabling`). This means this trace has **no OS-level backtrace data** — we can't blame specific Python callsites from this alone, Layer 2 (torch.profiler) is still required.
