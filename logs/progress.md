@@ -255,3 +255,13 @@ Shelve Triton K1 (originally #1, now #4 in the ROI list — s4 device time is on
 - Branch: `post-profile-sync-elim`
 - corep_fast changes: zero (investigation-only spec; fixes deferred to next sync-elimination spec)
 - Key architectural insight: Bucket B = 98% of top-20 ms = 6 bulk `.cpu().numpy()` dispatches at GPU→CPU-MP boundary in s6/s7/s4/s8. Architectural rewrite belongs with Triton K1/K2 track, NOT bundled into next sync spec.
+
+## 2026-04-17 — T0 decisive experiment: MP vs serial e2e wall-time
+
+- Two subagents ran corep_pipeline @ res=256 on host-10-240-99-116, 3 trials each.
+- **MP default (GPU 3): median 8.631 s** (V=551079, F=1102152, variance 4.3%)
+- **Serial nw=1 (GPU 4): median 75.312 s** (same V/F, variance 0.15%, bit-deterministic)
+- **Serial is 8.7x slower than MP.** MP is net-positive; plan direction (W2 persistent pool) is correct.
+- Full writeup: `logs/findings_t0_mp_vs_serial.md`
+- Artifacts: `tmp/cpu_profile/t0_driver.py`, `t0_{mp_default,serial}.md`, `t0_{default,serial}.json`
+- Plan update: T1 uses nw=1 for bit-exact golden; T3 (W2) adds PYTHONHASHSEED=0 in pool initializer to fix MP topology nondeterminism (pre-existing ~0.7% vertex-set drift).
