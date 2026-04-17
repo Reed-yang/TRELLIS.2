@@ -984,10 +984,10 @@ def s6_collapse(batch: CubeBatch, pool=None, num_workers: int | None = None) -> 
 
     # Dispatch via temp Pool (fork-inherited) or run serially
     if num_workers > 1 and len(work_items) > 500:
-        from multiprocessing import Pool as _Pool
-        with _Pool(num_workers) as p:
-            results = p.map(_s6_worker, work_items,
-                            chunksize=max(1, len(work_items) // (num_workers * 4)))
+        from corep_fast.utils.persistent_pool import get_pool
+        p = get_pool(num_workers)
+        results = p.map(_s6_worker, work_items,
+                        chunksize=max(1, len(work_items) // (num_workers * 4)))
     else:
         results = [_s6_worker(item) for item in work_items]
 

@@ -1425,10 +1425,10 @@ def _process_shared_edges_torch(
         import os as _os
         num_workers = max(1, (_os.cpu_count() or 4) - 4)
         if num_workers > 1 and M >= 100_000:
-            from multiprocessing import Pool as _Pool
+            from corep_fast.utils.persistent_pool import get_pool
             chunk_size = max(M // (num_workers * 4), 1)
-            with _Pool(num_workers) as p:
-                results = p.map(_process_shared_edge_geometry, grids, chunksize=chunk_size)
+            p = get_pool(num_workers)
+            results = p.map(_process_shared_edge_geometry, grids, chunksize=chunk_size)
             for tri_np in results:
                 if tri_np is not None and tri_np.shape[0] > 0:
                     tri_verts_python_list.append(tri_np)
@@ -1766,10 +1766,10 @@ def _process_shared_edges_from_tensors(
         num_workers = max(1, (_os.cpu_count() or 4) - 4)
         M = len(grids)
         if num_workers > 1 and M >= 100_000:
-            from multiprocessing import Pool as _Pool
+            from corep_fast.utils.persistent_pool import get_pool
             chunk_size = max(M // (num_workers * 4), 1)
-            with _Pool(num_workers) as p:
-                results = p.map(_process_shared_edge_geometry, grids, chunksize=chunk_size)
+            p = get_pool(num_workers)
+            results = p.map(_process_shared_edge_geometry, grids, chunksize=chunk_size)
             for tri_np in results:
                 if tri_np is not None and tri_np.shape[0] > 0:
                     tri_verts_python_list.append(tri_np)
@@ -1935,13 +1935,13 @@ def process_shared_edges_batch(
             if r is not None:
                 tri_vertex_chunks.append(r)
     else:
-        # Parallel processing using multiprocessing.Pool
-        from multiprocessing import Pool as _Pool
+        # Parallel processing using persistent multiprocessing.Pool
+        from corep_fast.utils.persistent_pool import get_pool
         chunk_size = max(len(edge_tasks) // num_workers, 1)
         batches = [edge_tasks[i:i+chunk_size]
                     for i in range(0, len(edge_tasks), chunk_size)]
-        with _Pool(num_workers) as pool:
-            batch_results = pool.map(_process_geometry_batch, batches)
+        pool = get_pool(num_workers)
+        batch_results = pool.map(_process_geometry_batch, batches)
         tri_vertex_chunks = [r for batch in batch_results for r in batch]
 
     # 4. Vertex welding + face dedup using Torch

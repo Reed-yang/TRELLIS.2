@@ -1311,10 +1311,10 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
 
         # Dispatch rank work — use temporary Pool with fork-inherited data
         if num_workers > 1 and len(rank_work_items) > 500:
-            from multiprocessing import Pool as _Pool
-            with _Pool(num_workers) as p:
-                rank_results = p.map(_s7_rank_worker, rank_work_items,
-                                     chunksize=max(1, len(rank_work_items) // (num_workers * 4)))
+            from corep_fast.utils.persistent_pool import get_pool
+            p = get_pool(num_workers)
+            rank_results = p.map(_s7_rank_worker, rank_work_items,
+                                 chunksize=max(1, len(rank_work_items) // (num_workers * 4)))
         else:
             rank_results = [_s7_rank_worker(item) for item in rank_work_items]
 

@@ -157,10 +157,10 @@ def _compute_face_weights_mp(batch: CubeBatch, mesh: MeshTensors,
         num_workers = max(1, (_os.cpu_count() or 4) - 4)
 
     if num_workers > 1 and N > 500:
-        from multiprocessing import Pool as _Pool
+        from corep_fast.utils.persistent_pool import get_pool
         chunksize = max(1, N // (num_workers * 4))
-        with _Pool(num_workers) as p:
-            results = p.map(_fw_worker_indexed, range(N), chunksize=chunksize)
+        p = get_pool(num_workers)
+        results = p.map(_fw_worker_indexed, range(N), chunksize=chunksize)
     else:
         results = [_fw_worker_indexed(ci) for ci in range(N)]
 
@@ -1208,10 +1208,10 @@ def _compute_face_weights_gpu(batch: CubeBatch, mesh: MeshTensors) -> torch.Tens
 
     num_workers = max(1, (_os.cpu_count() or 4) - 4)
     if num_workers > 1 and G >= 5000:
-        from multiprocessing import Pool as _Pool
+        from corep_fast.utils.persistent_pool import get_pool
         chunksize = max(1, G // (num_workers * 4))
-        with _Pool(num_workers) as p:
-            results = p.map(_p2_uturn_worker, range(G), chunksize=chunksize)
+        p = get_pool(num_workers)
+        results = p.map(_p2_uturn_worker, range(G), chunksize=chunksize)
     else:
         results = [_p2_uturn_worker(gi) for gi in range(G)]
 
