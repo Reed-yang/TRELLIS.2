@@ -1,0 +1,24 @@
+# Top-20 by self-time from tmp/cpu_profile/results_main/main_thread_res256.prof
+
+rank    self_ms     cum_ms    calls  function @ file:line
+----------------------------------------------------------------------------------------------------
+   1     1605.4     1605.4        4  <method 'acquire' of '_thread.lock' objects> @ ~:0
+   2      958.7     1635.3        1  s7_rank_assign @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s7_rank_assign.py:1175
+   3      499.8     1263.7        1  s6_collapse @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:976
+   4      484.0      512.0        1  _labels_to_list_of_lists @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:966
+   5      373.5     1245.0        1  _compute_component_points_gpu @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:411
+   6      261.8      261.8   276329  <method 'tolist' of 'numpy.ndarray' objects> @ ~:0
+   7      243.6      243.6        8  <built-in method gc.collect> @ ~:0
+   8      224.4      224.4   275543  <method 'reduce' of 'numpy.ufunc' objects> @ ~:0
+   9      201.4      201.4       58  <method 'cpu' of 'torch._C.TensorBase' objects> @ ~:0
+  10      201.3      201.3   551101  <built-in method numpy.asarray> @ ~:0
+  11      154.2      154.2   275539  <built-in method scipy.optimize._lsap.linear_sum_assignment> @ ~:0
+  12      152.7     1860.6        1  _compute_face_weights_gpu @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:1354
+  13      131.8      131.8        1  <listcomp> @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:1158
+  14      102.4      125.4        1  _snap_centroids_to_components @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:648
+  15      101.9      101.9   275545  <method 'astype' of 'numpy.ndarray' objects> @ ~:0
+  16       79.9     3185.6        1  s4_face_point @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:66
+  17       78.7       78.7  1997642  <method 'append' of 'list' objects> @ ~:0
+  18       66.0       66.0  1935899  <built-in method builtins.len> @ ~:0
+  19       42.0       45.0      216  _emit @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/geom/sh_clip.py:108
+  20       40.0      301.1   275539  <method 'sum' of 'numpy.ndarray' objects> @ ~:0
