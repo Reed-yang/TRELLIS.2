@@ -245,3 +245,13 @@ Shelve Triton K1 (originally #1, now #4 in the ROI list — s4 device time is on
 - Sub-stage CUDA event patches added 41% overhead at res=128 (`3af0d99` smoke check) → fell back to stage-level NVTX only (`36a1e9d`).
 - NVTX monkey-patches from Tasks 2-3 don't appear in torch.profiler Chrome trace (only nsys). Layers 1-3 fell back to matching `python_function` events by stage entry name.
 - torch.profiler Chrome traces at res=256 are 3.8 GB each (above GitHub's 2 GB file limit). Kept local-only; 11.4 GB across 3 runs. For future runs, reduce with `with_stack=False`.
+
+## 2026-04-17 — sync-spike findings complete
+
+- Spec: `docs/superpowers/specs/2026-04-17-sync-spike-design.md` (commit 687b02f)
+- Plan: `docs/superpowers/plans/2026-04-17-sync-spike-implementation.md` (commit b9048bf)
+- Driver tooling: `tmp/profile_deep/driver.py` with_stack default flipped to False, --with-stack CLI flag added (ROI #6, commit 99c06b7)
+- Findings: `logs/findings_sync_sources.md` — 1.0s DeviceSync root-caused (Bucket C @ s1_voxelize.py:56); top-20 blocking D2H classified into 5 buckets (A=2, B=6, C=7, D=4, E=0); recommended next spec = Option Y "A + §1 DeviceSync fix" with expected Δ -1.0 to -1.1s @ res=256, ~3-5 d effort
+- Branch: `post-profile-sync-elim`
+- corep_fast changes: zero (investigation-only spec; fixes deferred to next sync-elimination spec)
+- Key architectural insight: Bucket B = 98% of top-20 ms = 6 bulk `.cpu().numpy()` dispatches at GPU→CPU-MP boundary in s6/s7/s4/s8. Architectural rewrite belongs with Triton K1/K2 track, NOT bundled into next sync spec.
