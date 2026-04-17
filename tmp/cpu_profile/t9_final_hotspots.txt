@@ -1,0 +1,33 @@
+stage            posix.fork_ms   lock.acq_ms   trace_np_ms    uf_np_ms  trace_gpu_ms   uf_gpu_batched_ms
+post_w2                    0.0        1666.3        1822.5      1014.2           0.0                 0.0
+post_w4_w5                 0.0        1648.6           0.0         0.0           7.0                 0.1
+
+=== Call counts (post_w4_w5) ===
+  _get_local_components_gpu_batched: cc=1 nc=1 self_ms=0.1
+  _fastpath_trace_loops_gpu: cc=1 nc=1 self_ms=7.0
+
+=== Lock.acquire (post_w4_w5) ===
+  ~:0:<method 'acquire' of '_thread.lock' objects> cc=4 nc=4 self_ms=1648.5
+  threading.py:276:_acquire_restore cc=1 nc=1 self_ms=0.0
+
+=== Top-20 post_w4_w5 by self-time ===
+  cc=     4 self= 1648.5ms cum=  1648.5ms  ~:0:<method 'acquire' of '_thread.lock' objects>
+  cc=     1 self=  999.0ms cum=  1702.0ms  s7_rank_assign.py:1175:s7_rank_assign
+  cc=     1 self=  513.7ms cum=  1267.4ms  s6_collapse.py:976:s6_collapse
+  cc=     1 self=  464.5ms cum=   490.9ms  s4_face_point.py:966:_labels_to_list_of_lists
+  cc=     1 self=  370.6ms cum=  1212.6ms  s4_face_point.py:411:_compute_component_points_gpu
+  cc=276329 self=  248.3ms cum=   248.3ms  ~:0:<method 'tolist' of 'numpy.ndarray' objects>
+  cc=     8 self=  229.4ms cum=   229.4ms  ~:0:<built-in method gc.collect>
+  cc=275543 self=  226.6ms cum=   226.6ms  ~:0:<method 'reduce' of 'numpy.ufunc' objects>
+  cc=551101 self=  206.8ms cum=   206.8ms  ~:0:<built-in method numpy.asarray>
+  cc=    58 self=  198.3ms cum=   198.3ms  ~:0:<method 'cpu' of 'torch._C.TensorBase' objects>
+  cc=275539 self=  165.1ms cum=   165.1ms  ~:0:<built-in method scipy.optimize._lsap.linear_sum_assignment>
+  cc=     1 self=  148.2ms cum=  1884.9ms  s4_face_point.py:1354:_compute_face_weights_gpu
+  cc=     1 self=  145.1ms cum=   145.1ms  s6_collapse.py:1158:<listcomp>
+  cc=275545 self=  105.8ms cum=   105.8ms  ~:0:<method 'astype' of 'numpy.ndarray' objects>
+  cc=     1 self=  102.7ms cum=   123.5ms  s4_face_point.py:648:_snap_centroids_to_components
+  cc=     1 self=   74.7ms cum=  3172.3ms  s4_face_point.py:66:s4_face_point
+  cc=1997642 self=   73.3ms cum=    73.3ms  ~:0:<method 'append' of 'list' objects>
+  cc=1935899 self=   63.0ms cum=    63.0ms  ~:0:<built-in method builtins.len>
+  cc=   216 self=   41.4ms cum=    44.4ms  sh_clip.py:108:_emit
+  cc=275539 self=   39.0ms cum=   303.8ms  ~:0:<method 'sum' of 'numpy.ndarray' objects>
