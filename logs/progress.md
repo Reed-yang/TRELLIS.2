@@ -209,3 +209,39 @@ Rewrite `custom/` CoReP pipeline as `corep_fast/` with Torch vectorization for b
 **Correctness:** A/B tests confirm exact vertex/face count match with custom/ implementation at all resolutions tested.
 
 ### Status: **5.0x speedup achieved on s8_collapse at res=256 (H100). Stage 2 Triton spec written, branch `triton-s8` created.**
+
+---
+
+## CoReP Deep Profiling (2026-04-16 → 2026-04-17)
+
+### Goal
+Pre-Triton kernel-level bottleneck investigation to inform next-stage choice
+among Triton K1 / mesh-cleanup-port / s1-sat-hardening.
+
+### Output
+- Spec: `docs/superpowers/specs/2026-04-16-corep-deep-profiling-design.md`
+- Plan: `docs/superpowers/plans/2026-04-16-corep-deep-profiling-implementation.md`
+- Results: `my-docs/20260417-corep-deep-profiling-results.md`
+- DoD: `tmp/profile_deep/DONE.md`
+- Raw data: `tmp/profile_deep/results/`
+
+### Method
+4-layer profile on 116 GPU 0:
+- Layer 0 — Nsight Systems macro timeline (res=256)
+- Layer 1 — torch.profiler Chrome trace, 3-run median @ res=256 (run2)
+- Layer 2 — Post-process Layer 1 trace → top-20 GPU kernels + heuristic CMB/MMB/LNB/CPU/UNK
+- Layer 3 — Repeat Layer 1 @ res=128 (run1 median), compare per-stage scaling ratios
+
+### Three headline findings
+1. Pipeline is ~96% GPU-idle at res=256 (nsys: kernel ~260ms + memcpy ~435ms over warmup+measured = 347ms/run; e2e 10s).
+2. Zero compute-bound kernels in top-20 (17 MMB, 3 LNB, 0 CMB). Biggest single-call kernel is an 11 ms `tensor_kernel_scan_innermost_dim_with_indices<long, greater_equal>` in s6, introduced by the Task 3 s7 bugfix's cummax.
+3. s4 and s7 scale at 1.68x and 1.11x for R doubling (128→256), vs expected R²=4x — both are host-bound.
+
+### Recommended next step
+Shelve Triton K1 (originally #1, now #4 in the ROI list — s4 device time is only ~37 ms at res=256; even zero-GPU would save <40 ms). Primary target: eliminate the 1.0 s `cudaDeviceSynchronize` + 4022 `.item()`-style D2H leaks in s4/s6/s7 Python loops.
+
+### Notable incidents during the investigation
+- s7 W2 GPU path bug (`83d230d`) landed mid-investigation. Re-established baseline at res=256 e2e ~10.2 s (vs pre-fix 9.13 s).
+- Sub-stage CUDA event patches added 41% overhead at res=128 (`3af0d99` smoke check) → fell back to stage-level NVTX only (`36a1e9d`).
+- NVTX monkey-patches from Tasks 2-3 don't appear in torch.profiler Chrome trace (only nsys). Layers 1-3 fell back to matching `python_function` events by stage entry name.
+- torch.profiler Chrome traces at res=256 are 3.8 GB each (above GitHub's 2 GB file limit). Kept local-only; 11.4 GB across 3 runs. For future runs, reduce with `with_stack=False`.
