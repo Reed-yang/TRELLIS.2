@@ -1,0 +1,182 @@
+[
+  {
+    "stage": "s6_collapse",
+    "frame_name": "<built-in method cpu of Tensor object at 0x7f7a8e5bbd80>",
+    "count": 11,
+    "total_dur_ms": 60.571304999999995,
+    "avg_dur_us": 5506.482272727272,
+    "sample_ts_us": 1313760334357.73,
+    "rank": 1
+  },
+  {
+    "stage": "s7_rank_assign",
+    "frame_name": "<built-in method cpu of Tensor object at 0x7f7a8e5bbd80>",
+    "count": 16,
+    "total_dur_ms": 51.98901300000001,
+    "avg_dur_us": 3249.3133125000004,
+    "sample_ts_us": 1313763683731.425,
+    "rank": 2
+  },
+  {
+    "stage": "s4_face_point",
+    "frame_name": "<built-in method cpu of Tensor object at 0x7f7a8e5bbd80>",
+    "count": 10,
+    "total_dur_ms": 45.608956,
+    "avg_dur_us": 4560.8956,
+    "sample_ts_us": 1313753296023.728,
+    "rank": 3
+  },
+  {
+    "stage": "<unknown>",
+    "frame_name": "<built-in method cpu of Tensor object at 0x7f7a8e5bbd80>",
+    "count": 7,
+    "total_dur_ms": 38.197928,
+    "avg_dur_us": 5456.8468571428575,
+    "sample_ts_us": 1313763025048.944,
+    "rank": 4
+  },
+  {
+    "stage": "<unknown>",
+    "frame_name": "corep_fast/geom/sh_clip.py(108): _emit",
+    "count": 1080,
+    "total_dur_ms": 2.495184000000006,
+    "avg_dur_us": 2.3103555555555606,
+    "sample_ts_us": 1313760019777.495,
+    "rank": 5
+  },
+  {
+    "stage": "decode_from_cubebatch",
+    "frame_name": "<built-in method cpu of Tensor object at 0x7f7a8e5bbd80>",
+    "count": 11,
+    "total_dur_ms": 2.1934690000000003,
+    "avg_dur_us": 199.40627272727278,
+    "sample_ts_us": 1313765938788.9,
+    "rank": 6
+  },
+  {
+    "stage": "s7_rank_assign",
+    "frame_name": "corep_fast/stages/s7_rank_assign.py(634): _build_adjacency_gpu",
+    "count": 778,
+    "total_dur_ms": 1.7957940000000048,
+    "avg_dur_us": 2.3082185089974354,
+    "sample_ts_us": 1313764337537.048,
+    "rank": 7
+  },
+  {
+    "stage": "decode_from_cubebatch",
+    "frame_name": "corep_fast/stages/s8_collapse.py(1629): _process_shared_edges_from_tensors",
+    "count": 16,
+    "total_dur_ms": 0.038176999999999996,
+    "avg_dur_us": 2.3860624999999995,
+    "sample_ts_us": 1313765925262.743,
+    "rank": 8
+  },
+  {
+    "stage": "<unknown>",
+    "frame_name": "<no frame>",
+    "count": 9,
+    "total_dur_ms": 0.022399,
+    "avg_dur_us": 2.4887777777777775,
+    "sample_ts_us": 1313760130769.584,
+    "rank": 9
+  },
+  {
+    "stage": "decode_from_cubebatch",
+    "frame_name": "corep_fast/stages/s8_collapse.py(920): process_geometry_vectorized",
+    "count": 9,
+    "total_dur_ms": 0.021952999999999997,
+    "avg_dur_us": 2.439222222222222,
+    "sample_ts_us": 1313765933726.091,
+    "rank": 10
+  },
+  {
+    "stage": "<unknown>",
+    "frame_name": "<built-in method repeat_interleave of type object at 0x7f856cc1fec0>",
+    "count": 8,
+    "total_dur_ms": 0.019584,
+    "avg_dur_us": 2.448,
+    "sample_ts_us": 1313763904078.906,
+    "rank": 11
+  },
+  {
+    "stage": "s6_collapse",
+    "frame_name": "corep_fast/stages/s6_collapse.py(190): _fastpath_gpu_build_adjacency",
+    "count": 7,
+    "total_dur_ms": 0.018431,
+    "avg_dur_us": 2.633,
+    "sample_ts_us": 1313760355067.747,
+    "rank": 12
+  },
+  {
+    "stage": "decode_from_cubebatch",
+    "frame_name": "corep_fast/stages/s8_collapse.py(182): _pad_ragged_loops_gpu",
+    "count": 6,
+    "total_dur_ms": 0.014528000000000001,
+    "avg_dur_us": 2.4213333333333336,
+    "sample_ts_us": 1313765920575.678,
+    "rank": 13
+  },
+  {
+    "stage": "s2_components",
+    "frame_name": "<built-in method equal of type object at 0x7f856cc1fec0>",
+    "count": 5,
+    "total_dur_ms": 0.012352,
+    "avg_dur_us": 2.4704,
+    "sample_ts_us": 1313753119891.706,
+    "rank": 14
+  },
+  {
+    "stage": "s4_face_point",
+    "frame_name": "corep_fast/stages/s4_face_point.py(1119): _compute_face_weights_gpu",
+    "count": 4,
+    "total_dur_ms": 0.009727,
+    "avg_dur_us": 2.43175,
+    "sample_ts_us": 1313753294901.33,
+    "rank": 15
+  },
+  {
+    "stage": "decode_from_cubebatch",
+    "frame_name": "corep_fast/stages/s8_collapse.py(777): build_edge_neighbor_table",
+    "count": 4,
+    "total_dur_ms": 0.009696,
+    "avg_dur_us": 2.424,
+    "sample_ts_us": 1313765924002.489,
+    "rank": 16
+  },
+  {
+    "stage": "decode_from_cubebatch",
+    "frame_name": "<built-in method nonzero of type object at 0x7f856cc1fec0>",
+    "count": 4,
+    "total_dur_ms": 0.009152,
+    "avg_dur_us": 2.2880000000000003,
+    "sample_ts_us": 1313765933815.179,
+    "rank": 17
+  },
+  {
+    "stage": "decode_from_cubebatch",
+    "frame_name": "<built-in method item of Tensor object at 0x7f7a8e5bbc90>",
+    "count": 3,
+    "total_dur_ms": 0.007552,
+    "avg_dur_us": 2.517333333333333,
+    "sample_ts_us": 1313765920135.71,
+    "rank": 18
+  },
+  {
+    "stage": "s2_components",
+    "frame_name": "corep_fast/stages/s2_components.py(18): s2_components",
+    "count": 3,
+    "total_dur_ms": 0.007105,
+    "avg_dur_us": 2.3683333333333336,
+    "sample_ts_us": 1313753117705.085,
+    "rank": 19
+  },
+  {
+    "stage": "s4_face_point",
+    "frame_name": "<built-in method item of Tensor object at 0x7f7a8e5bbc90>",
+    "count": 2,
+    "total_dur_ms": 0.006528000000000001,
+    "avg_dur_us": 3.2640000000000002,
+    "sample_ts_us": 1313753294840.914,
+    "rank": 20
+  }
+]

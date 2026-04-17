@@ -1,0 +1,30 @@
+[scan] reading /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer1_res256_run1_trace.json (~4GB, streaming)...
+[info] memcpy/sync events: 4084
+[info] python_function events: 14161031
+[info] D2H memcpy: 2011
+[info] stream/device sync: 2073
+
+Top 20 blocking D2H hotspots by aggregate dur_ms:
+rank stage                  count    total_ms  frame_name
+1    s6_collapse               11      60.571  <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+2    s7_rank_assign            16      51.989  <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+3    s4_face_point             10      45.609  <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+4    <unknown>                  7      38.198  <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+5    <unknown>               1080       2.495  corep_fast/geom/sh_clip.py(108): _emit
+6    decode_from_cubebatch      11       2.193  <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+7    s7_rank_assign           778       1.796  corep_fast/stages/s7_rank_assign.py(634): _build_adjacency_g
+8    decode_from_cubebatch      16       0.038  corep_fast/stages/s8_collapse.py(1629): _process_shared_edge
+9    <unknown>                  9       0.022  <no frame>
+10   decode_from_cubebatch       9       0.022  corep_fast/stages/s8_collapse.py(920): process_geometry_vect
+11   <unknown>                  8       0.020  <built-in method repeat_interleave of type object at 0x7f856
+12   s6_collapse                7       0.018  corep_fast/stages/s6_collapse.py(190): _fastpath_gpu_build_a
+13   decode_from_cubebatch       6       0.015  corep_fast/stages/s8_collapse.py(182): _pad_ragged_loops_gpu
+14   s2_components              5       0.012  <built-in method equal of type object at 0x7f856cc1fec0>
+15   s4_face_point              4       0.010  corep_fast/stages/s4_face_point.py(1119): _compute_face_weig
+16   decode_from_cubebatch       4       0.010  corep_fast/stages/s8_collapse.py(777): build_edge_neighbor_t
+17   decode_from_cubebatch       4       0.009  <built-in method nonzero of type object at 0x7f856cc1fec0>
+18   decode_from_cubebatch       3       0.008  <built-in method item of Tensor object at 0x7f7a8e5bbc90>
+19   s2_components              3       0.007  corep_fast/stages/s2_components.py(18): s2_components
+20   s4_face_point              2       0.007  <built-in method item of Tensor object at 0x7f7a8e5bbc90>
+
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/sync_spike/top20_d2h.json

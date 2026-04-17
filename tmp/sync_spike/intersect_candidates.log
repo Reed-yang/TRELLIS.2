@@ -1,0 +1,2 @@
+s1_voxelize hits: 1
+  L 56 (item)  total_pairs = int(offsets[-1].item())

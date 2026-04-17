@@ -1,0 +1,17 @@
+[step1] Computing torch.profiler trace window (pass 1 of 2)...
+[info] nsys window: 3021232282..25490505817 ns (span 22.47s)
+[info] torch.profiler window: 1313752924003.832..1313766018053.424 us (span 13.09s)
+[info] projected target: [1313753046682, 1313753657624] us (fraction 0.0094 - 0.0560)
+[step2] Searching for containing python_function frames (pass 2 of 2)...
+
+Found 7 python_function frames containing target. Showing shortest-dur top 10 (deepest-stack most specific):
+     dur(us)  name                                                        
+    7427.169  <built-in method searchsorted of type object at 0x7f856cc1fe
+   47866.851  corep_fast/stages/s1_voxelize.py(106): _expand_candidates
+   57691.808  corep_fast/stages/s1_voxelize.py(18): s1_voxelize
+   57748.739  monkeypatch_nvtx.py(32): wrapper
+13072928.248  driver.py(63): run_pipeline
+13094048.734  driver.py(168): main
+13094049.592  driver.py(210): <module>
+
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/sync_spike/cross_ref_candidates.json
