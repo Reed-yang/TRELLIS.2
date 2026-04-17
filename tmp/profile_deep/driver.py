@@ -9,7 +9,6 @@ Pipeline call pattern mirrors tmp/e2e_profile_m2.py verbatim.
 import argparse
 import gc
 import json
-import os
 import subprocess
 import sys
 import time
@@ -149,43 +148,56 @@ def main():
         "cuda_version": torch.version.cuda,
         "layer": args.layer,
         "resolution": args.res,
+        "seeds": {"torch": 42, "numpy": 42},
     }
 
     print(f"[measure] layer={args.layer} res={args.res}...")
-    if args.layer == "0":
-        t_stages = run_pipeline(mesh, args.res, device)
-    else:
-        trace_path = str(out_prefix) + "_trace.json"
-        with torch.profiler.profile(
-            activities=[
-                torch.profiler.ProfilerActivity.CPU,
-                torch.profiler.ProfilerActivity.CUDA,
-            ],
-            schedule=torch.profiler.schedule(wait=0, warmup=0, active=1),
-            on_trace_ready=lambda p: p.export_chrome_trace(trace_path),
-            record_shapes=True,
-            profile_memory=False,
-            with_stack=True,
-        ) as prof:
+    t_stages: dict = {}
+    pipeline_error: BaseException | None = None
+    try:
+        if args.layer == "0":
             t_stages = run_pipeline(mesh, args.res, device)
-            prof.step()
-        print(f"[write] {trace_path}")
+        else:
+            trace_path = str(out_prefix) + "_trace.json"
+            with torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                schedule=torch.profiler.schedule(wait=0, warmup=0, active=1, repeat=1),
+                on_trace_ready=lambda p: p.export_chrome_trace(trace_path),
+                record_shapes=True,
+                profile_memory=False,
+                with_stack=True,
+            ) as prof:
+                t_stages = run_pipeline(mesh, args.res, device)
+                prof.step()
+            print(f"[write] {trace_path}")
+    except BaseException as e:
+        pipeline_error = e
+        print(f"[error] pipeline raised: {type(e).__name__}: {e}")
+    finally:
+        substage = monkeypatch_nvtx.dump_substage_timings()
+        summary_path = str(out_prefix) + "_summary.json"
+        with open(summary_path, "w") as f:
+            # Serialize: drop per_call_ms lists (keep count + total) to stay small.
+            serializable_sub = {
+                k: {"count": v["count"], "total_ms": v["total_ms"]}
+                for k, v in substage.items()
+            }
+            payload = {
+                "header": header,
+                "stage_walltime_sec": t_stages,
+                "substage_ms": serializable_sub,
+            }
+            if pipeline_error is not None:
+                payload["pipeline_error"] = f"{type(pipeline_error).__name__}: {pipeline_error}"
+            json.dump(payload, f, indent=2)
+        print(f"[write] {summary_path}")
+        print(f"[done] e2e = {t_stages.get('e2e', -1):.3f}s")
 
-    substage = monkeypatch_nvtx.dump_substage_timings()
-    summary_path = str(out_prefix) + "_summary.json"
-    with open(summary_path, "w") as f:
-        # Serialize: drop per_call_ms lists (keep count + total) to stay small.
-        serializable_sub = {
-            k: {"count": v["count"], "total_ms": v["total_ms"]}
-            for k, v in substage.items()
-        }
-        json.dump({
-            "header": header,
-            "stage_walltime_sec": t_stages,
-            "substage_ms": serializable_sub,
-        }, f, indent=2)
-    print(f"[write] {summary_path}")
-    print(f"[done] e2e = {t_stages.get('e2e', -1):.3f}s")
+    if pipeline_error is not None:
+        raise pipeline_error
 
 
 if __name__ == "__main__":
