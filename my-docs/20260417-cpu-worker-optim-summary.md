@@ -249,47 +249,161 @@ Post-W2 的 lock.acquire 100% 来自单次 `_compute_face_weights_gpu` 的 `pool
 
 ---
 
-## 5. 后续方向
+## 5. GPU Idle 分析 — 为什么还能降、要怎么降
 
-### 5.1 首选：**"Stage D + s7 Phase 3 Triton port"**（合并 spec）
+### 5.1 GPU idle 变化（估算，非直接测量）
 
-三个耦合 workstream，单个 spec：
+本分支 T9 只跑了 cProfile，没跑 nsys，所以 post-W4+W5 的 GPU util 是推算值：
 
-**A. s7 Phase 3 batched Hungarian on GPU**（~1536 ms 可降）
-- 现状：`s7_rank_assign.py:1175` Phase 3 逐 cube × 275,539 次调用 scipy `linear_sum_assignment`
-- 方案：pad per-cube cost matrix → Triton 自定 Hungarian kernel（或 warp-parallel for small n）
-- 依赖：`_build_adjacency_gpu` 已提供 batched GPU 输入
+| 阶段 | GPU kernel+memcpy | wall | GPU util | GPU idle |
+|---|---:|---:|---:|---:|
+| deep-profiling baseline (10.056s, gpu-pipeline `53dfca5`) | ~347 ms | 10.056 s | **3.5%** | **96.5%** |
+| post-W4+W5（本分支收尾 `1ced857`） | ~500-800 ms（W4/W5 把 CPU 工作搬到 GPU，净增 GPU 调用） | 5.354 s | **~10-15%** | **~85-90%** |
 
-**B. s7 `_build_adjacency_gpu` fusion**（1913 ms self）
-- 现状：12×3×W scatter + U-turn 循环，各自 launch
-- 方案：单 Triton kernel fuse 全流程，省 launch overhead 与中间 buffer
-- 与 A 同文件，一起做
+**GPU idle 有降（96.5% → ~85-90%），但仍绝对主导。** 关键是 **wall 砍半**：W4/W5 省的不是 GPU 时间，是 **CPU 主线程卡在 Python 循环无法喂 GPU 的时间**。
 
-**C. s4 Stage D GPU BFS + UTurn（W6 Angle 2）**
-- 现状：`_count_uturns` 49.7s worker wall（跨 275k cube，纯 Python BFS + list/dict/set）
-- 方案：把 BFS 和 U-turn 计数上 GPU，用 Stage B 已有的 CSR segments
-- 清理 1648 ms `lock.acquire` residual
+> 精确 GPU util 数字需要在 HEAD 再跑一次 nsys（0.5d 任务）。下一 spec 的 T9 等价任务建议带上 `GPU util` 作为 DoD 指标（目标：从 ~10-15% 提到 ≥50%）。
 
-**预期：** 再 -1.5~2.5 s e2e（总计 5.354 → ~3~4 s）
-**成本：** 7-12 d（Triton-first）
-**Gate：** 沿用 F1/F2/F3 subprocess 模式 + 额外 ≥1.5 s e2e DoD + cProfile top-20 不得重新引入 ≥200ms Python 热点
+### 5.2 5.354 s 里 GPU idle 的真实来源（T9 top-20 residual 分解）
 
-### 5.2 次选 / 独立小 spec（不要和 5.1 bundle）
+| Residual 热点 | self (ms) | GPU 在做什么 | idle 原因 |
+|---|---:|---|---|
+| `_thread.lock.acquire` | 1648 | 闲置 | 主线程等 MP worker（Stage D `_count_uturns` 49.7s cube-worker **纯 Python BFS**）— worker 不触 GPU，主线程也没下一步工作可 dispatch |
+| `s7_rank_assign` Phase 3 | 999 | 闲置 | 主线程跑 275k 次 `scipy.optimize.linear_sum_assignment`（**纯 CPU Hungarian**），GPU 完全闲 |
+| `s6_collapse` assembly | 513 | 闲置 | CSR→list 重打包等 Python 整理 |
+| `_labels_to_list_of_lists`（W5 adapter） | 464 | 做完，D2H + CPU 分桶 | 一次 `.cpu()` 强同步 + Python bucket loop |
+| numpy coercion 合计（276k+ 次 asarray/tolist/astype） | ~759 | 闲置或小量 memcpy | 跨 stage 中间张量反复 CPU↔GPU 搬运 |
 
-- **W4 Option A（CSR-native 下游）**：回收当前 100-300 ms。ROI 低，除非 s6 assembly block 因别的原因要改。
-- **`_labels_to_list_of_lists` 向量化**：464ms self @ s4:966，`np.argsort` + `np.split` 或 sparse-COO GPU。~200-400ms @ ~1d，独立 micro-spec。
-- **numpy coercion cluster**（~759 ms across 276k+ 次 asarray/tolist/astype）：应随未来 "s4→s7 全程 GPU 驻留" refactor 顺带消除。
+**三类根因：**
+1. **真 CPU 算法**（Hungarian、BFS、数据结构构建）— 算法本身没搬上 GPU
+2. **CPU↔GPU boundary 强制同步**（`.cpu()` / `.tolist()` / `.item()`）— 数据往返时 GPU 必须等
+3. **MP worker 内部纯 Python**（Stage D `_count_uturns`）— worker 不触 GPU，主线程只能 block
 
-### 5.3 已关闭路径（不要重开除非有新数据）
+### 5.3 Triton vs Python/MP 调度优化 — 互补，非替代
 
-- **删 MP**：T0 已证 serial 8.7× 慢。
-- **W1 s8 Bucket A 清理**：T2 审计发现 2 处都是 load-bearing（drive arange / MP boundary transfer），无安全可删。
-- **W6 Angle 3 (ThreadPool)**：T7a 实测 GIL-holding 57.9%，死局。重启条件：先把 Stage D 重写成释 GIL 的实现（即先做 5.1-C）。
-- **W7 s7 orchestration cleanup**：T8a 查无 ≥200ms mechanical 候选。
+常见误解："Triton 只加速 GPU kernel；要降 GPU idle 应该优化 Python 调度 / MP，不该用 Triton"。**前半对，后半不完整。**
+
+Triton 有两种功能：
+
+**(a) 加速已在 GPU 的 kernel** — 降 kernel 执行时间。GPU 本来 busy 时才有杠杆。
+> 在 GPU idle 85%+ 的当前 pipeline，这条路 ROI 极低。deep-profiling 已结论：s4 GPU 工作仅 37ms，Triton 化再快也省 <40ms。
+
+**(b) Kernel fusion + 把 host-side control 搬到 device-side** — 这是本 pipeline 的真机会：
+- 典型反例：`_build_adjacency_gpu` (1913ms self) 有 12×3×W 个 scatter launch，每个 launch 前后都有 Python 侧 loop 控制
+- Python 侧的工作：dispatch 要时间、launch 有 overhead、中间 buffer 要分配、scheduler 空转
+- Triton kernel 可把整个循环编译成单个 device 程序，Python 侧只发一次 launch → **GPU idle 降**（fewer launches + less host orchestration）
+- 本质是把 Python 调度工作搬到 GPU，而非单纯"加速"
+
+**降 GPU idle 的路径选择：**
+
+| 瓶颈类型 | 工具 | 例子（本 pipeline） |
+|---|---|---|
+| 纯 CPU 算法需搬上 GPU | batched PyTorch 足够 | W4/W5 已做；Stage D BFS 可做 |
+| 小算法 GPU 版（n<100） | PyTorch 可能低效，Triton 更好 | s7 Phase 3 Hungarian |
+| 大量小 kernel launch + host loop 控制 | **必须** Triton | `_build_adjacency_gpu` fusion |
+| CPU↔GPU 数据往返 | 消除 `.cpu()` / 保持 GPU 驻留（任何工具） | W5 adapter → CSR-native consumer |
+| MP worker 纯 Python 开销 | 搬上 GPU（PyTorch 或 Triton） | Stage D W6 Angle 2 |
+
+**所以："Python 调度 / MP 优化" vs "Triton" 不是非此即彼，都是降 idle 的手段。选哪种取决于具体瓶颈形态。**
+
+> W4/W5 的路线就是典型的 "PyTorch 够用 → 先用 PyTorch"：padded-walk + batched label-prop 都没用 Triton，仍拿到 -3.28s。下一步到了 `_build_adjacency_gpu` fusion 这种有 device-side control flow 需求的瓶颈，PyTorch 表达不出，才必须 Triton。
 
 ---
 
-## 6. 方法论遗产（必须保留给下个 spec）
+## 6. 后续方向（按 ROI 排序）
+
+ROI 估算标准：**`预期 e2e 降幅 / effort (天)`**。越高越优先。注意 wall 估算都是 cProfile self-time 的直接转化，实际降幅可能因 cProfile instrumentation 膨胀而略有偏差；下一 spec 做完要用干净 wall 验证。
+
+### 6.1 🥇 首选：**Stage D GPU BFS（W6 Angle 2）** — 纯 PyTorch 可达，最高 ROI
+
+**ROI：~0.3-0.5 s/d**
+
+- **现状：** `_count_uturns` @ s4:305 共 49.7s worker wall（跨 275k cube，纯 Python BFS + list/dict/set）→ 主线程 `lock.acquire` 1648ms
+- **方案：** 把 BFS 和 U-turn 计数搬到 GPU，复用 Stage B 已有的 CSR segments。可以纯 PyTorch（batched BFS + scan），**不必 Triton**
+- **期望回报：** -1.0~1.5 s e2e
+- **effort：** 3-5 d
+- **风险：** BFS 的 early-termination 语义在 batched GPU 下需要小心（与 `_fastpath_trace_loops_gpu` padded-walk 类似的 state tensor 模式）；Stage D `_count_uturns` 的 tiebreaker 需要 audit
+- **解锁：** 一旦 Stage D 释 GIL，W6 Angle 3 (ThreadPool) 重新进入 viable，但多半届时 lock.acquire 已降到 <500ms 不值得再做
+
+### 6.2 🥈 快速清理：**`_labels_to_list_of_lists` 向量化** — 1 天快项
+
+**ROI：~0.2-0.4 s/d**
+
+- **现状：** W5 adapter 一次 GPU→CPU 搬运 + Python bucket loop，464ms self @ s4:966
+- **方案：** 用 `np.argsort` + `np.split`（单次 numpy vectorized），或更进一步 sparse-COO 保 GPU 驻留
+- **期望回报：** -0.2~0.4 s
+- **effort：** 0.5-1 d
+- **适配性：** 独立 micro-spec，无依赖，任何时候可插入
+
+### 6.3 🥉 s7 Phase 3 batched Hungarian on GPU — Triton 首选（单独 spec）
+
+**ROI：~0.15-0.3 s/d**
+
+- **现状：** `s7_rank_assign.py:1175` Phase 3 逐 cube × 275,539 次 `scipy.optimize.linear_sum_assignment`，self 984ms
+- **方案：** pad per-cube cost matrix 到 max `(n_loops, n_points)`；自定 Triton Hungarian kernel（对 small n 可 warp-parallel assignment）
+- **期望回报：** -0.8~1.5 s
+- **effort：** 4-7 d（Triton 教学成本 + 正确性验证）
+- **注意：** 纯 PyTorch batched Hungarian 也可（e.g. `torch.nonzero` + greedy matching for small n），效率可能低 3-10×。若 6.1 + 6.2 做完 e2e 已到 ~4s，此项 bundle 与否看团队 Triton 预算
+
+### 6.4 s7 `_build_adjacency_gpu` fusion — 必须 Triton，可与 6.3 bundle
+
+**ROI：~0.1-0.2 s/d**
+
+- **现状：** s7:634，1913ms self，内含 12×3×W scatter + U-turn 循环各自 launch
+- **方案：** 单 Triton kernel 把 Python loop + 所有 scatter + U-turn 分支 fuse 一起
+- **期望回报：** -0.5~1.0 s（主要省 launch overhead + 中间 buffer + host orchestration）
+- **effort：** 4-7 d（Triton 首选；纯 PyTorch 表达不出 device-side control flow）
+- **打包建议：** 与 6.3 同 spec（都在 `s7_rank_assign.py`，都需要 Triton），effort 合计 7-12 d，合计回报 -1.0~2.0 s
+
+### 6.5 W4 Option A（CSR-native 下游）— 低 ROI，条件触发
+
+**ROI：~0.05-0.15 s/d**
+
+- **现状：** T5d 走 CSR→list-of-lists adapter，~100-300 ms 被 numpy 重打包吃掉
+- **方案：** 把 s6 assembly block (lines 935-1001) 改吃 CSR 直接消费
+- **期望回报：** -0.1~0.3 s
+- **effort：** 1-2 d
+- **触发条件：** 仅当 s6 assembly 因别的原因需要重构时顺手做；不建议独立立项
+
+### 6.6 numpy coercion cluster — 不独立立项，随其他 refactor 消
+
+- **现状：** ~759 ms 分摊在 276k+ 次 `asarray` / `tolist` / `astype`
+- **方案：** 无独立解法。应在未来"s4→s7 全程 GPU 驻留"refactor 里顺带消除
+- **effort：** 不可估算（取决于 umbrella refactor 形态）
+
+### 6.7 已关闭路径（除非有新数据，不要重开）
+
+- **删 MP**：T0 已证 serial 8.7× 慢（75.3 s vs 8.6 s）。
+- **W1 s8 Bucket A 清理**：T2 审计 2 处都 load-bearing（drive arange / MP boundary transfer）。
+- **W6 Angle 3 (ThreadPool)**：T7a 实测 GIL-holding 57.9%，死局。**重开条件：** 先做 6.1 把 Stage D 重写成释 GIL 的实现（那时 lock.acquire 本身已降到无需 Angle 3）。
+- **W7 s7 orchestration cleanup**：T8a 查无 ≥200 ms mechanical 候选。
+
+### 6.8 推荐行动顺序（把 e2e 从 5.354 压到 ~3s）
+
+```
+Phase 1（1 week, 纯 PyTorch / numpy，零 Triton 债）：
+  6.2 _labels_to_list_of_lists 向量化  (0.5-1d, -0.2~0.4s)
+  6.1 Stage D GPU BFS (W6 Angle 2)     (3-5d,   -1.0~1.5s)
+  => 预期 e2e：5.354 → 4.0~4.2 s
+
+Phase 2（需 Triton 预算，1.5-2.5 week）：
+  6.3 + 6.4 s7 Phase 3 + _build_adjacency_gpu fusion  (7-12d, -1.0~2.0s)
+  => 预期 e2e：4.0~4.2 → 2.5~3.2 s
+
+条件触发：
+  6.5 W4 Option A（仅 s6 assembly refactor 时）
+  6.6 numpy coercion cluster（仅 s4→s7 全 GPU 驻留 refactor 时）
+```
+
+**Gate DoD（下一 spec 必带）：**
+- F1/F2/F3 bit-exact（沿用本分支 runner + 三层确定性）
+- 干净 e2e wall 达标（Phase 1 ≥1.0s，Phase 2 ≥1.5s）
+- **nsys 测的 GPU util 显式记录**（从当前 ~10-15% 提升到目标值）
+- cProfile top-20 不得重新引入 ≥200 ms 纯 Python 热点
+
+---
+
+## 7. 方法论遗产（必须保留给下个 spec）
 
 ### 6.1 F1-F3 回归门 —— 三层确定性，缺一不可
 
@@ -329,7 +443,7 @@ Gate 执行约 2:45 / 3 fixture。下一 spec 重用本 runner 即可；破一�
 
 ---
 
-## 7. Artifacts 索引
+## 8. Artifacts 索引
 
 ### 7.1 Commit chain（`post-profile-sync-elim`, 自 `0b1ef14` 后）
 
@@ -386,6 +500,6 @@ b6bb12c  T0   decisive MP vs serial experiment (MP kept)
 
 ---
 
-## 8. 一句话总结
+## 9. 一句话总结
 
 **e2e @ res=256: 8.631 s → 5.354 s（-3.28 s, -38%）**，通过 (1) 持久 MP 池消除 124 次 fork + 39% lock.acquire、(2) s6 纯 PyTorch padded-walk tracer 消 275k 次 numpy 调用、(3) s4 batched GPU label-prop UF 消另外 275k 次 numpy 调用达成。**不用 Triton，不引入新依赖，F1/F2/F3 bit-exact 全 commit 过，DoD 6/6 满足。** 下一 spec 目标：Stage D + s7 Phase 3 Triton port，再降 1.5-2.5 s。
