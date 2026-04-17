@@ -1405,9 +1405,12 @@ def _get_local_components_gpu(
 ) -> list[list[int]]:
     """Batched UF via iterative label-propagation on GPU.
 
-    Input face_adj uses LOCAL indices already (caller remaps). If callers
-    pass mesh-face indices, they must be translated to local indices
-    first (mirrors numpy impl behavior).
+    Input face_adj is a GLOBAL face->3-neighbor table (int32, -1 padded),
+    shared with the numpy reference. Neighbors are global face ids; the
+    UF builds a local face_id->index map internally and only unions when
+    a neighbor appears in the current cube's face_ids set. (Corrected
+    2026-04-17 per T6a spike audit — earlier "LOCAL indices" note was
+    wrong.)
 
     Algorithm:
         labels = arange(n)
