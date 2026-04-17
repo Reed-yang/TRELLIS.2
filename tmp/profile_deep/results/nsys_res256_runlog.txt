@@ -1,0 +1,40 @@
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+[warmup] pipeline at res=256...
+[measure] layer=0 res=256...
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/layer0_res256_summary.json
+[done] e2e = 10.056s
+Collecting data...
+Generating '/tmp/nsys-report-29a6.qdstrm'
+[1/1] [0%                          ] nsys_res256_full.nsys-rep[1/1] [0%                          ] nsys_res256_full.nsys-rep[1/1] [5%                          ] nsys_res256_full.nsys-rep[1/1] [6%                          ] nsys_res256_full.nsys-rep[1/1] [7%                          ] nsys_res256_full.nsys-rep[1/1] [8%                          ] nsys_res256_full.nsys-rep[1/1] [14%                         ] nsys_res256_full.nsys-rep[1/1] [==20%                       ] nsys_res256_full.nsys-rep[1/1] [====26%                     ] nsys_res256_full.nsys-rep[1/1] [======35%                   ] nsys_res256_full.nsys-rep[1/1] [=========46%                ] nsys_res256_full.nsys-rep[1/1] [============56%             ] nsys_res256_full.nsys-rep[1/1] [===============66%          ] nsys_res256_full.nsys-rep[1/1] [===============67%          ] nsys_res256_full.nsys-rep[1/1] [========================100%] nsys_res256_full.nsys-rep[1/1] [========================100%] nsys_res256_full.nsys-rep
+Generated:
+    /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_full.nsys-rep
+nsys output:
+-rw-rw-r-- 1 siyuan siyuan 2.6M Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_full.nsys-rep
+-rw-r--r-- 1 siyuan siyuan  12M Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_full.sqlite
+-rw-rw-r-- 1 siyuan siyuan  801 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_runlog.txt
+-rw-rw-r-- 1 siyuan siyuan  894 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_cuda_api_sum.csv
+-rw-rw-r-- 1 siyuan siyuan  64K Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_cuda_gpu_kern_sum.csv
+-rw-rw-r-- 1 siyuan siyuan  352 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_cuda_gpu_mem_size_sum.csv
+-rw-rw-r-- 1 siyuan siyuan  396 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_cuda_gpu_mem_time_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_dx11_pix_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_dx12_gpu_marker_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_dx12_pix_sum.csv
+-rw-rw-r-- 1 siyuan siyuan  748 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_nvtx_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_openacc_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_opengl_khr_gpu_range_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_opengl_khr_range_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_openmp_sum.csv
+-rw-rw-r-- 1 siyuan siyuan 2.6K Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_osrt_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_syscall_sum.csv
+-rw-rw-r-- 1 siyuan siyuan 8.5K Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats.txt
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_um_cpu_page_faults_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_um_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_um_total_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_vulkan_gpu_marker_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_vulkan_marker_sum.csv
+-rw-rw-r-- 1 siyuan siyuan    0 Apr 17 02:02 /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/profile_deep/results/nsys_res256_stats_wddm_queue_sum.csv
