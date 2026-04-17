@@ -1,0 +1,13 @@
+=== UNPATCHED ===
+unpatched median=3.087s  all=[3.2259624409489334, 3.0871442048810422, 3.02899372484535]
+=== PATCHED ===
+patched median=4.361s  all=[4.346946957055479, 4.36057659285143, 5.522782606072724]
+
+---
+DECISION:
+  unpatched_median_s = 3.087
+  patched_median_s   = 4.361
+  delta_pct          = 41.3%
+  threshold          = 10.0%
+  fallback_triggered = yes
+  action             = "switch to NVTX-only for Tasks 6-11"
