@@ -41,7 +41,7 @@ STAGE_FN_MAP = {
 MMB_PATTERNS = re.compile(
     r"(copy|memset|scatter|gather|^index|index_elementwise|cat|slice|"
     r"contiguous|view|as_strided|reduce|scan|"
-    r"devicereduce|deviceselect|devicescan)",
+    r"devicereduce|deviceselect|devicescan|elementwise_kernel)",
     re.IGNORECASE,
 )
 CMB_PATTERNS = re.compile(r"(gemm|conv|reduce|sum|matmul|bmm)", re.IGNORECASE)
