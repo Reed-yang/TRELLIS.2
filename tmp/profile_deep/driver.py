@@ -125,6 +125,10 @@ def main():
     ap.add_argument("--layer", choices=["0", "1", "3"], required=True,
                     help="0 = naked run (nsys wraps externally); 1/3 = torch.profiler")
     ap.add_argument("--res", type=int, required=True)
+    ap.add_argument("--with-stack", action="store_true",
+                    help="Enable torch.profiler with_stack=True (slow, ~5-10x overhead, "
+                         "~3.8GB Chrome trace @ res=256). Default off per sync-spike "
+                         "spec 2026-04-17.")
     args = ap.parse_args()
 
     set_deterministic()
@@ -174,7 +178,7 @@ def main():
                 on_trace_ready=lambda p: p.export_chrome_trace(trace_path),
                 record_shapes=True,
                 profile_memory=False,
-                with_stack=True,
+                with_stack=args.with_stack,
             ) as prof:
                 t_stages = run_pipeline(mesh, args.res, device)
                 prof.step()
