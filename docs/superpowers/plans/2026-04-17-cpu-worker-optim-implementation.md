@@ -54,6 +54,37 @@
 
 **Purpose:** Every commit under W1-W7 must pass this test. It pickles the CURRENT (pre-change) pipeline output, then asserts subsequent runs produce the same output. Lets GPU-rewrite tasks (W4/W5) confirm correctness via bit-equivalence.
 
+**STATUS: shipped in commit `949aed9` (2026-04-17).** The shipped design diverged from Step 1 below — implementation uncovered three layers of nondeterminism:
+
+1. **Default MP** → ~0.7% vertex-set drift per T0 → `SerialPool` monkeypatch.
+2. **Same-process multi-fixture** → cuDNN/cuBLAS autotune cache + CUDA workspace leak across fixtures → F3 drifts ~0.9 V depending on what ran before. Fixed by running each fixture in its own **subprocess** via `_cpu_worker_optim_runner.py`.
+3. **Cross-process CUDA nondeterminism** → even independent processes drift ~0.75 V on F3. Fixed with `CUBLAS_WORKSPACE_CONFIG=:4096:8` before torch import + `cudnn.benchmark=False` + `cudnn.deterministic=True` + `torch.use_deterministic_algorithms(True, warn_only=True)` + `PYTHONHASHSEED=0` in subprocess env.
+
+Authoritative source: `corep_fast/tests/regression/test_cpu_worker_optim.py` + `_cpu_worker_optim_runner.py`. Step 1 code below is **historical** — do not copy-paste for subsequent tasks.
+
+For W1-W7 tasks, use these wrappers to re-run / regenerate (gate always runs on **host-10-240-99-116 GPU 4** — local GPU forbidden because other inference jobs contaminate timings):
+
+```bash
+cat > /tmp/run_f123.sh <<'EOF'
+#!/bin/bash
+PROJ=/mnt/novita2/siyuan/workspace/TRELLIS.2
+ssh host-10-240-99-116 "cd ${PROJ} && CUDA_VISIBLE_DEVICES=4 .venv/bin/pytest corep_fast/tests/regression/test_cpu_worker_optim.py -v"
+EOF
+bash /tmp/run_f123.sh
+
+# Regenerate (only after out-of-scope code changes):
+cat > /tmp/gen_goldens.sh <<'EOF'
+#!/bin/bash
+PROJ=/mnt/novita2/siyuan/workspace/TRELLIS.2
+ssh host-10-240-99-116 "cd ${PROJ} && CUDA_VISIBLE_DEVICES=4 GENERATE_GOLDEN=1 .venv/bin/pytest corep_fast/tests/regression/test_cpu_worker_optim.py -v"
+EOF
+bash /tmp/gen_goldens.sh
+```
+
+Wall-time: 3 fixtures × ~55 s each ≈ 2:45 total.
+
+---
+
 **Files:**
 - Create: `corep_fast/tests/regression/test_cpu_worker_optim.py`
 - Create: `corep_fast/tests/regression/cpu_worker_optim_goldens/` (directory)
