@@ -1,0 +1,22 @@
+rank    self_ms     cum_ms      calls  function @ file:line
+----------------------------------------------------------------------------------------------------
+   1     1614.1     1614.1          4  <method 'acquire' of '_thread.lock' objects> @ ~:0
+   2      994.0     1712.4          1  s7_rank_assign @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s7_rank_assign.py:1175
+   3      546.6     1354.9          1  s6_collapse @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:976
+   4      389.1     1576.8          1  _compute_component_points_gpu @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:411
+   5      311.2      342.0     275541  <listcomp> @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:1059
+   6      310.7      310.7     551870  <method 'tolist' of 'numpy.ndarray' objects> @ ~:0
+   7      248.4      248.4     275544  <method 'reduce' of 'numpy.ufunc' objects> @ ~:0
+   8      241.0      241.0          8  <built-in method gc.collect> @ ~:0
+   9      203.8      203.8     551101  <built-in method numpy.asarray> @ ~:0
+  10      199.8      199.8         58  <method 'cpu' of 'torch._C.TensorBase' objects> @ ~:0
+  11      159.6      159.6     275539  <built-in method scipy.optimize._lsap.linear_sum_assignment> @ ~:0
+  12      148.1      340.9          1  array_split @ /mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/lib/python3.10/site-packages/numpy/lib/_shape_base_impl.py:742
+  13      143.6      143.6          1  <listcomp> @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:1158
+  14      142.9     1840.4          1  _compute_face_weights_gpu @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:1403
+  15      121.8      826.3          1  _labels_to_list_of_lists @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:966
+  16      108.6      108.6     275546  <method 'astype' of 'numpy.ndarray' objects> @ ~:0
+  17      107.7      129.9          1  _snap_centroids_to_components @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:648
+  18       67.3     3484.6          1  s4_face_point @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:66
+  19       66.2       66.2    1935902  <built-in method builtins.len> @ ~:0
+  20       63.2       63.2    1668163  <method 'append' of 'list' objects> @ ~:0
