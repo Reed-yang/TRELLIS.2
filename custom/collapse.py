@@ -18,7 +18,10 @@ import multiprocessing as mp
 from tqdm import tqdm
 from scipy.optimize import linear_sum_assignment
 
-
+from feature import unique_to_full_weights
+from collapse_face import collapse_face_inner, collapse_face_boundary
+from collapse_point import collapse_point_inner, collapse_point_boundary
+from utils import load_pickle, save_pickle, fetch_np_array, voxels_to_mesh
 
 # =============================================================================
 # THE GEOMETRY AND INDEX MAPPING
@@ -1122,52 +1125,94 @@ def reconstruct_mesh(resolution, cube_data_list, output_filepath="output_mesh.pl
     final_data = extract_original_cube_edges(reformed_data)
     return generate_global_mesh(resolution, final_data, output_filepath=output_filepath)
 
+def feature_to_mesh(edge_weights, face_weights, component_points, cube_indices, resolution, output_filepath="collapse_mesh.ply"):
+    edge_weights_full = unique_to_full_weights(edge_weights, cube_indices, resolution, geometry_type='edge')
+    face_weights_full = unique_to_full_weights(face_weights, cube_indices, resolution, geometry_type='face')
+
+    inner_mask = np.ones(len(cube_indices), dtype=bool)
+    boundary_mask = np.zeros(len(cube_indices), dtype=bool)
+    inner_registers = [{'cube_indices': tuple(cube_indices[i]), 
+                        'edge_weights': edge_weights_full[i].tolist(), 
+                        'face_weights': face_weights_full[i].tolist(), 
+                        'component_points': component_points[i]} 
+                        for i in range(len(cube_indices)) if inner_mask[i]]
+    boundary_registers = [{'cube_indices': tuple(cube_indices[i]), 
+                            'edge_weights': edge_weights_full[i].tolist(), 
+                            'face_weights': face_weights_full[i].tolist(), 
+                            'component_points': component_points[i]} 
+                            for i in range(len(cube_indices)) if boundary_mask[i]]
+
+    solved_uturn, ambiguous_uturn, unsolvable_uturn = collapse_face_inner(inner_registers)
+    print('collapse_face', len(solved_uturn), len(ambiguous_uturn), len(unsolvable_uturn))
+
+    solved_boundary, ambiguous_boundary, unsolvable_boundary = collapse_face_boundary(boundary_registers)
+    print('collapse_face_boundary', len(solved_boundary), len(ambiguous_boundary), len(unsolvable_boundary))
+
+    face_registers = collapse_point_inner(solved_uturn, resolution, debug=False, output_directory='tmp/test_feature_banana256/debug')
+    face_registers_with_boundary = collapse_point_boundary(solved_boundary, resolution, debug=False, output_directory='tmp/test_feature_banana256/debug')
+
+    exception_registers = mark_exception([*ambiguous_uturn, *unsolvable_uturn, *ambiguous_boundary, *unsolvable_boundary])
+
+
+    face_registers = [*face_registers, *face_registers_with_boundary, *exception_registers]
+    
+    mesh_path = reconstruct_mesh(resolution, face_registers, output_filepath=output_filepath)
+    mesh_data = trimesh.load(mesh_path)
+    return mesh_data
 
 
 
 if __name__ == "__main__":
-    # Test data mimicking the structure provided in the prompt
-    sample_data = [
-        {
-            'cube_indices': (693, 542, 605), 
-            'face_indices': [12, 13, 14, 15, 16, 17, 18, 33547, 33548, 33549, 33550, 33551, 33552, 33553, 33649, 33650, 33651, 33652, 33653], 
-            'num_components': 1, 
-            'edge_weights': [0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1], 
-            'loops': [[4, 13, 6, 16, 11, 17, 8, 14]], 
-            'num_loops': 1, 
-            'error': None, 
-            'd': 0.0, 
-            'center_point': [0.6774748166402181, 0.5299870769182841, 0.5912693738937378], 
-            'normals': [[-0.7071067811865476, 0.0, 0.7071067811865476]], 
-            'mesh_points': [[0.6774748166402181, 0.5299870769182841, 0.5912693738937378]]
-        }
-    ]
-    
-    # Run the reformer
-    reformed_data = reform_intersection_data(sample_data)
 
-    # Run the new extraction function for original edges
-    final_data = extract_original_cube_edges(reformed_data)
-    
-    # Print the restructured key from the first dictionary to verify
-    print("Reformed Output:")
-    for item in final_data[0]['structured_loops']:
-        print(item)
+    weights_edge = load_pickle("tmp/test_feature_banana256/feature/weights_edge.pkl")
+    weights_face = load_pickle("tmp/test_feature_banana256/feature/weights_face.pkl")
+    cube_indices = load_pickle("tmp/test_feature_banana256/feature/occ.pkl")
+    first_2_component_points = load_pickle("tmp/test_feature_banana256/feature/points_2.pkl")
+    component_points = load_pickle("tmp/test_feature_banana256/feature/component_points.pkl")
+    resolution = 256
+    feature_to_mesh(weights_edge, weights_face, component_points, cube_indices, resolution, output_filepath="tmp/test_feature_banana256/debug/collapse_mesh.ply")
 
 
-# Test the shared edge geometry processing
-    res = 1000  # Large enough to accommodate index 694
-    # Mock a 2x2 grid sharing a Z-edge (X and Y vary, Z is constant at 605)
-    mock_grid_2x2_data = [
-        {'cube_indices': (693, 542, 605), 'structured_loops': [{'mesh_point': (0.6, 0.5, 0.55), 'original_cube_edges': [10]}]},
-        {'cube_indices': (694, 542, 605), 'structured_loops': [{'mesh_point': (0.65, 0.55, 0.56), 'original_cube_edges': [11]}]},
-        {'cube_indices': (693, 543, 605), 'structured_loops': [{'mesh_point': (0.55, 0.65, 0.54), 'original_cube_edges': [9]}]},
-        {'cube_indices': (694, 543, 605), 'structured_loops': [{'mesh_point': (0.62, 0.62, 0.55), 'original_cube_edges': [8]}]}
-    ]
+#     # Test data mimicking the structure provided in the prompt
+#     sample_data = [
+#         {
+#             'cube_indices': (693, 542, 605), 
+#             'face_indices': [12, 13, 14, 15, 16, 17, 18, 33547, 33548, 33549, 33550, 33551, 33552, 33553, 33649, 33650, 33651, 33652, 33653], 
+#             'num_components': 1, 
+#             'edge_weights': [0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1], 
+#             'loops': [[4, 13, 6, 16, 11, 17, 8, 14]], 
+#             'num_loops': 1, 
+#             'error': None, 
+#             'd': 0.0, 
+#             'center_point': [0.6774748166402181, 0.5299870769182841, 0.5912693738937378], 
+#             'normals': [[-0.7071067811865476, 0.0, 0.7071067811865476]], 
+#             'mesh_points': [[0.6774748166402181, 0.5299870769182841, 0.5912693738937378]]
+#         }
+#     ]
     
-    # Run global mesh generator on mock grid list
-    output_path = generate_global_mesh(res, mock_grid_2x2_data)
-    
-    print(f"\nGenerated Mesh saved successfully to: {output_path}")
+#     # Run the reformer
+#     reformed_data = reform_intersection_data(sample_data)
 
-    breakpoint()
+#     # Run the new extraction function for original edges
+#     final_data = extract_original_cube_edges(reformed_data)
+    
+#     # Print the restructured key from the first dictionary to verify
+#     print("Reformed Output:")
+#     for item in final_data[0]['structured_loops']:
+#         print(item)
+
+
+# # Test the shared edge geometry processing
+#     res = 1000  # Large enough to accommodate index 694
+#     # Mock a 2x2 grid sharing a Z-edge (X and Y vary, Z is constant at 605)
+#     mock_grid_2x2_data = [
+#         {'cube_indices': (693, 542, 605), 'structured_loops': [{'mesh_point': (0.6, 0.5, 0.55), 'original_cube_edges': [10]}]},
+#         {'cube_indices': (694, 542, 605), 'structured_loops': [{'mesh_point': (0.65, 0.55, 0.56), 'original_cube_edges': [11]}]},
+#         {'cube_indices': (693, 543, 605), 'structured_loops': [{'mesh_point': (0.55, 0.65, 0.54), 'original_cube_edges': [9]}]},
+#         {'cube_indices': (694, 543, 605), 'structured_loops': [{'mesh_point': (0.62, 0.62, 0.55), 'original_cube_edges': [8]}]}
+#     ]
+    
+#     # Run global mesh generator on mock grid list
+#     output_path = generate_global_mesh(res, mock_grid_2x2_data)
+    
+#     print(f"\nGenerated Mesh saved successfully to: {output_path}")
