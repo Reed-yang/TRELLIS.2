@@ -428,6 +428,69 @@ def _fastpath_trace_loops_numpy(
     return loops
 
 
+def _fastpath_trace_loops_gpu(
+    point_offset: "torch.Tensor",   # (N, 19) int64  — per-cube offsets
+    adj: "torch.Tensor",            # (N, max_points, 2) int32 — neighbors per point
+    total_points: "torch.Tensor",   # (N,) int64 — active points per cube
+) -> "tuple[torch.Tensor, torch.Tensor, torch.Tensor]":
+    """Batched per-cube loop-tracing — T5c first-pass stub.
+
+    Delegates to `_fastpath_trace_loops_numpy` per-cube and repackages the
+    result into the CSR tensor layout that T5d / consumers expect.
+    No perf gain in this form — this is the TDD green-phase stub that
+    locks the output contract. T5d replaces the inner Python loop with a
+    GPU-vectorized walk.
+
+    Returns:
+        loop_count:   (N,)               int32  — number of loops in each cube
+        loop_offsets: (N, max_loops + 1) int32  — GLOBAL CSR ptrs into edge_ids
+        edge_ids:     (total_edges,)     int32  — flat CSR payload across all cubes
+    """
+    import torch as _torch
+
+    device = adj.device
+    N = adj.shape[0]
+
+    if N == 0:
+        loop_count = _torch.zeros((0,), dtype=_torch.int32, device=device)
+        loop_offsets = _torch.zeros((0, 1), dtype=_torch.int32, device=device)
+        edge_ids = _torch.zeros((0,), dtype=_torch.int32, device=device)
+        return loop_count, loop_offsets, edge_ids
+
+    adj_cpu = adj.detach().cpu().numpy()
+    po_cpu = point_offset.detach().cpu().numpy()
+    tot_cpu = total_points.detach().cpu().numpy()
+
+    cube_loops: List[List[List[int]]] = []
+    for n in range(N):
+        cube_loops.append(
+            _fastpath_trace_loops_numpy(po_cpu[n], adj_cpu[n], int(tot_cpu[n]))
+        )
+
+    counts = [len(L) for L in cube_loops]
+    max_loops = max(counts) if counts else 0
+
+    loop_count = _torch.tensor(counts, dtype=_torch.int32, device=device)
+    loop_offsets = _torch.zeros((N, max_loops + 1), dtype=_torch.int32, device=device)
+    flat: List[int] = []
+
+    # Offsets are GLOBAL into the flat edge_ids tensor — test semantics:
+    #   lo = loop_offsets[n, k]; hi = loop_offsets[n, k+1]; edge_ids[lo:hi]
+    running = 0
+    for i, loops in enumerate(cube_loops):
+        loop_offsets[i, 0] = running
+        for k, loop in enumerate(loops):
+            running += len(loop)
+            loop_offsets[i, k + 1] = running
+            flat.extend(int(x) for x in loop)
+        # Pad remaining entries with running total so empty slices
+        for k in range(len(loops), max_loops):
+            loop_offsets[i, k + 1] = running
+
+    edge_ids = _torch.tensor(flat, dtype=_torch.int32, device=device)
+    return loop_count, loop_offsets, edge_ids
+
+
 # ---------------------------------------------------------------------------
 # Slow path: U-Turn enumeration (face_weights > 0)
 # ---------------------------------------------------------------------------
