@@ -250,7 +250,7 @@ def corep_encode(
     from corep_fast.stages.s7_rank_assign import s7_rank_assign
 
     pc = collector or ProfilingCollector()
-    mesh = trimesh.load(mesh_path)
+    mesh = trimesh.load(mesh_path, force='mesh')
     mt = MeshTensors.from_trimesh(mesh, resolution, device=device)
 
     # NOTE: no PersistentWorkerPool here. Each stage creates its own temp Pool
@@ -279,6 +279,249 @@ def corep_decode(
     import torch
     from corep_fast.stages.s8_collapse import decode_from_cubebatch
     return decode_from_cubebatch(batch, merge_decimals=merge_decimals)
+
+
+@dataclass
+class CorepParam:
+    """Minimal representation of a CoReP-encoded mesh.
+
+    Contains only the data needed to reconstruct the mesh via s6+s7+s8,
+    with edge/face weights stored in compact (unique) form.
+    """
+    cube_indices: np.ndarray       # (N, 3)   int32
+    edge_weights: np.ndarray       # (N, 6)   int32  — unique weights
+    face_weights: np.ndarray       # (N, 6)   int32  — unique weights
+    point_values: np.ndarray       # (P, 3)   float32
+    point_offsets: np.ndarray      # (N+1,)   int64
+    num_boundary: np.ndarray       # (N,)     int32
+    resolution: int
+
+
+def mesh_to_param(
+    mesh_path: str,
+    resolution: int,
+    device: 'torch.device',
+    collector: Optional[ProfilingCollector] = None,
+    num_workers: int | None = None,
+) -> CorepParam:
+    """Encode a mesh into the minimal CoReP parameter representation.
+
+    Runs s1-s4 (voxelize, components, edge weights, face/point weights)
+    and extracts the compact representation. Does NOT run s6/s7 since
+    those are re-derivable from the returned parameters.
+
+    Args:
+        mesh_path: Path to input mesh file (.ply, .obj, .glb, etc.).
+        resolution: Voxel grid resolution.
+        device: PyTorch device for GPU tensors.
+        collector: Optional profiling collector.
+        num_workers: Worker count for multiprocessing stages.
+
+    Returns:
+        CorepParam with all fields populated.
+    """
+    import torch
+    from corep_fast.containers import MeshTensors
+    from corep_fast.stages.s1_voxelize import s1_voxelize
+    from corep_fast.stages.s2_components import s2_components
+    from corep_fast.stages.s3_edge_weights import s3_edge_weights
+    from corep_fast.stages.s4_face_point import s4_face_point
+
+    pc = collector or ProfilingCollector()
+    mesh = trimesh.load(mesh_path, force='mesh')
+    mt = MeshTensors.from_trimesh(mesh, resolution, device=device)
+
+    with stage_timer('s1_voxelize', pc):
+        batch = s1_voxelize(mt, resolution, device)
+    with stage_timer('s2_components', pc):
+        batch = s2_components(batch, mt)
+    with stage_timer('s3_edge_weights', pc):
+        batch = s3_edge_weights(batch, mt)
+    with stage_timer('s4_face_point', pc):
+        batch = s4_face_point(batch, mt, num_workers=num_workers)
+
+    # Extract and compact the representation
+    ew_full = batch.edge_weights.cpu().numpy()   # (N, 18) int32
+    fw_full = batch.face_weights.cpu().numpy()   # (N, 12) int32
+
+    # Unique edge indices: 0, 3, 8, 12, 14, 17
+    ew_unique = ew_full[:, [0, 3, 8, 12, 14, 17]]
+    # Unique face indices: 0, 1, 4, 5, 10, 11
+    fw_unique = fw_full[:, [0, 1, 4, 5, 10, 11]]
+
+    return CorepParam(
+        cube_indices=batch.cube_indices.cpu().numpy(),
+        edge_weights=ew_unique,
+        face_weights=fw_unique,
+        point_values=batch.point_values.cpu().numpy(),
+        point_offsets=batch.point_offsets.cpu().numpy(),
+        num_boundary=batch.num_boundary.cpu().numpy(),
+        resolution=resolution,
+    )
+
+
+def _unique_to_full_edge_weights(unique: np.ndarray, cube_indices: np.ndarray, res: int) -> np.ndarray:
+    """Reconstruct (N, 18) full edge weights from (N, 6) unique weights."""
+    x, y, z = cube_indices[:, 0], cube_indices[:, 1], cube_indices[:, 2]
+    U = np.zeros((res, res, res, 6), dtype=unique.dtype)
+    U[x, y, z] = unique
+
+    E_X, E_Y, E_Z = U[..., 0], U[..., 1], U[..., 2]
+    D_XY, D_XZ, D_YZ = U[..., 3], U[..., 4], U[..., 5]
+
+    def shift(grid, dx, dy, dz):
+        s = np.copy(grid)
+        if dx == 1: s[:-1, :, :] = s[1:, :, :]
+        if dy == 1: s[:, :-1, :] = s[:, 1:, :]
+        if dz == 1: s[:, :, :-1] = s[:, :, 1:]
+        return s
+
+    F = np.zeros((res, res, res, 18), dtype=unique.dtype)
+    F[..., 0] = E_X
+    F[..., 1] = shift(E_Y, 1, 0, 0)
+    F[..., 2] = shift(E_X, 0, 1, 0)
+    F[..., 3] = E_Y
+    F[..., 4] = shift(E_X, 0, 0, 1)
+    F[..., 5] = shift(E_Y, 1, 0, 1)
+    F[..., 6] = shift(E_X, 0, 1, 1)
+    F[..., 7] = shift(E_Y, 0, 0, 1)
+    F[..., 8] = E_Z
+    F[..., 9] = shift(E_Z, 1, 0, 0)
+    F[..., 10] = shift(E_Z, 1, 1, 0)
+    F[..., 11] = shift(E_Z, 0, 1, 0)
+    F[..., 12] = D_XY
+    F[..., 13] = shift(D_XY, 0, 0, 1)
+    F[..., 14] = D_XZ
+    F[..., 15] = shift(D_YZ, 1, 0, 0)
+    F[..., 16] = shift(D_XZ, 0, 1, 0)
+    F[..., 17] = D_YZ
+    return F[x, y, z]
+
+
+def _unique_to_full_face_weights(unique: np.ndarray, cube_indices: np.ndarray, res: int) -> np.ndarray:
+    """Reconstruct (N, 12) full face weights from (N, 6) unique weights."""
+    x, y, z = cube_indices[:, 0], cube_indices[:, 1], cube_indices[:, 2]
+    U = np.zeros((res, res, res, 6), dtype=unique.dtype)
+    U[x, y, z] = unique
+
+    T_Bot1, T_Bot2 = U[..., 0], U[..., 1]
+    T_Frt1, T_Frt2 = U[..., 2], U[..., 3]
+    T_Lft1, T_Lft2 = U[..., 4], U[..., 5]
+
+    def shift(grid, dx, dy, dz):
+        s = np.copy(grid)
+        if dx == 1: s[:-1, :, :] = s[1:, :, :]
+        if dy == 1: s[:, :-1, :] = s[:, 1:, :]
+        if dz == 1: s[:, :, :-1] = s[:, :, 1:]
+        return s
+
+    F = np.zeros((res, res, res, 12), dtype=unique.dtype)
+    F[..., 0] = T_Bot1
+    F[..., 1] = T_Bot2
+    F[..., 2] = shift(T_Bot1, 0, 0, 1)
+    F[..., 3] = shift(T_Bot2, 0, 0, 1)
+    F[..., 4] = T_Frt1
+    F[..., 5] = T_Frt2
+    F[..., 6] = shift(T_Lft1, 1, 0, 0)
+    F[..., 7] = shift(T_Lft2, 1, 0, 0)
+    F[..., 8] = shift(T_Frt1, 0, 1, 0)
+    F[..., 9] = shift(T_Frt2, 0, 1, 0)
+    F[..., 10] = T_Lft1
+    F[..., 11] = T_Lft2
+    return F[x, y, z]
+
+
+def param_to_mesh(
+    param: CorepParam,
+    device: 'torch.device',
+    merge_decimals: int = 5,
+    collector: Optional[ProfilingCollector] = None,
+    num_workers: int | None = None,
+) -> tuple:
+    """Reconstruct a mesh from the minimal CoReP parameter representation.
+
+    Rebuilds a CubeBatch from the compact parameters, then re-runs
+    s6 (face collapse) → s7 (rank assign) → s8 (decode) to produce
+    the output mesh.
+
+    Args:
+        param: CorepParam from mesh_to_param.
+        device: PyTorch device.
+        merge_decimals: Vertex welding precision.
+        collector: Optional profiling collector.
+        num_workers: Worker count for multiprocessing stages.
+
+    Returns:
+        (vertices, faces) tuple:
+            vertices: (V, 3) float32
+            faces: (F, 3) int32
+    """
+    import torch
+    from corep_fast.containers import CubeBatch
+    from corep_fast.stages.s6_collapse import s6_collapse
+    from corep_fast.stages.s7_rank_assign import s7_rank_assign
+
+    pc = collector or ProfilingCollector()
+    N = param.cube_indices.shape[0]
+    res = param.resolution
+
+    # Expand unique weights back to full weights
+    ew_full = _unique_to_full_edge_weights(param.edge_weights, param.cube_indices, res)
+    fw_full = _unique_to_full_face_weights(param.face_weights, param.cube_indices, res)
+
+    # Build cube_hash
+    ci = param.cube_indices.astype(np.int64)
+    cube_hash = ci[:, 0] * res * res + ci[:, 1] * res + ci[:, 2]
+
+    zeros_i32 = lambda shape: torch.zeros(shape, dtype=torch.int32, device=device)
+    zeros_i64 = lambda shape: torch.zeros(shape, dtype=torch.int64, device=device)
+
+    batch = CubeBatch(
+        cube_indices=torch.from_numpy(param.cube_indices).to(device=device, dtype=torch.int32),
+        cube_hash=torch.from_numpy(cube_hash).to(device=device, dtype=torch.int64),
+
+        # S1 CSR registries — not needed by s6/s7/s8, fill with empty
+        tri_offsets=zeros_i64((N + 1,)),
+        tri_values=zeros_i32((0,)),
+        bnd_offsets=zeros_i64((N + 1,)),
+        bnd_values=zeros_i32((0,)),
+        nm_offsets=zeros_i64((N + 1,)),
+        nm_values=zeros_i32((0,)),
+
+        num_components=zeros_i32((N,)),
+        num_boundary=torch.from_numpy(param.num_boundary).to(device=device, dtype=torch.int32),
+
+        edge_weights=torch.from_numpy(ew_full).to(device=device, dtype=torch.int32),
+        face_weights=torch.from_numpy(fw_full).to(device=device, dtype=torch.int32),
+
+        point_offsets=torch.from_numpy(param.point_offsets).to(device=device, dtype=torch.int64),
+        point_values=torch.from_numpy(param.point_values).to(device=device, dtype=torch.float32),
+
+        # S5-S7 outputs — will be populated by s6_collapse and s7_rank_assign
+        loop_cube_off=zeros_i64((N + 1,)),
+        loop_edge_off=zeros_i64((1,)),
+        loop_edge_val=zeros_i32((0,)),
+        loop_edge_rank=torch.full((0,), -1, dtype=torch.int32, device=device),
+        loop_point_match=torch.zeros((0,), dtype=torch.int32, device=device),
+
+        status=zeros_i32((N,)),
+
+        comp_face_off=zeros_i64((N + 1,)),
+        comp_face_val=zeros_i32((0,)),
+        uturn_assignment=torch.full((N, 12, 3), -1, dtype=torch.int32, device=device),
+
+        device=device,
+        resolution=res,
+    )
+
+    with stage_timer('s6_collapse', pc):
+        batch = s6_collapse(batch, num_workers=num_workers)
+    with stage_timer('s7_rank_assign', pc):
+        batch = s7_rank_assign(batch, num_workers=num_workers)
+    with stage_timer('s8_decode', pc):
+        vertices, faces = corep_decode(batch, merge_decimals=merge_decimals)
+
+    return vertices, faces
 
 
 def corep_pipeline(

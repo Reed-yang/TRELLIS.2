@@ -1038,26 +1038,119 @@ def _phase1_gpu_rank_assign(
     # but the loop already implicitly visited the cycle. We accept any walk
     # that completes within bounds.
 
-    # ---- Pick first valid candidate per loop ----
-    # alive (L, 2W) — need the FIRST True index along dim 1.
-    # Use cumsum trick: find first True
-    any_alive = alive.any(dim=1)  # (L,) bool
-    # For each row, the first True position
-    # Trick: argmax on alive.int() returns first True (since the first 1 wins)
-    first_idx = alive.to(torch.int32).argmax(dim=1)  # (L,) int64
-    # Where no candidate alive, fallback to 0 (rank zero)
+    # ---- Pick valid candidate per loop with per-cube bijective consumption ----
+    # Loops in the same cube with identical edge sequences must claim
+    # DISTINCT candidates, mirroring CPU's `used_traced[i] = True` in
+    # `_match_loops_to_ranks`. Without this, two s6 loops sharing an edge
+    # sequence in one cube would both pick the smallest-rank candidate and
+    # produce duplicate ranks, collapsing downstream centroids.
+    #
+    # Two loops in DIFFERENT cubes — or same cube but different edge
+    # sequences — may independently claim the lowest valid candidate (they
+    # traverse different cycles in their respective adjacency graphs).
+
+    # Group key: (cube_id, full edge sequence with padding). torch.unique
+    # maps each distinct (cube, edges) pair to an int64 group id.
+    row_key = torch.cat([
+        cube_per_loop.to(torch.int32).unsqueeze(1),  # (L, 1)
+        loop_edges_pad.to(torch.int32),              # (L, K_max) — -1 for padding
+    ], dim=1)  # (L, K_max + 1) int32
+    _, group_ids = torch.unique(row_key, return_inverse=True, dim=0)  # (L,) int64
+
+    # Within-group index: stable-sort by group_ids, then run-length via
+    # segment reset. Each group's loops get consecutive indices 0, 1, 2, ...
+    sort_idx = torch.argsort(group_ids, stable=True)
+    sorted_keys = group_ids[sort_idx]
+    same_as_prev = torch.cat([
+        torch.zeros(1, dtype=torch.bool, device=device),
+        sorted_keys[1:] == sorted_keys[:-1],
+    ])
+    arange_L_t = torch.arange(L, device=device, dtype=torch.int64)
+    reset_pos_sorted = arange_L_t * (~same_as_prev).to(torch.int64)
+    last_reset_sorted = torch.cummax(reset_pos_sorted, dim=0).values
+    within_group_idx_sorted = arange_L_t - last_reset_sorted
+    within_group_idx = torch.empty(L, dtype=torch.int64, device=device)
+    within_group_idx.scatter_(0, sort_idx, within_group_idx_sorted)
+
+    # Pick the (within_group_idx[l])-th True in alive[l, :].
+    # cumsum over alive gives 1-based rank of each True; the k-th True
+    # (0-indexed) is the slot where cumsum equals k+1 AND that slot is alive.
+    cumsum_alive = torch.cumsum(alive.to(torch.int32), dim=1)  # (L, 2W) int32
+    target = (within_group_idx + 1).to(torch.int32).unsqueeze(1)  # (L, 1)
+    matches = (cumsum_alive == target) & alive  # (L, 2W) bool
+
+    # If the group size exceeds the alive-candidate count (e.g. CPU would
+    # have exhausted `used_traced`), there is no k-th True — fall back to
+    # all-zero ranks, matching CPU's fallback in `_match_loops_to_ranks`.
+    any_match = matches.any(dim=1)  # (L,) bool
+    first_idx = matches.to(torch.int32).argmax(dim=1)  # (L,) int64; 0 if no match
 
     # Gather the chosen walk ranks
     chosen_ranks = walk_rank[
         torch.arange(L, device=device), first_idx
     ]  # (L, K_max) int32
 
-    # Zero-out for loops where no candidate succeeded
+    # Zero-out for loops where no candidate was consumed
     chosen_ranks = torch.where(
-        any_alive.unsqueeze(1),
+        any_match.unsqueeze(1),
         chosen_ranks,
         torch.zeros_like(chosen_ranks),
     )
+
+    # ---- CPU fallback for loops the GPU walker could not trace ----
+    # The vectorized walker currently struggles with consecutive intra-loop
+    # duplicate edges (U-turn patterns: e0 → e0 in the s6 loop sequence). For
+    # those rare cubes, delegate to the per-cube CPU worker so ranks match
+    # the reference `_match_loops_to_ranks` output. Triggered only when a
+    # loop has no alive candidate, so fast-path correctness is untouched.
+    # Restrict fallback to OK-status cubes; loops in non-OK cubes never had
+    # alive candidates (masked by `ok_loop_mask`), so their `any_match=False`
+    # is expected and must be left at zero, matching the identity default
+    # path in `s7_rank_assign` at the top of this function.
+    from corep_fast.containers import CubeStatus as _CubeStatus
+    status_cpu_np = batch.status.cpu().numpy()
+    any_match_cpu = any_match.cpu().numpy()
+    if not any_match_cpu.all():
+        import numpy as _np
+        loop_cube_off_np = batch.loop_cube_off.cpu().numpy()
+        loop_off_np = batch.loop_edge_off.cpu().numpy()
+        loop_edge_val_np = batch.loop_edge_val.cpu().numpy()
+        ew_np_all = batch.edge_weights.cpu().numpy()
+        ut_np_all = batch.uturn_assignment.cpu().numpy()
+
+        failed_loop_ids = _np.where(~any_match_cpu)[0]
+        failed_cubes = set()
+        for lid in failed_loop_ids:
+            ci = int(_np.searchsorted(loop_cube_off_np[1:], lid, side='right'))
+            if int(status_cpu_np[ci]) == _CubeStatus.OK:
+                failed_cubes.add(ci)
+
+        chosen_ranks_cpu = chosen_ranks.cpu().numpy()  # (L, K_max) int32
+        for cube_i in failed_cubes:
+            l_lo = int(loop_cube_off_np[cube_i])
+            l_hi = int(loop_cube_off_np[cube_i + 1])
+            ew_i = ew_np_all[cube_i].tolist()
+            s6_loops = []
+            for li in range(l_lo, l_hi):
+                e_lo_l = int(loop_off_np[li])
+                e_hi_l = int(loop_off_np[li + 1])
+                s6_loops.append(loop_edge_val_np[e_lo_l:e_hi_l].tolist())
+            uturn_row = ut_np_all[cube_i]
+            if uturn_row[0, 0] == -1:
+                uturn_assign = None
+            else:
+                uturn_assign = tuple(
+                    tuple(int(x) for x in uturn_row[t]) for t in range(12)
+                )
+            _, rank_lists = _s7_rank_worker(
+                (cube_i, ew_i, s6_loops, uturn_assign)
+            )
+            for li_off, ranks in enumerate(rank_lists):
+                li = l_lo + li_off
+                for step_i, r in enumerate(ranks):
+                    chosen_ranks_cpu[li, step_i] = r
+
+        chosen_ranks = torch.from_numpy(chosen_ranks_cpu).to(device)
 
     # ---- Scatter chosen_ranks into flat loop_edge_rank tensor ----
     loop_edge_rank = torch.zeros(E, dtype=torch.int32, device=device)
