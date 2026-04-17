@@ -1,10 +1,15 @@
-"""Monkey-patch NVTX ranges around corep_fast stage entry functions.
+"""Monkey-patch instrumentation for corep_fast pipeline profiling.
 
-Must be imported BEFORE any corep_fast.* import. The `apply_*` functions are
-idempotent — calling twice re-wraps the original (not the already-wrapped).
+Two layers of instrumentation (must be applied before any corep_fast.* import):
+  1. apply_stage_nvtx()      — NVTX ranges around 7 stage entry functions.
+  2. apply_substage_events() — CUDA event timing around 11 sub-stage helpers.
 
-Design: wrap each stage entry, record attribute `_nvtx_wrapped = <name>` on the
-patched function so the smoke test can detect successful patching.
+Both apply_* are idempotent: re-calling re-wraps the true original function.
+Call dump_substage_timings() after pipeline completion to collect sub-stage ms.
+
+Patched functions carry `_nvtx_wrapped` (stage level) or `_event_wrapped`
+(sub-stage level) attributes for introspection; the original is stored on
+`_original`.
 """
 import functools
 import torch
@@ -59,6 +64,9 @@ _SUBSTAGE_ENTRIES = [
     ("corep_fast.stages.s4_face_point", "_compute_face_weights_gpu", "s4/face_weights_gpu_entry"),
     ("corep_fast.stages.s4_face_point", "_expand_pairs_gpu",         "s4/expand_pairs"),
     ("corep_fast.stages.s4_face_point", "_batch_plane_tri_with_clip","s4/plane_tri_clip"),
+    # NOTE: CPU-only (multiprocessing.Pool); CUDA event here only captures final H2D
+    # memcpy, NOT the CPU wall-time. Also normally bypassed when USE_GPU_FW_S4=1
+    # (default). Interpret total_ms ≈ 0 as "path not taken", not "fast path".
     ("corep_fast.stages.s4_face_point", "_compute_face_weights_mp",  "s4/face_weights_mp"),
     ("corep_fast.stages.s4_face_point", "_compute_component_points_gpu", "s4/component_points"),
     ("corep_fast.stages.s6_collapse",   "_fastpath_gpu_build_adjacency", "s6/fastpath_adj_build"),
@@ -102,7 +110,7 @@ def apply_substage_events():
         setattr(mod, fn_name, _make_event_wrapper(original, label))
 
 
-def dump_substage_timings() -> dict:
+def dump_substage_timings() -> dict[str, dict]:
     """Sync CUDA, compute elapsed ms per (start, end) pair; return summary dict.
 
     Returns: {label: {count, total_ms, per_call_ms: [...]}}.
