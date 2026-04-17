@@ -47,6 +47,12 @@ S7_PHASE1_GPU = os.environ.get('COREP_FAST_S7_PHASE1_GPU', '1') == '1'
 # Set COREP_FAST_S6_FASTPATH_GPU=0 to fall back to per-cube CPU MP path.
 S6_FASTPATH_GPU = os.environ.get('COREP_FAST_S6_FASTPATH_GPU', '1') == '1'
 
+# Followup W_L2L (s4): Numpy-vectorize _labels_to_list_of_lists bucket loop
+# (eliminates 275k-iter per-row Python loop, ~464ms self on T9 cProfile).
+# Enabled by default after F1-F3 parity confirmed.
+# Set COREP_FAST_LABELS_TO_LIST_VECTORIZED=0 to fall back to legacy bucket loop.
+LABELS_TO_LIST_VECTORIZED = os.environ.get('COREP_FAST_LABELS_TO_LIST_VECTORIZED', '1') == '1'
+
 
 # ---------------------------------------------------------------------------
 # Mode (debug level)
