@@ -106,3 +106,73 @@ Residual CPU time ≈ 5.35 s e2e. Top levers:
 - Clean run log:     `tmp/cpu_profile/t9_clean_wall.log`
 - cProfile run log:  `tmp/cpu_profile/driver_main_res256_final.log`
 - VRAM log:          `tmp/cpu_profile/t9_vram.log`
+
+## 4. Next-spec scope recommendations
+
+Post-W2+W4+W5 residual top-20 hotspots (from `tmp/cpu_profile/t9_final_hotspots.txt`),
+annotated with origin stage and W-coverage status:
+
+| # | self ms |  calls  | cum ms | location                                               | origin | status |
+|--:|--------:|--------:|-------:|--------------------------------------------------------|--------|--------|
+| 1 |  1648.5 |       4 | 1648.5 | `_thread.lock.acquire`                                 | s4 Stage D pool.map wait | NEW residual (W2 collapsed 19→4; W6 rejected per T7a) |
+| 2 |   999.0 |       1 | 1702.0 | `s7_rank_assign.py:1175 s7_rank_assign`                | s7     | NEW — Phase 3 Hungarian-per-cube loop, not covered by any W |
+| 3 |   513.7 |       1 | 1267.4 | `s6_collapse.py:976 s6_collapse`                       | s6     | NEW — post-tracer assembly (`np.fromiter`/concat over list-of-lists) |
+| 4 |   464.5 |       1 |  490.9 | `s4_face_point.py:966 _labels_to_list_of_lists`        | s4     | NEW — pure-Python label-bucket loop |
+| 5 |   370.6 |       1 | 1212.6 | `s4_face_point.py:411 _compute_component_points_gpu`   | s4     | GPU kernel self-time (real compute) |
+| 6 |   248.3 |  276329 |  248.3 | `ndarray.tolist`                                       | s4/s7 post-processing | NEW — per-cube conversions scattered |
+| 7 |   229.4 |       8 |  229.4 | `gc.collect`                                           | allocator | framework overhead, not algo-attributable |
+| 8 |   226.6 |  275543 |  226.6 | `ufunc.reduce` (numpy, non-lsap)                       | s7 Phase 3 inner | tied to #2 loop |
+| 9 |   206.8 |  551101 |  206.8 | `numpy.asarray`                                        | s4/s7 | scattered coercions |
+|10 |   198.3 |      58 |  198.3 | `torch._C.TensorBase.cpu`                              | s4/s7 | real D2H, 58 calls — bulk payload traffic (not Bucket A) |
+|11 |   165.1 |  275539 |  165.1 | `scipy.optimize._lsap.linear_sum_assignment`           | s7 Phase 3 | tied to #2 loop (Hungarian per cube) |
+|12 |   148.2 |       1 | 1884.9 | `s4_face_point.py:1354 _compute_face_weights_gpu`      | s4 Stage D | self is orchestration; cum = worker wait (see #1) |
+|13 |   145.1 |       1 |  145.1 | `s6_collapse.py:1158 <listcomp>`                       | s6     | post-assembly listcomp, paired with #3 |
+|14 |   105.8 |  275545 |  105.8 | `ndarray.astype`                                       | s7 Phase 3 | required by scipy float64 signature |
+|15 |   102.7 |       1 |  123.5 | `s4_face_point.py:648 _snap_centroids_to_components`   | s4     | post-UF consumer, still list-based |
+|16 |    74.7 |       1 | 3172.3 | `s4_face_point.py:66 s4_face_point`                    | s4     | top-level orchestration |
+|17 |    73.3 | 1997642 |   73.3 | `list.append`                                          | misc Python | distributed |
+|18 |    63.0 | 1935899 |   63.0 | `builtins.len`                                         | misc Python | distributed |
+|19 |    41.4 |     216 |   44.4 | `sh_clip.py:108 _emit`                                 | sh_clip | unrelated module |
+|20 |    39.0 |  275539 |  303.8 | `ndarray.sum`                                          | s7 Phase 3 | tied to #2 loop |
+
+Aggregation:
+- s7 Phase 3 Hungarian-per-cube cluster (#2 + #8 + #11 + #14 + #20) = ~1536 ms of addressable work, all gated on one 275k-iter Python loop at `s7_rank_assign.py:1175`.
+- Stage D main-thread wait (#1) = 1648 ms, 100% pure-Python BFS per T7a.
+- s6 assembly cluster (#3 + #13) = ~659 ms, Python traversal over worker list-of-lists.
+- s4 list-based consumers (#4 + #15) = ~567 ms, already-allocated structures but still per-cube Python loops.
+- Misc numpy coercion (#6 + #9 + #10 + #14) = ~759 ms cumulatively, 276k+ ndarray conversions scattered across stage boundaries — would be reclaimed by any "keep on GPU" pass that removes the CPU round-trip.
+
+### 4.1 Highest-lever candidate: s7 GPU port
+
+- `_build_adjacency_gpu` @ s7_rank_assign.py:634 — 1913 ms self (genuine GPU kernel compute)
+- `s7_rank_assign` @ s7_rank_assign.py:1175 — 999 ms self (Phase 3 Hungarian matching, 275k iterations of `scipy.optimize.linear_sum_assignment`)
+
+Both are Triton-territory. `_build_adjacency_gpu`: candidate for kernel fusion across 12×3×W scatter iterations + U-turn loop. `s7_rank_assign` Phase 3: pad cost-matrix + custom GPU Hungarian.
+
+**Estimated reward:** ~1.5–2 s additional e2e reduction. **Estimated effort:** 5–10 days (one spec, probably Triton + careful correctness validation).
+
+### 4.2 Secondary: lock.acquire residual (1648 ms)
+
+Main-thread waits on Stage D Pool.map (persistent post-W2). 100% Python-BFS (`_count_uturns`: 49.7 s across all cube-workers via GIL-holding). Three paths:
+
+- **Skip.** W2/W4/W5 already hit DoD. W6 Angle 2 (GPU BFS+UTurn) would cost 3–5 days for ~1.0–1.5 s reward — secondary to 4.1.
+- **Triton Angle 2.** GPU BFS + UTurn unblock, requires cube-batched BFS kernel. Couples with 4.1 if the same spec opens Triton.
+- **Rewrite Stage D pure-numpy.** Drop Python data structures inside `_count_uturns` / `_find_or_add_node` for numpy. Risk: doesn't fix GIL fully. ~1 day spike, uncertain outcome.
+
+Recommend bundling with 4.1 in a "s4 Stage D + s7 Phase 3 GPU spec" if both survive review.
+
+### 4.3 Shelf / deferred
+
+- `_fastpath_gpu_build_adjacency` second-pack (W4 Option A in t5a sketch) — ~10–20% of the current W4 win is still absorbed by a numpy → tensor repack post-tracer. If the consumer downstream is updated to accept CSR natively, this can be reclaimed.
+- W7 (s7 orchestration) — drilldown found no ≥200 ms mechanical candidate. Only bucket reopens if a future refactor changes s7 call patterns.
+- W6 Angle 3 (ThreadPool) — dead (GIL-holding 57.9% in Stage D). Do not revisit without first rewriting Stage D to release GIL.
+
+### 4.4 Measurement discipline notes
+
+- cProfile instrumentation inflates e2e wall by ~15–25% in this pipeline (W2 measurement showed 14.9 s cProfile vs ~8.6 s clean baseline). Future work should run clean e2e (`tmp/cpu_profile/t0_driver.py --mode default`) for authoritative numbers and use cProfile only for hotspot rank.
+- Main-thread cProfile `self` time excludes C-extension time (torch/numpy kernels). The T0 workers-only profile misread (~60 ms worker Python self) triggered a false "delete MP" pivot that was corrected by a ~15-minute decisive experiment. Future specs: cross-check worker timing with wall-clock, not cProfile alone.
+- F1-F3 regression gate required three determinism layers (SerialPool + subprocess-per-fixture + CUBLAS_WORKSPACE_CONFIG/cudnn deterministic/PYTHONHASHSEED). Cross-process bit-exactness was hard-won; preserve these env conditions in all future gates.
+
+### 4.5 Proposed next spec (one-liner)
+
+**"Stage D + s7 Phase 3 Triton port"** — target `_count_uturns` + `_build_adjacency_gpu` + Hungarian Phase 3. Expected Δ 1.5–2.5 s. Effort 7–12 days. Gate: same F1-F3 + an additional ≥1.5 s e2e reduction DoD.
