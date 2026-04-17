@@ -1042,6 +1042,8 @@ def process_geometry_vectorized(
     num_loops = (loop_end - loop_start).clamp(min=0)          # (E, 4)
     # Zero out missing slots
     num_loops = torch.where(valid_slot, num_loops, torch.zeros_like(num_loops))
+    # bucket-A-audit: load-bearing (alloc-size, bucket C in findings §2),
+    # drives torch.arange(max_loops) and .view(1, 1, max_loops) below.
     max_loops = int(num_loops.max().item()) if E > 0 else 0
 
     if max_loops == 0:
@@ -1785,6 +1787,8 @@ def _process_shared_edges_from_tensors(
         )
 
     if tri_verts_torch.shape[0] > 0:
+        # bucket-A-audit: load-bearing bulk transfer (bucket B in findings §2),
+        # feeds np.concatenate with Python MP worker outputs in Step F.
         tri_verts_torch_np = tri_verts_torch.cpu().numpy()
     else:
         tri_verts_torch_np = np.zeros((0, 3), dtype=np.float64)
