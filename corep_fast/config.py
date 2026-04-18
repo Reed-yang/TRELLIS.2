@@ -72,9 +72,9 @@ BUILD_ADJACENCY_TRITON = os.environ.get('COREP_FAST_BUILD_ADJACENCY_TRITON', '0'
 # Followup W_HG (s7): Batched brute-force Hungarian on GPU for s7 Phase 3.
 # Replaces 275k * scipy.linear_sum_assignment main-thread loop with a single
 # batched pass (brute-force enumeration over n<=5 permutations).
-# Disabled by default until Task 17 PyTorch parity confirmed.
-# Set COREP_FAST_HUNGARIAN_GPU=1 to enable batched path.
-HUNGARIAN_GPU = os.environ.get('COREP_FAST_HUNGARIAN_GPU', '0') == '1'
+# Enabled by default after Task 17/18 PyTorch parity confirmed (F1-F3 bit-exact).
+# Set COREP_FAST_HUNGARIAN_GPU=0 to fall back to scipy serial path.
+HUNGARIAN_GPU = os.environ.get('COREP_FAST_HUNGARIAN_GPU', '1') == '1'
 
 
 # ---------------------------------------------------------------------------

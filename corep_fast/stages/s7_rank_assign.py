@@ -1482,34 +1482,132 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
         else np.zeros((0, 3), dtype=np.float32)
     point_values_np = batch.point_values.cpu().numpy()
 
-    for cube_idx in ok_cube_indices:
-        l_lo = int(loop_cube_off_np[cube_idx])
-        l_hi = int(loop_cube_off_np[cube_idx + 1])
-        n_loops = l_hi - l_lo
-        if n_loops == 0:
-            continue
+    if _cfg.HUNGARIAN_GPU and len(ok_cube_indices) > 0:
+        # ---- W_HG batched path: hot 1x1 + 1xK + brute-force buckets on GPU
+        # ---- with scipy fallback for the rare hard cases.
+        from corep_fast.stages.s7_triton import hungarian_batched
 
-        p_lo = int(point_offsets_np[cube_idx])
-        p_hi = int(point_offsets_np[cube_idx + 1])
-        n_points = p_hi - p_lo
+        max_nl, max_np = 5, 8
+        B_total = len(ok_cube_indices)
 
-        if n_points == 0:
-            # No component points: identity match
-            for li_off in range(n_loops):
-                all_matches[l_lo + li_off] = li_off
-            continue
+        # Vectorize per-cube nl/npts derivation.
+        ok_idx_np = np.asarray(ok_cube_indices, dtype=np.int64)
+        l_lo_arr = loop_cube_off_np[ok_idx_np].astype(np.int64)
+        l_hi_arr = loop_cube_off_np[ok_idx_np + 1].astype(np.int64)
+        p_lo_arr = point_offsets_np[ok_idx_np].astype(np.int64)
+        p_hi_arr = point_offsets_np[ok_idx_np + 1].astype(np.int64)
+        nl_arr = (l_hi_arr - l_lo_arr).astype(np.int64)
+        np_arr = (p_hi_arr - p_lo_arr).astype(np.int64)
 
-        # Compute cost matrix in numpy (no GPU, no pickle)
-        centroids_i = loop_centroids_np[l_lo:l_hi]          # (n_loops, 3)
-        comp_pts_i = point_values_np[p_lo:p_hi]              # (n_points, 3)
-        diff = centroids_i[:, None, :] - comp_pts_i[None, :, :]
-        cost = (diff * diff).sum(axis=-1).astype(np.float64)  # (n_loops, n_points)
+        # Cost padded matrix; +inf for padded slots.
+        cost_padded = np.full((B_total, max_nl, max_np), np.inf, dtype=np.float32)
 
-        # scipy Hungarian (C-optimized)
-        row_ind, col_ind = linear_sum_assignment(cost)
-        for r, c in zip(row_ind, col_ind):
-            if r < n_loops:
-                all_matches[l_lo + int(r)] = int(c)
+        # Hot path vectorized: cubes with nl==1 AND npts==1.
+        hot_mask = (nl_arr == 1) & (np_arr == 1)
+        if hot_mask.any():
+            hi = np.nonzero(hot_mask)[0]
+            c_starts = l_lo_arr[hi]
+            p_starts = p_lo_arr[hi]
+            c_pts = loop_centroids_np[c_starts]   # (H, 3)
+            p_pts = point_values_np[p_starts]     # (H, 3)
+            d = c_pts - p_pts
+            cost_padded[hi, 0, 0] = (d * d).sum(axis=-1).astype(np.float32)
+
+        # Slow path: in-batch eligible (small) + the empty/fallback cases.
+        # Fallback set: nl > max_nl OR npts > max_np OR npts < nl.
+        fb_mask_init = (nl_arr > max_nl) | (np_arr > max_np) | (np_arr < nl_arr) | (nl_arr == 0) | (np_arr == 0)
+        # Eligible-but-not-hot mask (still goes through batched kernel):
+        eligible_other = ~fb_mask_init & ~hot_mask
+        if eligible_other.any():
+            for bi in np.nonzero(eligible_other)[0]:
+                nl = int(nl_arr[bi]); npts = int(np_arr[bi])
+                l_lo = int(l_lo_arr[bi]); p_lo = int(p_lo_arr[bi])
+                c_i = loop_centroids_np[l_lo:l_lo + nl]
+                p_i = point_values_np[p_lo:p_lo + npts]
+                diff = c_i[:, None, :] - p_i[None, :, :]
+                cost_padded[bi, :nl, :npts] = (diff * diff).sum(axis=-1).astype(np.float32)
+
+        # Send to GPU and run.
+        cost_padded_t = torch.from_numpy(cost_padded).to(device)
+        nl_t = torch.from_numpy(nl_arr).to(device)
+        np_t = torch.from_numpy(np_arr).to(device)
+        matches = hungarian_batched(cost_padded_t, nl_t, np_t, max_nl, max_np).cpu().numpy()
+
+        # Apply matches; collect cubes that need scipy fallback.
+        fallback_cubes: List[int] = []
+        for bi in range(B_total):
+            cube_idx = int(ok_idx_np[bi])
+            nl = int(nl_arr[bi])
+            npts = int(np_arr[bi])
+            l_lo = int(l_lo_arr[bi])
+            if nl == 0:
+                continue
+            if npts == 0:
+                for li_off in range(nl):
+                    all_matches[l_lo + li_off] = li_off
+                continue
+            if nl > max_nl or npts > max_np or npts < nl:
+                fallback_cubes.append(cube_idx)
+                continue
+            # Did batched defer (any -1 in valid range)?
+            if (matches[bi, :nl] == -1).any():
+                fallback_cubes.append(cube_idx)
+                continue
+            for li_off in range(nl):
+                all_matches[l_lo + li_off] = int(matches[bi, li_off])
+
+        # Scipy fallback for the rare hard cases.
+        for cube_idx in fallback_cubes:
+            l_lo = int(loop_cube_off_np[cube_idx])
+            l_hi = int(loop_cube_off_np[cube_idx + 1])
+            n_loops = l_hi - l_lo
+            if n_loops == 0:
+                continue
+            p_lo = int(point_offsets_np[cube_idx])
+            p_hi = int(point_offsets_np[cube_idx + 1])
+            n_points = p_hi - p_lo
+            if n_points == 0:
+                for li_off in range(n_loops):
+                    all_matches[l_lo + li_off] = li_off
+                continue
+            centroids_i = loop_centroids_np[l_lo:l_hi]
+            comp_pts_i = point_values_np[p_lo:p_hi]
+            diff = centroids_i[:, None, :] - comp_pts_i[None, :, :]
+            cost = (diff * diff).sum(axis=-1).astype(np.float64)
+            row_ind, col_ind = linear_sum_assignment(cost)
+            for r, c in zip(row_ind, col_ind):
+                if r < n_loops:
+                    all_matches[l_lo + int(r)] = int(c)
+    else:
+        # ---- Legacy scipy path (unchanged) ----
+        for cube_idx in ok_cube_indices:
+            l_lo = int(loop_cube_off_np[cube_idx])
+            l_hi = int(loop_cube_off_np[cube_idx + 1])
+            n_loops = l_hi - l_lo
+            if n_loops == 0:
+                continue
+
+            p_lo = int(point_offsets_np[cube_idx])
+            p_hi = int(point_offsets_np[cube_idx + 1])
+            n_points = p_hi - p_lo
+
+            if n_points == 0:
+                # No component points: identity match
+                for li_off in range(n_loops):
+                    all_matches[l_lo + li_off] = li_off
+                continue
+
+            # Compute cost matrix in numpy (no GPU, no pickle)
+            centroids_i = loop_centroids_np[l_lo:l_hi]          # (n_loops, 3)
+            comp_pts_i = point_values_np[p_lo:p_hi]              # (n_points, 3)
+            diff = centroids_i[:, None, :] - comp_pts_i[None, :, :]
+            cost = (diff * diff).sum(axis=-1).astype(np.float64)  # (n_loops, n_points)
+
+            # scipy Hungarian (C-optimized)
+            row_ind, col_ind = linear_sum_assignment(cost)
+            for r, c in zip(row_ind, col_ind):
+                if r < n_loops:
+                    all_matches[l_lo + int(r)] = int(c)
 
     # ===================================================================
     # Pack results
