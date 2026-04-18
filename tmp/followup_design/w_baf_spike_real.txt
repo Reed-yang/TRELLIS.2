@@ -1,0 +1,14 @@
+Captured 1 calls
+Call 0: N=275541
+Fast-path fraction: 0.9996 (275428/275541)
+
+Real F2 data @ N=275541, fast-frac=1.000:
+  Legacy median wall: 38.264 ms
+  Triton median wall: 95.780 ms
+  Speedup: 0.40x
+  Saved per call: -57.516 ms
+
+Fast-only parity: 4 mismatches out of 275428 cubes (frac 0.000000)
+  First mismatches: [[40690, 287, 0], [46931, 287, 0], [71568, 287, 0], [76855, 287, 0]]
+  At fast-cube[40690] node[287]: legacy=[-1, -1], triton=[224, -1]
+  PARITY (fast only): FAIL
