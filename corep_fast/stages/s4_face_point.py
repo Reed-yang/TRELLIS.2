@@ -404,6 +404,23 @@ def _find_or_add_node(nodes: list[np.ndarray], pt: np.ndarray, tol: float = 1e-8
     return len(nodes) - 1
 
 
+def _count_uturns_gpu_batched(groups):
+    """Batched GPU equivalent of _count_uturns. Returns (G,) int64 tensor.
+
+    Args:
+        groups: iterable of (segments, V0, V1, V2, cube_verts, vert_ids, edge_ids)
+            tuples — same signature as _count_uturns per group.
+
+    Returns:
+        torch.Tensor shape (G,) int64, U-turn count per group.
+
+    STUB: delegates to legacy _count_uturns per group. Real GPU impl in Task 8.
+    """
+    import torch as _torch
+    counts = [_count_uturns(*g) for g in groups]
+    return _torch.tensor(counts, dtype=_torch.int64)
+
+
 # ======================================================================
 # Part 2: Component points — GPU-batched SH clip + fan centroid + snap
 # ======================================================================
