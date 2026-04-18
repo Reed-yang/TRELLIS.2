@@ -80,7 +80,6 @@ def test_closed_loop_zero_uturn():
     assert int(result[0]) == 0
 
 
-@pytest.mark.skip(reason="Large batch stress test; enable after Task 8 real impl")
 def test_large_batch_50000():
     rng = np.random.RandomState(42)
     groups = []

@@ -412,13 +412,174 @@ def _count_uturns_gpu_batched(groups):
             tuples — same signature as _count_uturns per group.
 
     Returns:
-        torch.Tensor shape (G,) int64, U-turn count per group.
+        torch.Tensor shape (G,) int64, U-turn count per group (on CUDA device
+        if available, else CPU).
 
-    STUB: delegates to legacy _count_uturns per group. Real GPU impl in Task 8.
+    Pipeline (mirrors legacy _count_uturns):
+      Phase A — node coalescence via cdist (tol=1e-8, first-occurrence wins)
+      Phase B — scatter to build edge_mask (G, P, P) between canonical nodes
+      Phase C — label-propagation connected components (diameter-bounded iter)
+      Phase C.5 — degree + endpoint identification (degree==1 on self-canonical)
+      Phase D — endpoint -> 3 triangle-edge projection, bucket by (comp, edge_id),
+                bincount + //2 => U-turn contribution per group
     """
+    import numpy as np
     import torch as _torch
-    counts = [_count_uturns(*g) for g in groups]
-    return _torch.tensor(counts, dtype=_torch.int64)
+
+    groups = list(groups)
+    G = len(groups)
+    if G == 0:
+        return _torch.zeros(0, dtype=_torch.int64)
+
+    max_s = max((len(g[0]) for g in groups), default=0)
+    if max_s == 0:
+        return _torch.zeros(G, dtype=_torch.int64)
+    P_MAX = 2 * max_s
+
+    dev = _torch.device('cuda:0' if _torch.cuda.is_available() else 'cpu')
+
+    # ---- Pack into padded tensors ----
+    pts_cpu = np.zeros((G, P_MAX, 3), dtype=np.float64)
+    pts_valid_cpu = np.zeros((G, P_MAX), dtype=bool)
+    fv_cpu = np.zeros((G, 3, 3), dtype=np.float64)
+    ed_cpu = np.full((G, 3), -1, dtype=np.int64)
+    for gi, (segs, V0, V1, V2, cube_verts, vert_ids, edge_ids) in enumerate(groups):
+        v0i, v1i, v2i = vert_ids
+        fv_cpu[gi, 0] = cube_verts[v0i]
+        fv_cpu[gi, 1] = cube_verts[v1i]
+        fv_cpu[gi, 2] = cube_verts[v2i]
+        ed_cpu[gi] = np.asarray(edge_ids, dtype=np.int64)
+        for si, (a, b) in enumerate(segs):
+            pts_cpu[gi, 2 * si] = a
+            pts_cpu[gi, 2 * si + 1] = b
+            pts_valid_cpu[gi, 2 * si] = True
+            pts_valid_cpu[gi, 2 * si + 1] = True
+
+    pts = _torch.from_numpy(pts_cpu).to(dev)
+    pts_valid = _torch.from_numpy(pts_valid_cpu).to(dev)
+    facet_verts = _torch.from_numpy(fv_cpu).to(dev)
+    edge_ids_t = _torch.from_numpy(ed_cpu).to(dev)
+    P = P_MAX
+
+    # ---- Phase A: node coalescence (1e-8 tolerance, first-occurrence wins) ----
+    # cdist for valid pts only; padded zeros would spuriously match each other.
+    # Mask padded rows/cols by setting their pairwise distance to a huge value.
+    d = _torch.cdist(pts, pts)                                # (G, P, P) f64
+    valid_pair = pts_valid.unsqueeze(2) & pts_valid.unsqueeze(1)
+    # padded-pair distance -> large so match=False
+    d = _torch.where(valid_pair, d, _torch.full_like(d, 1.0))
+    match = (d < 1e-8)                                         # (G, P, P) bool
+
+    tri_lower = _torch.tril(_torch.ones((P, P), dtype=_torch.bool, device=dev))
+    match_lower = match & tri_lower.unsqueeze(0)
+    # For each i, smallest j<=i with match -> canonical representative slot.
+    j_ar = _torch.arange(P, device=dev, dtype=_torch.int64).view(1, 1, P).expand(G, P, P)
+    big_P = _torch.full_like(j_ar, P)
+    node_raw = _torch.where(match_lower, j_ar, big_P)
+    canonical_idx = node_raw.min(dim=-1).values                # (G, P) in [0..P]
+    # Invalid slots -> P sentinel
+    canonical_idx = _torch.where(pts_valid, canonical_idx,
+                                 _torch.full_like(canonical_idx, P))
+
+    # A slot is a "representative" iff its canonical equals its own index.
+    idx_row = _torch.arange(P, device=dev, dtype=_torch.int64).unsqueeze(0)
+    self_canonical = (canonical_idx == idx_row) & pts_valid    # (G, P)
+
+    # ---- Phase B: edge_mask between canonical-representative slots ----
+    seg_slot_a = _torch.arange(0, P, 2, device=dev, dtype=_torch.int64)   # (max_s,)
+    seg_slot_b = _torch.arange(1, P, 2, device=dev, dtype=_torch.int64)
+    c_a = canonical_idx.index_select(1, seg_slot_a)                       # (G, max_s)
+    c_b = canonical_idx.index_select(1, seg_slot_b)
+    seg_valid = pts_valid.index_select(1, seg_slot_a) & pts_valid.index_select(1, seg_slot_b)
+    seg_nontrivial = seg_valid & (c_a != c_b)                             # (G, max_s)
+
+    edge_mask = _torch.zeros((G, P, P), dtype=_torch.bool, device=dev)
+    g_idx_exp = _torch.arange(G, device=dev, dtype=_torch.int64).unsqueeze(1).expand(G, max_s)
+    # Guard canonical indices against the sentinel P (only happens on invalid segs; filtered by mask_flat)
+    c_a_safe = c_a.clamp(max=P - 1)
+    c_b_safe = c_b.clamp(max=P - 1)
+    flat = (g_idx_exp * (P * P) + c_a_safe * P + c_b_safe).reshape(-1)
+    flat_sym = (g_idx_exp * (P * P) + c_b_safe * P + c_a_safe).reshape(-1)
+    mask_flat = seg_nontrivial.reshape(-1)
+    edge_mask_flat = edge_mask.view(-1)
+    if mask_flat.any():
+        edge_mask_flat[flat[mask_flat]] = True
+        edge_mask_flat[flat_sym[mask_flat]] = True
+    edge_mask = edge_mask_flat.view(G, P, P)
+
+    # ---- Phase C: label-propagation connected components ----
+    labels = _torch.arange(P, device=dev, dtype=_torch.int64).view(1, P).expand(G, P).clone()
+    # Non-representative slots -> sentinel P so they never appear as neighbor minima.
+    labels = _torch.where(self_canonical, labels, _torch.full_like(labels, P))
+
+    max_iters = min(P + 1, 16)
+    for _ in range(max_iters):
+        # labels of j broadcast to (G, i, j): for each i, examine neighbors' labels.
+        lbl_broadcast = labels.unsqueeze(1).expand(G, P, P)
+        big_lbl = _torch.full_like(lbl_broadcast, P)
+        nbr_labels = _torch.where(edge_mask, lbl_broadcast, big_lbl)
+        min_nbr = nbr_labels.min(dim=-1).values
+        new_labels = _torch.minimum(labels, min_nbr)
+        new_labels = _torch.where(self_canonical, new_labels,
+                                  _torch.full_like(new_labels, P))
+        if _torch.equal(new_labels, labels):
+            break
+        labels = new_labels
+
+    # ---- Phase C.5: degree + endpoint identification ----
+    degree = edge_mask.sum(dim=-1)                                # (G, P) int
+    is_endpoint = (degree == 1) & self_canonical
+
+    # ---- Phase D: project endpoints to 3 facet edges + bucket per (g, comp, edge_id) ----
+    A = facet_verts[:, [0, 1, 2], :]                              # (G, 3, 3)
+    B = facet_verts[:, [1, 2, 0], :]                              # (G, 3, 3)
+    edge_vec = B - A                                              # (G, 3, 3)
+    length_sq = (edge_vec * edge_vec).sum(dim=-1)                 # (G, 3)
+    length_sq_safe = length_sq.clamp(min=1e-30)
+
+    P_minus_A = pts.unsqueeze(2) - A.unsqueeze(1)                 # (G, P, 3, 3)
+    dot_ = (P_minus_A * edge_vec.unsqueeze(1)).sum(dim=-1)        # (G, P, 3)
+    t = dot_ / length_sq_safe.unsqueeze(1)                        # (G, P, 3)
+    in_range = (t >= -1e-8) & (t <= 1.0 + 1e-8)
+    proj = A.unsqueeze(1) + t.unsqueeze(-1) * edge_vec.unsqueeze(1)   # (G, P, 3, 3)
+    dist = ((pts.unsqueeze(2) - proj) ** 2).sum(dim=-1).sqrt()    # (G, P, 3)
+    on_edge = in_range & (dist < 1e-8)
+    # Legacy skips edges with length < 1e-12 (length_sq < 1e-24).
+    degenerate_edge = (length_sq < 1e-24).unsqueeze(1).expand(G, P, 3)
+    on_edge = on_edge & ~degenerate_edge
+
+    ep_mask = is_endpoint.unsqueeze(-1).expand(G, P, 3)
+    hit_mask = ep_mask & on_edge                                  # (G, P, 3)
+
+    # If nothing hit any edge, result is all zeros.
+    if not hit_mask.any():
+        out = _torch.zeros(G, dtype=_torch.int64, device=dev)
+        return out.cpu() if dev.type == 'cuda' else out
+
+    # Flat bucket key = g * (P * max_eid) + label * max_eid + eid.
+    # edge_ids may contain any non-negative int; take max over hits only to be safe.
+    eid_b = edge_ids_t.view(G, 1, 3).expand(G, P, 3)
+    # Only real hits matter for range — mask others to 0 to compute max_eid safely.
+    max_eid = int(eid_b[hit_mask].max().item()) + 1
+    max_eid = max(max_eid, 1)
+
+    g_idx_b = _torch.arange(G, device=dev, dtype=_torch.int64).view(G, 1, 1).expand(G, P, 3)
+    lbl_b = labels.unsqueeze(-1).expand(G, P, 3)
+
+    K_per_g = P * max_eid
+    flat_key = g_idx_b * K_per_g + lbl_b * max_eid + eid_b         # (G, P, 3)
+    hit_keys = flat_key[hit_mask]
+
+    max_key = int(hit_keys.max().item()) + 1
+    counts = _torch.bincount(hit_keys, minlength=max_key)
+    uturn_contribs = counts // 2                                   # int64 floor div
+
+    bucket_arange = _torch.arange(max_key, device=dev, dtype=_torch.int64)
+    group_of_bucket = bucket_arange // K_per_g
+    per_group_uturn = _torch.zeros(G, dtype=_torch.int64, device=dev)
+    per_group_uturn.scatter_add_(0, group_of_bucket, uturn_contribs)
+
+    return per_group_uturn.cpu() if dev.type == 'cuda' else per_group_uturn
 
 
 # ======================================================================
