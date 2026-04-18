@@ -62,6 +62,11 @@ _V_OFFSETS = np.array([
     [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
 ], dtype=np.float64)
 
+# Precomputed (12, 3, 3) per-facet vertex-offset lookup.
+# FACET_V_OFFSETS[t, k, :] = _V_OFFSETS[FACET_VERTS[t][k], :].
+# Avoids materializing per-cube (G, 8, 3) cube_verts in CSR packing.
+FACET_V_OFFSETS = _V_OFFSETS[np.asarray(FACET_VERTS, dtype=np.int64)]  # (12, 3, 3) float64
+
 
 def s4_face_point(batch: CubeBatch, mesh: MeshTensors, pool=None,
                   num_workers: int | None = None,
@@ -470,9 +475,9 @@ def _count_uturns_gpu_batched_csr(
 ):
     """CSR-array batched GPU U-turn counting (production dispatch).
 
-    Avoids the per-group Python packing loop that `_count_uturns_gpu_batched`
-    incurs. Vectorizes the pack into (G, P_MAX, 3) tensors using numpy fancy
-    indexing, then reuses the shared core `_count_uturns_from_packed`.
+    Optimised CSR packing (Task 9b): all big intermediates built on GPU,
+    no per-cube (G, 8, 3) cube_verts materialisation, dtype f32 throughout.
+    Reuses the shared core `_count_uturns_from_packed`.
 
     Returns (G,) int64 torch.Tensor of U-turn counts (on the same device the
     core runs on — CPU copy happens at caller).
@@ -484,52 +489,58 @@ def _count_uturns_gpu_batched_csr(
     if G == 0:
         return _torch.zeros(0, dtype=_torch.int64)
 
-    segs_per_group = (group_off_np[1:] - group_off_np[:-1]).astype(np.int64)  # (G,)
-    max_s = int(segs_per_group.max()) if G > 0 else 0
+    # CSR offsets host-side scalar — reused below for max_s determination.
+    segs_per_group_np = (group_off_np[1:] - group_off_np[:-1]).astype(np.int64)  # (G,)
+    max_s = int(segs_per_group_np.max()) if G > 0 else 0
     if max_s == 0:
         return _torch.zeros(G, dtype=_torch.int64)
     P_MAX = 2 * max_s
 
     dev = _torch.device('cuda:0' if _torch.cuda.is_available() else 'cpu')
 
-    # ---- Vectorized packing of pts / pts_valid ----
-    seg_idx = np.arange(max_s, dtype=np.int64)                               # (max_s,)
-    # Global seg index for (g, si) = group_off[g] + si; clamp invalid to 0.
-    flat_si = group_off_np[:-1, None].astype(np.int64) + seg_idx[None, :]    # (G, max_s)
-    valid_mask_2d = seg_idx[None, :] < segs_per_group[:, None]               # (G, max_s)
-    flat_si_clamped = np.where(valid_mask_2d, flat_si, 0)
-    A_gathered = A_np[flat_si_clamped]                                        # (G, max_s, 3)
-    B_gathered = B_np[flat_si_clamped]                                        # (G, max_s, 3)
-    valid_mask_2d_exp = valid_mask_2d[:, :, None]                             # (G, max_s, 1)
+    # ---- Push raw inputs to GPU once (small + medium tensors) ----
+    # Opt C: f32 was tried first — failed F3 golden (V count 405176 vs 405214)
+    # due to f32 noise vs 1e-8 Phase-A coalescence threshold. Reverted to f64
+    # to keep F1-F3 bit-exact. Opt A + Opt B still give the bulk of the win
+    # (skip 361 MB cube_verts_all + skip numpy→GPU fancy-index pts packing).
+    A_t = _torch.from_numpy(A_np.astype(np.float64, copy=False)).to(dev, non_blocking=True)   # (S, 3) f64
+    B_t = _torch.from_numpy(B_np.astype(np.float64, copy=False)).to(dev, non_blocking=True)
+    group_off_t = _torch.from_numpy(group_off_np.astype(np.int64, copy=False)).to(dev, non_blocking=True)  # (G+1,)
+    segs_per_group_t = group_off_t[1:] - group_off_t[:-1]                                  # (G,)
 
-    pts_cpu = np.zeros((G, P_MAX, 3), dtype=np.float64)
-    pts_cpu[:, 0::2, :] = np.where(valid_mask_2d_exp, A_gathered, 0.0)
-    pts_cpu[:, 1::2, :] = np.where(valid_mask_2d_exp, B_gathered, 0.0)
+    # ---- Opt B: GPU-side pts packing ----
+    seg_idx_t = _torch.arange(max_s, device=dev, dtype=_torch.int64)                       # (max_s,)
+    flat_si_t = group_off_t[:-1, None] + seg_idx_t[None, :]                                # (G, max_s)
+    valid_mask_2d_t = seg_idx_t[None, :] < segs_per_group_t[:, None]                       # (G, max_s) bool
+    flat_si_clamped_t = _torch.where(valid_mask_2d_t, flat_si_t, _torch.zeros_like(flat_si_t))
 
-    pts_valid_cpu = np.zeros((G, P_MAX), dtype=bool)
-    pts_valid_cpu[:, 0::2] = valid_mask_2d
-    pts_valid_cpu[:, 1::2] = valid_mask_2d
+    A_gathered_t = A_t[flat_si_clamped_t]                                                  # (G, max_s, 3) f64
+    B_gathered_t = B_t[flat_si_clamped_t]                                                  # (G, max_s, 3) f64
 
-    # ---- Vectorized facet_verts + edge_ids ----
-    cube_id = (cf_np // 12).astype(np.int64)
-    facet_id = (cf_np % 12).astype(np.int64)
-    base = cube_idx_np[cube_id].astype(np.float64) * step                    # (G, 3)
-    cube_verts_all = base[:, None, :] + _V_OFFSETS[None, :, :] * step        # (G, 8, 3)
+    # Build padded (G, P_MAX, 3) directly on device.
+    pts = _torch.zeros((G, P_MAX, 3), dtype=_torch.float64, device=dev)
+    valid_mask_2d_exp = valid_mask_2d_t.unsqueeze(-1)
+    pts[:, 0::2, :] = _torch.where(valid_mask_2d_exp, A_gathered_t, _torch.zeros_like(A_gathered_t))
+    pts[:, 1::2, :] = _torch.where(valid_mask_2d_exp, B_gathered_t, _torch.zeros_like(B_gathered_t))
 
-    # FACET_VERTS / FACET_EDGES are Python lists of tuples; convert once to np.
-    facet_verts_lut = np.asarray(FACET_VERTS, dtype=np.int64)                # (12, 3)
-    facet_edges_lut = np.asarray(FACET_EDGES, dtype=np.int64)                # (12, 3)
-    v_ids_per_facet = facet_verts_lut[facet_id]                              # (G, 3)
-    e_ids_per_facet = facet_edges_lut[facet_id]                              # (G, 3)
+    pts_valid = _torch.zeros((G, P_MAX), dtype=_torch.bool, device=dev)
+    pts_valid[:, 0::2] = valid_mask_2d_t
+    pts_valid[:, 1::2] = valid_mask_2d_t
 
-    g_arange = np.arange(G, dtype=np.int64)[:, None]
-    facet_verts_cpu = cube_verts_all[g_arange, v_ids_per_facet]              # (G, 3, 3)
-    ed_cpu = e_ids_per_facet.astype(np.int64)                                # (G, 3)
+    # ---- Opt A: facet_verts via precomputed FACET_V_OFFSETS lookup (no cube_verts_all) ----
+    cf_t = _torch.from_numpy(cf_np.astype(np.int64, copy=False)).to(dev, non_blocking=True)
+    cube_id_t = cf_t // 12
+    facet_id_t = cf_t % 12
 
-    pts = _torch.from_numpy(pts_cpu).to(dev)
-    pts_valid = _torch.from_numpy(pts_valid_cpu).to(dev)
-    facet_verts = _torch.from_numpy(facet_verts_cpu).to(dev)
-    edge_ids_t = _torch.from_numpy(ed_cpu).to(dev)
+    cube_idx_t = _torch.from_numpy(cube_idx_np.astype(np.int64, copy=False)).to(dev, non_blocking=True)  # (N, 3)
+    base_t = cube_idx_t[cube_id_t].to(_torch.float64) * step                              # (G, 3) f64
+
+    fvo_t = _torch.from_numpy(FACET_V_OFFSETS.astype(np.float64, copy=False)).to(dev, non_blocking=True)  # (12, 3, 3)
+    offsets_per_group_t = fvo_t[facet_id_t]                                               # (G, 3, 3) f64
+    facet_verts = base_t[:, None, :] + offsets_per_group_t * step                         # (G, 3, 3) f64
+
+    fe_lut_t = _torch.from_numpy(np.asarray(FACET_EDGES, dtype=np.int64)).to(dev, non_blocking=True)  # (12, 3)
+    edge_ids_t = fe_lut_t[facet_id_t]                                                     # (G, 3) int64
 
     return _count_uturns_from_packed(pts, pts_valid, facet_verts, edge_ids_t)
 
