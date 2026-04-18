@@ -95,3 +95,33 @@ def test_rect_reverse_left_for_fallback(dev):
     cost[:, :3, :2] = 0.5
     out = hungarian_batched(cost, nl, npts, max_nl=5, max_np=8)
     assert (out == -1).all()
+
+
+def test_tie_detection_leaves_minus_one(dev):
+    """Cost matrix with exact ties — hungarian_batched must leave -1 for caller fallback."""
+    B = 2
+    cost_padded = torch.full((B, 5, 8), float('inf'), dtype=torch.float32, device=dev)
+    nl = torch.tensor([2, 2], dtype=torch.int64, device=dev)
+    npts = torch.tensor([2, 2], dtype=torch.int64, device=dev)
+    # Cube 0: tied — both [0,1] and [1,0] permutations have cost 1.0+1.0=2.0
+    cost_padded[0, 0, 0] = 1.0; cost_padded[0, 0, 1] = 1.0
+    cost_padded[0, 1, 0] = 1.0; cost_padded[0, 1, 1] = 1.0
+    # Cube 1: no tie — optimal is [0,1] with cost 0+0, alt [1,0] is 1+1
+    cost_padded[1, 0, 0] = 0.0; cost_padded[1, 0, 1] = 1.0
+    cost_padded[1, 1, 0] = 1.0; cost_padded[1, 1, 1] = 0.0
+
+    out = hungarian_batched(cost_padded, nl, npts, max_nl=5, max_np=8)
+    # Cube 0 tied — leave -1 for scipy fallback
+    assert (out[0, :2] == -1).all(), f"Cube 0 should be -1 (tie detected), got {out[0].tolist()}"
+    # Cube 1 not tied — proper assignment
+    assert out[1, 0].item() == 0, f"Cube 1 row 0 should be col 0, got {out[1, 0].item()}"
+    assert out[1, 1].item() == 1, f"Cube 1 row 1 should be col 1, got {out[1, 1].item()}"
+
+
+def test_empty_batch(dev):
+    """B=0 should return empty tensor without error."""
+    cost = torch.empty((0, 5, 8), dtype=torch.float32, device=dev)
+    nl = torch.empty(0, dtype=torch.int64, device=dev)
+    npts = torch.empty(0, dtype=torch.int64, device=dev)
+    out = hungarian_batched(cost, nl, npts, max_nl=5, max_np=8)
+    assert out.shape == (0, 5)

@@ -79,6 +79,15 @@ def test_empty_rows():
     assert result == [[], [], [], [], []]
 
 
+def test_n_zero_returns_empty_list():
+    """N=0 (zero rows) returns empty list without error."""
+    dev = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    labels = torch.empty((0, 10), dtype=torch.int64, device=dev)
+    fids = torch.empty((0, 10), dtype=torch.int64, device=dev)
+    counts = torch.empty(0, dtype=torch.int64, device=dev)
+    assert _labels_to_list_of_lists(labels, fids, counts) == []
+
+
 def test_all_same_label_one_component_per_row():
     dev = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     N, M = 4, 5

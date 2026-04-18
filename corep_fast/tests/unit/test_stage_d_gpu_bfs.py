@@ -45,6 +45,13 @@ def test_matches_legacy_random_100_groups():
             f"group {i}: gpu={int(gpu_result[i])} vs legacy={groups_legacy[i]}"
 
 
+def test_empty_groups_list():
+    """G=0 should return empty tensor."""
+    out = _count_uturns_gpu_batched([])
+    assert out.shape == (0,)
+    assert out.dtype == torch.int64
+
+
 def test_zero_segments_group_zero_uturn():
     empty = [([], np.zeros(3), np.array([1.,0,0]), np.array([0,1.,0]),
               np.zeros((8, 3)), (0,1,2), (0,1,2))]
