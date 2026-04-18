@@ -56,6 +56,13 @@ S6_FASTPATH_GPU = os.environ.get('COREP_FAST_S6_FASTPATH_GPU', '1') == '1'
 # Set COREP_FAST_LABELS_TO_LIST_VECTORIZED=1 to enable the vectorized path.
 LABELS_TO_LIST_VECTORIZED = os.environ.get('COREP_FAST_LABELS_TO_LIST_VECTORIZED', '0') == '1'
 
+# Followup W_SD (s4): Stage D GPU BFS + U-turn counting. Eliminates per-cube
+# Python BFS in _p2_uturn_worker (~49s worker wall over 275k cubes) by running
+# on GPU in a single batched pass. Target: ~100ms GPU, -0.8~1.5s wall.
+# Enabled by default after F1-F3 parity + determinism audit pass.
+# Set COREP_FAST_STAGE_D_GPU=0 to fall back to CPU MP Pool.
+STAGE_D_GPU = os.environ.get('COREP_FAST_STAGE_D_GPU', '0') == '1'
+
 
 # ---------------------------------------------------------------------------
 # Mode (debug level)

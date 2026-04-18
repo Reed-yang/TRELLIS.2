@@ -1,0 +1,5 @@
+groups = 1881777
+segs/group: min=1 max=5 mean=1.06 p50=1 p95=2 p99=2
+nodes/group: min=2 max=7 mean=2.06 p50=2 p95=3 p99=3
+P_MAX (= 2 * max_segs) = 10
+(G, P, P) float64 bytes = 1,505,421,600 bytes = 1.40 GB
