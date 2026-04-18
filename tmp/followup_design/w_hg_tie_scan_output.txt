@@ -1,0 +1,35 @@
+
+=== F2 (icosphere s3 @ res=256) ===
+Phase 3 calls: 275539
+Brute-force enumerated: 100000 (cap=100000)
+[truncated_at_100000]
+Skipped (out of brute-force scope nl>5 or npts>8): 0
+Rect-reverse (npts < nl, must scipy-fallback): 13
+With ties (multiple permutations achieve min cost): 0
+Tie pct (over brute-enumerated): 0.0000%
+Matrix shape distribution:
+  nl: min=1 max=2 p50=1 p99=1 p999=1
+  npts: min=1 max=1 p50=1 p99=1 p999=1
+  cubes with nl > 5 (out of brute-force scope): 0
+  cubes with npts > 8: 0
+  shape histogram (nl<=5, npts<=8):
+    nl=1 npts=1: 275526  (99.9953%)
+    nl=2 npts=1: 13  (0.0047%)
+
+=== F3 (triple icosphere @ res=128, multi-loop path) ===
+Phase 3 calls: 113607
+Brute-force enumerated: 100000 (cap=100000)
+[truncated_at_100000]
+Skipped (out of brute-force scope nl>5 or npts>8): 0
+Rect-reverse (npts < nl, must scipy-fallback): 13
+With ties (multiple permutations achieve min cost): 0
+Tie pct (over brute-enumerated): 0.0000%
+Matrix shape distribution:
+  nl: min=1 max=2 p50=1 p99=1 p999=1
+  npts: min=1 max=2 p50=1 p99=1 p999=1
+  cubes with nl > 5 (out of brute-force scope): 0
+  cubes with npts > 8: 0
+  shape histogram (nl<=5, npts<=8):
+    nl=1 npts=1: 113592  (99.9868%)
+    nl=2 npts=1: 13  (0.0114%)
+    nl=2 npts=2: 2  (0.0018%)
