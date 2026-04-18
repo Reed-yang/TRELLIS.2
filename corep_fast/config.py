@@ -63,6 +63,19 @@ LABELS_TO_LIST_VECTORIZED = os.environ.get('COREP_FAST_LABELS_TO_LIST_VECTORIZED
 # Set COREP_FAST_STAGE_D_GPU=0 to fall back to CPU MP Pool.
 STAGE_D_GPU = os.environ.get('COREP_FAST_STAGE_D_GPU', '1') == '1'
 
+# Followup W_BAF (s7): Triton kernel fusion for _build_adjacency_gpu.
+# Replaces 12*3*W=576 Python-loop scatter launches with single fused kernel.
+# Disabled by default until Task 11 spike confirms wall-time gain.
+# Set COREP_FAST_BUILD_ADJACENCY_TRITON=1 to enable Triton path.
+BUILD_ADJACENCY_TRITON = os.environ.get('COREP_FAST_BUILD_ADJACENCY_TRITON', '0') == '1'
+
+# Followup W_HG (s7): Batched brute-force Hungarian on GPU for s7 Phase 3.
+# Replaces 275k * scipy.linear_sum_assignment main-thread loop with a single
+# batched pass (brute-force enumeration over n<=5 permutations).
+# Disabled by default until Task 17 PyTorch parity confirmed.
+# Set COREP_FAST_HUNGARIAN_GPU=1 to enable batched path.
+HUNGARIAN_GPU = os.environ.get('COREP_FAST_HUNGARIAN_GPU', '0') == '1'
+
 
 # ---------------------------------------------------------------------------
 # Mode (debug level)
