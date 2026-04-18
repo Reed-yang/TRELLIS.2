@@ -1514,10 +1514,17 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
             cost_padded[hi, 0, 0] = (d * d).sum(axis=-1).astype(np.float32)
 
         # Slow path: in-batch eligible (small) + the empty/fallback cases.
-        # Fallback set: nl > max_nl OR npts > max_np OR npts < nl.
-        fb_mask_init = (nl_arr > max_nl) | (np_arr > max_np) | (np_arr < nl_arr) | (nl_arr == 0) | (np_arr == 0)
+        # Cubes excluded from the batched kernel: oversized / rect-reverse shapes
+        # plus the nl=0 and npts=0 degenerate cases. The later classification
+        # block (Case A / B / C below) further splits these into:
+        #   - shape_invalid_m  -> scipy fallback
+        #   - np_zero_m        -> identity assignment (Case A, no-op on kernel)
+        #   - nl_zero_m        -> nothing to write
+        # Kept named broadly so the mask's role (exclusion from the batched
+        # kernel, not just "fallbacks") is clear.
+        excluded_from_batch_mask = (nl_arr > max_nl) | (np_arr > max_np) | (np_arr < nl_arr) | (nl_arr == 0) | (np_arr == 0)
         # Eligible-but-not-hot mask (still goes through batched kernel):
-        eligible_other = ~fb_mask_init & ~hot_mask
+        eligible_other = ~excluded_from_batch_mask & ~hot_mask
         if eligible_other.any():
             for bi in np.nonzero(eligible_other)[0]:
                 nl = int(nl_arr[bi]); npts = int(np_arr[bi])
