@@ -1,8 +1,18 @@
-"""Triton kernels for s7_rank_assign stage.
+"""GPU kernels for s7_rank_assign stage.
 
-W_BAF: single fused kernel replacing the 12*3*W Python-loop scatter dispatch
-in _build_adjacency_gpu. Spike phase covers fast-path cubes only
-(uturn_assignment[:, 0, 0] == -1 -> no U-turn correction).
+Primary (production) content:
+  - hungarian_batched: PyTorch batched brute-force Hungarian, used by the Phase 3
+    integration in s7_rank_assign.py when HUNGARIAN_GPU=1. Hot-path (1x1, 99.99%
+    of cubes) is vectorized argmin; brute-force enumeration for (nl, npts) up to
+    5x8; tie / rect-reverse / oversize cases return -1 for caller scipy fallback.
+
+Retained-but-unwired content (future retry evidence):
+  - _build_adj_fast_kernel (Triton): spike kernel from W_BAF task. Descoped after
+    real-data measurement showed (a) 2.5x SLOWER than legacy PyTorch on real F2
+    data (sparse fast-path lets legacy mask.any() early-exit, which kernel cannot
+    replicate), (b) atomic 2-slot race requiring atomic_cas rework. Kept as code
+    evidence for a future engineer; flag BUILD_ADJACENCY_TRITON defaults to '0'
+    and is NOT referenced in any call site. See logs/findings_w_baf_descope.md.
 """
 from __future__ import annotations
 import torch
