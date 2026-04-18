@@ -1533,28 +1533,79 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
         np_t = torch.from_numpy(np_arr).to(device)
         matches = hungarian_batched(cost_padded_t, nl_t, np_t, max_nl, max_np).cpu().numpy()
 
-        # Apply matches; collect cubes that need scipy fallback.
+        # ---- Vectorized apply phase (Task 18b) ----
+        # Classify cubes into hot / valid / invalid shape / npts-zero / nl-zero
+        # using boolean masks of length B_total, then do bulk fancy assignment.
+        #
+        # Convert all_matches to a numpy array once for vectorized writes;
+        # convert back to list at the end so the tail packing logic is
+        # unchanged.
+        all_matches_np = np.asarray(all_matches, dtype=np.int64)
+
+        # Shape classification masks (all length B_total).
+        nl_zero_m = (nl_arr == 0)
+        np_zero_m = (np_arr == 0) & ~nl_zero_m
+        shape_invalid_m = (
+            (nl_arr > max_nl) | (np_arr > max_np) | (np_arr < nl_arr)
+        ) & ~nl_zero_m & ~np_zero_m
+        shape_valid_m = ~nl_zero_m & ~np_zero_m & ~shape_invalid_m
+
+        # For shape_valid rows, detect "any -1" in the first nl slots (tie).
+        # Vectorize via arange mask: position < nl_arr[bi].
+        if shape_valid_m.any():
+            valid_idx = np.nonzero(shape_valid_m)[0]
+            pos = np.arange(max_nl, dtype=np.int64)
+            in_range = pos[None, :] < nl_arr[valid_idx, None]    # (M, max_nl)
+            has_sentinel = ((matches[valid_idx] == -1) & in_range).any(axis=1)
+            tie_rows = valid_idx[has_sentinel]
+            apply_rows = valid_idx[~has_sentinel]
+        else:
+            tie_rows = np.empty(0, dtype=np.int64)
+            apply_rows = np.empty(0, dtype=np.int64)
+
+        # Case A: npts == 0 (and nl > 0) → identity match.
+        # For each such row, write all_matches[l_lo + li_off] = li_off for li_off in range(nl).
+        if np_zero_m.any():
+            rows = np.nonzero(np_zero_m)[0]
+            # repeat l_lo by nl; add cumulative offsets 0..nl-1 within each group.
+            nl_here = nl_arr[rows]
+            l_lo_here = l_lo_arr[rows]
+            # Build the full destination index array.
+            total = int(nl_here.sum())
+            if total > 0:
+                # Flat offsets via cumsum: for each row, [0, 1, ..., nl-1].
+                ends = np.cumsum(nl_here)
+                starts = ends - nl_here
+                # li_off = arange(total) - starts[row_of_flat] — compute via repeat.
+                row_of_flat = np.repeat(np.arange(len(rows), dtype=np.int64), nl_here)
+                li_off = np.arange(total, dtype=np.int64) - starts[row_of_flat]
+                dst = l_lo_here[row_of_flat] + li_off
+                all_matches_np[dst] = li_off
+
+        # Case B: shape_valid & no tie → apply matches[bi, :nl].
+        # 5-iter outer loop over li_off (max_nl = 5), bulk vector write per slot.
+        if apply_rows.size > 0:
+            nl_ap = nl_arr[apply_rows]
+            l_lo_ap = l_lo_arr[apply_rows]
+            for li_off in range(max_nl):
+                active = (li_off < nl_ap)
+                if not active.any():
+                    # All remaining li_off slots also empty (mask is monotone).
+                    break
+                rows_i = apply_rows[active]
+                dst = l_lo_ap[active] + li_off
+                all_matches_np[dst] = matches[rows_i, li_off]
+
+        # Case C: shape_invalid OR tie → scipy fallback.
+        # Build fallback list via cube indices.
         fallback_cubes: List[int] = []
-        for bi in range(B_total):
-            cube_idx = int(ok_idx_np[bi])
-            nl = int(nl_arr[bi])
-            npts = int(np_arr[bi])
-            l_lo = int(l_lo_arr[bi])
-            if nl == 0:
-                continue
-            if npts == 0:
-                for li_off in range(nl):
-                    all_matches[l_lo + li_off] = li_off
-                continue
-            if nl > max_nl or npts > max_np or npts < nl:
-                fallback_cubes.append(cube_idx)
-                continue
-            # Did batched defer (any -1 in valid range)?
-            if (matches[bi, :nl] == -1).any():
-                fallback_cubes.append(cube_idx)
-                continue
-            for li_off in range(nl):
-                all_matches[l_lo + li_off] = int(matches[bi, li_off])
+        if shape_invalid_m.any():
+            fallback_cubes.extend(ok_idx_np[shape_invalid_m].tolist())
+        if tie_rows.size > 0:
+            fallback_cubes.extend(ok_idx_np[tie_rows].tolist())
+
+        # Convert back to list for downstream torch.tensor(...) in pack step.
+        all_matches = all_matches_np.tolist()
 
         # Scipy fallback for the rare hard cases.
         for cube_idx in fallback_cubes:

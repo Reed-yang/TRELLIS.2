@@ -1,0 +1,24 @@
+# Top-20 by self-time from tmp/cpu_profile/results_main/main_thread_res256.prof
+
+rank    self_ms     cum_ms    calls  function @ file:line
+----------------------------------------------------------------------------------------------------
+   1      552.3     1529.7        1  s6_collapse @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:976
+   2      455.5      487.6        1  _labels_to_list_of_lists @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:1259
+   3      401.7      401.7   276331  <method 'tolist' of 'numpy.ndarray' objects> @ ~:0
+   4      370.9     1207.3        1  _compute_component_points_gpu @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:704
+   5      299.7      359.0        1  _count_uturns_from_packed @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:548
+   6      284.5      284.5        8  <built-in method gc.collect> @ ~:0
+   7      235.1      425.5        1  s7_rank_assign @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s7_rank_assign.py:1175
+   8      222.7      222.7   551104  <built-in method numpy.asarray> @ ~:0
+   9      219.5      219.5       61  <method 'cpu' of 'torch._C.TensorBase' objects> @ ~:0
+  10      177.9      177.9        1  <listcomp> @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:1158
+  11      102.5      123.8        1  _snap_centroids_to_components @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:941
+  12       75.3       75.3  1997642  <method 'append' of 'list' objects> @ ~:0
+  13       67.2       67.2  1935899  <built-in method builtins.len> @ ~:0
+  14       47.5       47.5      296  <method 'to' of 'torch._C.TensorBase' objects> @ ~:0
+  15       40.9       43.8      216  _emit @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/geom/sh_clip.py:108
+  16       37.0       37.0       36  <method 'astype' of 'numpy.ndarray' objects> @ ~:0
+  17       36.1      158.9        1  <listcomp> @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:1216
+  18       35.1     4139.9        1  run_pipeline @ /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/cpu_profile/driver_main.py:28
+  19       33.1      102.7        2  <built-in method numpy.fromiter> @ ~:0
+  20       32.2       38.2        1  _build_adjacency_gpu @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s7_rank_assign.py:634
