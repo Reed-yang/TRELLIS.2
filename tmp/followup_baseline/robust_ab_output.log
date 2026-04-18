@@ -1,0 +1,77 @@
+=== Robust A/B benchmark on 116 GPU 4 — 2026-04-18T05:29:59Z ===
+load_before=13.19 13.06 12.19 8/4335 787558
+
+--- Round 1 / A (all followup flags OFF; baseline-equivalent) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=5.391s V=551079 F=1102152
+[trial 2/3] mode=default wall=6.215s V=551079 F=1102152
+[trial 3/3] mode=default wall=5.922s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=13.36 13.05 12.21 11/4340 789641
+
+--- Round 1 / B (production: STAGE_D_GPU=1 + HUNGARIAN_GPU=1) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=2.921s V=551079 F=1102152
+[trial 2/3] mode=default wall=3.195s V=551079 F=1102152
+[trial 3/3] mode=default wall=3.156s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=11.83 12.72 12.12 6/4339 791206
+
+--- Round 2 / A (all followup flags OFF; baseline-equivalent) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=5.763s V=551079 F=1102152
+[trial 2/3] mode=default wall=5.539s V=551079 F=1102152
+[trial 3/3] mode=default wall=5.419s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=21.49 15.17 12.96 15/4523 794038
+
+--- Round 2 / B (production: STAGE_D_GPU=1 + HUNGARIAN_GPU=1) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=2.973s V=551079 F=1102152
+[trial 2/3] mode=default wall=3.082s V=551079 F=1102152
+[trial 3/3] mode=default wall=3.205s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=22.58 15.78 13.20 40/4547 795422
+
+--- Round 3 / A (all followup flags OFF; baseline-equivalent) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=5.342s V=551079 F=1102152
+[trial 2/3] mode=default wall=5.902s V=551079 F=1102152
+[trial 3/3] mode=default wall=5.222s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=50.91 22.76 15.57 8/4331 797986
+
+--- Round 3 / B (production: STAGE_D_GPU=1 + HUNGARIAN_GPU=1) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=3.291s V=551079 F=1102152
+[trial 2/3] mode=default wall=3.188s V=551079 F=1102152
+[trial 3/3] mode=default wall=2.988s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=41.27 22.01 15.44 9/4334 799556
+
+--- Round 4 / A (all followup flags OFF; baseline-equivalent) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=5.661s V=551079 F=1102152
+[trial 2/3] mode=default wall=5.997s V=551079 F=1102152
+[trial 3/3] mode=default wall=5.718s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=41.37 23.70 16.20 8/4330 802555
+
+--- Round 4 / B (production: STAGE_D_GPU=1 + HUNGARIAN_GPU=1) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=3.069s V=551079 F=1102152
+[trial 2/3] mode=default wall=3.153s V=551079 F=1102152
+[trial 3/3] mode=default wall=2.981s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=34.11 22.97 16.08 7/4333 804137
+
+=== done 2026-04-18T05:32:53Z ===
+load_after=34.11 22.97 16.08 6/4333 804139
+A (all-flags-OFF)    N=12  mean=5.6741s  median=5.6893s  stdev=0.3012s  min=5.222  max=6.215
+B (production)       N=12  mean=3.1002s  median=3.1175s  stdev=0.1154s  min=2.921  max=3.291
+Δ(B-A) mean   = -2.5739s (negative = B faster)
+Δ(B-A) median = -2.5718s
+Welch t = -27.646  (|t|>2 means stat-significant at 95% CI)
+
+A all: [5.391, 6.215, 5.922, 5.763, 5.539, 5.419, 5.342, 5.902, 5.222, 5.661, 5.997, 5.718]
+B all: [2.921, 3.195, 3.156, 2.973, 3.082, 3.205, 3.291, 3.188, 2.988, 3.069, 3.153, 2.981]
