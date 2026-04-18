@@ -627,8 +627,10 @@ def _count_uturns_from_packed(pts, pts_valid, facet_verts, edge_ids_t):
     # Non-representative slots -> sentinel P so they never appear as neighbor minima.
     labels = _torch.where(self_canonical, labels, _torch.full_like(labels, P))
 
-    max_iters = min(P + 1, 16)
-    for _ in range(max_iters):
+    # Diameter of a connected graph on P nodes is at most P-1, so P iterations
+    # suffice to propagate the minimum label to every connected component.
+    max_iters = P
+    for _it in range(max_iters):
         # labels of j broadcast to (G, i, j): for each i, examine neighbors' labels.
         lbl_broadcast = labels.unsqueeze(1).expand(G, P, P)
         big_lbl = _torch.full_like(lbl_broadcast, P)
@@ -640,6 +642,13 @@ def _count_uturns_from_packed(pts, pts_valid, facet_verts, edge_ids_t):
         if _torch.equal(new_labels, labels):
             break
         labels = new_labels
+    else:
+        # Loop completed without hitting the convergence break — labels are
+        # possibly unconverged, which would produce wrong U-turn counts.
+        raise RuntimeError(
+            f"W_SD label-propagation did not converge in {max_iters} iterations "
+            f"for P={P}. Increase bound or investigate graph structure."
+        )
 
     # ---- Phase C.5: degree + endpoint identification ----
     degree = edge_mask.sum(dim=-1)                                # (G, P) int

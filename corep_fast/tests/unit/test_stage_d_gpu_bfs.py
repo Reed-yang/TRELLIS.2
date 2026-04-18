@@ -80,6 +80,33 @@ def test_closed_loop_zero_uturn():
     assert int(result[0]) == 0
 
 
+def test_max_s_convergence():
+    """n_segs=8 (P=16) chain of unique endpoints — graph diameter ~ P-1.
+
+    Verifies the label-propagation loop cap (now P, not 16) handles groups
+    where max_s >= 8. Constructs a chain of 8 segments laid along the V0-V1
+    edge (so endpoints coalesce pairwise into a connected chain on the edge)
+    and compares to the legacy reference.
+    """
+    V0 = np.array([0.0, 0.0, 0.0])
+    V1 = np.array([1.0, 0.0, 0.0])
+    V2 = np.array([0.0, 1.0, 0.0])
+    # 8 segments forming a chain along the V0-V1 edge, each sharing an
+    # endpoint with the next (e.g. (p0,p1), (p1,p2), ..., (p7,p8)).
+    xs = np.linspace(0.05, 0.95, 9)
+    segs = [
+        (np.array([xs[i], 0.0, 0.0]), np.array([xs[i + 1], 0.0, 0.0]))
+        for i in range(8)
+    ]
+    cube_verts = np.stack([V0, V1, V2, V0+V1, V0+V2, V1+V2, V0+V1+V2, V0+V1-V2])
+    group = (segs, V0, V1, V2, cube_verts, (0, 1, 2), (10, 20, 30))
+    legacy = _count_uturns(*group)
+    result = _count_uturns_gpu_batched([group])
+    assert result.shape == (1,)
+    assert int(result[0]) == legacy, \
+        f"max_s=8 chain: gpu={int(result[0])} vs legacy={legacy}"
+
+
 def test_large_batch_50000():
     rng = np.random.RandomState(42)
     groups = []
