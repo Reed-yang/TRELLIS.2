@@ -9,4 +9,4 @@ corep_fast/tests/regression/test_cpu_worker_optim.py::test_golden_snapshot[F1] P
 corep_fast/tests/regression/test_cpu_worker_optim.py::test_golden_snapshot[F2] PASSED [ 66%]
 corep_fast/tests/regression/test_cpu_worker_optim.py::test_golden_snapshot[F3] PASSED [100%]
 
-======================== 3 passed in 168.36s (0:02:48) =========================
+============================== 3 passed in 24.23s ==============================

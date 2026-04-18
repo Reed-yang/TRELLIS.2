@@ -13,7 +13,7 @@
 | 3 | F1-F3 bit-exact on HEAD | 3/3 | 3/3 @ `7c43f64` | **PASS** |
 | 4 | e2e wall @ res=256 | ≤ 3.2 s | **3.118 s** (24-trial median) | **PASS** (0.082 s under target) |
 | 5 | cProfile top-3 ≠ app code | yes | top-3 still app code (`s7_rank_assign` 235, `s6_collapse` 538, `_labels_to_list_of_lists` 473) but the Phase-3 apply loop dropped out of top-20 entirely | PARTIAL PASS |
-| 6 | VRAM peak ≤ 6187 MB | — | not re-measured post-W_HG; no bulk allocations added vs anchor | UNMEASURED |
+| 6 | VRAM peak ≤ 6187 MB (spec §3.4 = baseline 5687 + 500 MB) | ≤ +500 MB Δ vs T0 | **peak_alloc=5304.5 MB** (Δ=+0.2 MB vs T0 5304.3); peak_reserved=31044.0 MB (vs T0 12406.0, +18638 MB reserved-only) | **PASS** on alloc; reserved jump flagged as informational |
 | 7 | nsys GPU util ≥ 30 % | ≥ 30 % | not captured | UNMEASURED |
 
 ## Definitive wall benchmark (robust 24-trial A/B)
@@ -69,6 +69,27 @@ Hotspot transitions (single cProfile run at HEAD `7c43f64`, driver_main):
 | `numpy.any` (Phase 3 tie-check) | — | 275 | dropped from top-20 |
 | `numpy.reduce` (Phase 3 classify) | — | 196 | dropped from top-20 |
 | `numpy.tolist` (various) | 412 | 412 | 402 (non-s7 origin) |
+
+## VRAM measurement at HEAD `7997112` (post-review cleanup)
+
+Measured on 116 GPU 4 via `tmp/vram_peak_head_116.sh` (icosphere subdiv=3 r=0.4 res=256,
+two runs: warmup + clean, using `torch.cuda.reset_peak_memory_stats()`):
+
+| Metric | T0 baseline (d0f6bf5) | HEAD post-cleanup | Δ |
+|---|---:|---:|---:|
+| peak_alloc_MB | 5304.3 | **5304.5** | **+0.2** (noise) |
+| peak_reserved_MB | 12406.0 | 31044.0 | +18638 (allocator arena growth) |
+
+Spec §3.4 DoD is expressed in terms of allocated memory (the authoritative user-facing
+metric). **alloc Δ = +0.2 MB is well under the +500 MB budget → PASS.**
+
+The reserved jump (2.5× larger arena) is flagged for transparency: it is the caching
+allocator holding more freed blocks, not additional live tensors. At 31 GB on an
+80 GB H100 this is still far from a fragmentation concern; if it matters in a future
+constrained-VRAM setting, `torch.cuda.empty_cache()` or `PYTORCH_CUDA_ALLOC_CONF`
+would reclaim it. No follow-up required at this time.
+
+Raw log: `tmp/followup_baseline/vram_peak_head.log`.
 
 ## Gate for Phase 3 (if pursued)
 

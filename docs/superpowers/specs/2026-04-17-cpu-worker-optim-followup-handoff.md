@@ -54,7 +54,7 @@
 | F1-F3 bit-exact | 3/3 | 3/3 | PASS |
 | Phase-2 wall ≤ 3.2 s | yes | **3.118 s** | **PASS** (0.082 s under target) |
 | cProfile top-3 ≠ app code | yes | top-3 app code, but Phase 3 apply loop eliminated | PARTIAL |
-| VRAM ≤ +500 MB | yes | not re-measured, no bulk allocs added | UNMEASURED |
+| VRAM ≤ +500 MB (alloc) | yes | **peak_alloc=5304.5 MB (Δ=+0.2 MB vs T0 5304.3)**; peak_reserved=31044.0 MB (+18638 MB arena-only, informational) — see `tmp/followup_baseline/vram_peak_head.log` | **PASS** |
 | nsys GPU util ≥ 30 % | ≥ 30 % | not captured | UNMEASURED |
 
 ---
