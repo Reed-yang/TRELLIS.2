@@ -1,0 +1,22 @@
+rank    self_ms     cum_ms      calls  function @ file:line
+----------------------------------------------------------------------------------------------------
+   1     1063.6     1479.9          1  _count_uturns_gpu_batched_csr @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:463
+   2     1005.9     1724.1          1  s7_rank_assign @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s7_rank_assign.py:1175
+   3      516.1     1320.2          1  s6_collapse @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:976
+   4      446.6      480.5          1  _labels_to_list_of_lists @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:1248
+   5      375.3     1221.8          1  _compute_component_points_gpu @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:693
+   6      307.8      307.8     276329  <method 'tolist' of 'numpy.ndarray' objects> @ ~:0
+   7      279.7      327.2          1  _count_uturns_from_packed @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:537
+   8      242.0      242.0          8  <built-in method gc.collect> @ ~:0
+   9      233.4      233.4         60  <method 'cpu' of 'torch._C.TensorBase' objects> @ ~:0
+  10      231.2      231.2     275544  <method 'reduce' of 'numpy.ufunc' objects> @ ~:0
+  11      203.7      203.7     551103  <built-in method numpy.asarray> @ ~:0
+  12      161.1      161.1     275539  <built-in method scipy.optimize._lsap.linear_sum_assignment> @ ~:0
+  13      146.5      146.5     275554  <method 'astype' of 'numpy.ndarray' objects> @ ~:0
+  14      128.9      128.9          1  <listcomp> @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:1158
+  15      112.1      134.7          1  _snap_centroids_to_components @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:930
+  16       82.3       82.3        289  <method 'to' of 'torch._C.TensorBase' objects> @ ~:0
+  17       80.4       80.4    1997642  <method 'append' of 'list' objects> @ ~:0
+  18       65.6       65.6    1935897  <built-in method builtins.len> @ ~:0
+  19       42.7      315.5     275539  <method 'sum' of 'numpy.ndarray' objects> @ ~:0
+  20       42.5      272.8     275539  _sum @ /mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/lib/python3.10/site-packages/numpy/_core/_methods.py:50

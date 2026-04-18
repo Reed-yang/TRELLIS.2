@@ -415,13 +415,10 @@ def _count_uturns_gpu_batched(groups):
         torch.Tensor shape (G,) int64, U-turn count per group (on CUDA device
         if available, else CPU).
 
-    Pipeline (mirrors legacy _count_uturns):
-      Phase A — node coalescence via cdist (tol=1e-8, first-occurrence wins)
-      Phase B — scatter to build edge_mask (G, P, P) between canonical nodes
-      Phase C — label-propagation connected components (diameter-bounded iter)
-      Phase C.5 — degree + endpoint identification (degree==1 on self-canonical)
-      Phase D — endpoint -> 3 triangle-edge projection, bucket by (comp, edge_id),
-                bincount + //2 => U-turn contribution per group
+    This entrypoint does the Python-side pack of per-group tuples into padded
+    tensors, then dispatches to the shared GPU core `_count_uturns_from_packed`.
+    Unit tests hit this path (G up to ~50k). Production (G ~1.88M) should use
+    `_count_uturns_gpu_batched_csr` to avoid the per-group Python loop.
     """
     import numpy as np
     import torch as _torch
@@ -459,7 +456,114 @@ def _count_uturns_gpu_batched(groups):
     pts_valid = _torch.from_numpy(pts_valid_cpu).to(dev)
     facet_verts = _torch.from_numpy(fv_cpu).to(dev)
     edge_ids_t = _torch.from_numpy(ed_cpu).to(dev)
-    P = P_MAX
+
+    return _count_uturns_from_packed(pts, pts_valid, facet_verts, edge_ids_t)
+
+
+def _count_uturns_gpu_batched_csr(
+    cf_np,          # (G,) int64  — packed cube_id*12 + facet_id
+    group_off_np,   # (G+1,) int64 — CSR offsets into A/B
+    A_np,           # (S, 3) float64 — segment start points
+    B_np,           # (S, 3) float64 — segment end points
+    cube_idx_np,    # (N, 3) int (any int dtype) — cube voxel indices
+    step: float,    # 1.0 / resolution
+):
+    """CSR-array batched GPU U-turn counting (production dispatch).
+
+    Avoids the per-group Python packing loop that `_count_uturns_gpu_batched`
+    incurs. Vectorizes the pack into (G, P_MAX, 3) tensors using numpy fancy
+    indexing, then reuses the shared core `_count_uturns_from_packed`.
+
+    Returns (G,) int64 torch.Tensor of U-turn counts (on the same device the
+    core runs on — CPU copy happens at caller).
+    """
+    import numpy as np
+    import torch as _torch
+
+    G = int(cf_np.shape[0])
+    if G == 0:
+        return _torch.zeros(0, dtype=_torch.int64)
+
+    segs_per_group = (group_off_np[1:] - group_off_np[:-1]).astype(np.int64)  # (G,)
+    max_s = int(segs_per_group.max()) if G > 0 else 0
+    if max_s == 0:
+        return _torch.zeros(G, dtype=_torch.int64)
+    P_MAX = 2 * max_s
+
+    dev = _torch.device('cuda:0' if _torch.cuda.is_available() else 'cpu')
+
+    # ---- Vectorized packing of pts / pts_valid ----
+    seg_idx = np.arange(max_s, dtype=np.int64)                               # (max_s,)
+    # Global seg index for (g, si) = group_off[g] + si; clamp invalid to 0.
+    flat_si = group_off_np[:-1, None].astype(np.int64) + seg_idx[None, :]    # (G, max_s)
+    valid_mask_2d = seg_idx[None, :] < segs_per_group[:, None]               # (G, max_s)
+    flat_si_clamped = np.where(valid_mask_2d, flat_si, 0)
+    A_gathered = A_np[flat_si_clamped]                                        # (G, max_s, 3)
+    B_gathered = B_np[flat_si_clamped]                                        # (G, max_s, 3)
+    valid_mask_2d_exp = valid_mask_2d[:, :, None]                             # (G, max_s, 1)
+
+    pts_cpu = np.zeros((G, P_MAX, 3), dtype=np.float64)
+    pts_cpu[:, 0::2, :] = np.where(valid_mask_2d_exp, A_gathered, 0.0)
+    pts_cpu[:, 1::2, :] = np.where(valid_mask_2d_exp, B_gathered, 0.0)
+
+    pts_valid_cpu = np.zeros((G, P_MAX), dtype=bool)
+    pts_valid_cpu[:, 0::2] = valid_mask_2d
+    pts_valid_cpu[:, 1::2] = valid_mask_2d
+
+    # ---- Vectorized facet_verts + edge_ids ----
+    cube_id = (cf_np // 12).astype(np.int64)
+    facet_id = (cf_np % 12).astype(np.int64)
+    base = cube_idx_np[cube_id].astype(np.float64) * step                    # (G, 3)
+    cube_verts_all = base[:, None, :] + _V_OFFSETS[None, :, :] * step        # (G, 8, 3)
+
+    # FACET_VERTS / FACET_EDGES are Python lists of tuples; convert once to np.
+    facet_verts_lut = np.asarray(FACET_VERTS, dtype=np.int64)                # (12, 3)
+    facet_edges_lut = np.asarray(FACET_EDGES, dtype=np.int64)                # (12, 3)
+    v_ids_per_facet = facet_verts_lut[facet_id]                              # (G, 3)
+    e_ids_per_facet = facet_edges_lut[facet_id]                              # (G, 3)
+
+    g_arange = np.arange(G, dtype=np.int64)[:, None]
+    facet_verts_cpu = cube_verts_all[g_arange, v_ids_per_facet]              # (G, 3, 3)
+    ed_cpu = e_ids_per_facet.astype(np.int64)                                # (G, 3)
+
+    pts = _torch.from_numpy(pts_cpu).to(dev)
+    pts_valid = _torch.from_numpy(pts_valid_cpu).to(dev)
+    facet_verts = _torch.from_numpy(facet_verts_cpu).to(dev)
+    edge_ids_t = _torch.from_numpy(ed_cpu).to(dev)
+
+    return _count_uturns_from_packed(pts, pts_valid, facet_verts, edge_ids_t)
+
+
+def _count_uturns_from_packed(pts, pts_valid, facet_verts, edge_ids_t):
+    """Core GPU batched U-turn algorithm — phases A/B/C/D.
+
+    Shared by `_count_uturns_gpu_batched` (Python list-of-tuples entry) and
+    `_count_uturns_gpu_batched_csr` (production CSR-array entry). Packing is
+    done by the caller; this function only runs the GPU algorithm.
+
+    Args:
+        pts         (G, P, 3) float64 — padded per-group segment endpoints
+        pts_valid   (G, P)    bool    — valid-slot mask
+        facet_verts (G, 3, 3) float64 — V0/V1/V2 per group
+        edge_ids_t  (G, 3)    int64   — 3 triangle-edge ids per group
+
+    Returns:
+        torch.Tensor shape (G,) int64 on CPU (device → CPU copy at end).
+
+    Pipeline (mirrors legacy _count_uturns):
+      Phase A — node coalescence via cdist (tol=1e-8, first-occurrence wins)
+      Phase B — scatter to build edge_mask (G, P, P) between canonical nodes
+      Phase C — label-propagation connected components (diameter-bounded iter)
+      Phase C.5 — degree + endpoint identification (degree==1 on self-canonical)
+      Phase D — endpoint -> 3 triangle-edge projection, bucket by (comp, edge_id),
+                bincount + //2 => U-turn contribution per group
+    """
+    import torch as _torch
+
+    G, P, _ = pts.shape
+    P_MAX = P
+    max_s = P // 2
+    dev = pts.device
 
     # ---- Phase A: node coalescence (1e-8 tolerance, first-occurrence wins) ----
     # cdist for valid pts only; padded zeros would spuriously match each other.
@@ -1634,7 +1738,7 @@ def _compute_face_weights_gpu(batch: CubeBatch, mesh: MeshTensors) -> torch.Tens
     B_np = sorted_B.cpu().numpy().astype(np.float64)
     cube_idx_np = batch.cube_indices.cpu().numpy()
 
-    # Stage D: Set shared globals, fork MP
+    # Stage D: Set shared globals, fork MP (legacy path) or batched GPU (W_SD)
     global _P2_CF, _P2_GROUP_OFF, _P2_SEGS_A, _P2_SEGS_B, _P2_CUBE_IDX, _P2_STEP
     _P2_CF = cf_np
     _P2_GROUP_OFF = off_np
@@ -1643,17 +1747,29 @@ def _compute_face_weights_gpu(batch: CubeBatch, mesh: MeshTensors) -> torch.Tens
     _P2_CUBE_IDX = cube_idx_np
     _P2_STEP = 1.0 / batch.resolution
 
-    num_workers = max(1, (_os.cpu_count() or 4) - 4)
-    if num_workers > 1 and G >= 5000:
-        from corep_fast.utils.persistent_pool import get_pool
-        chunksize = max(1, G // (num_workers * 4))
-        p = get_pool(num_workers)
-        results = p.map(_p2_uturn_worker, range(G), chunksize=chunksize)
+    from corep_fast import config as _cfg
+    if _cfg.STAGE_D_GPU and G > 0:
+        # W_SD batched GPU path — single CSR call, no MP pool.
+        uturn_tensor = _count_uturns_gpu_batched_csr(
+            cf_np, off_np, A_np, B_np, cube_idx_np, _P2_STEP,
+        )
+        uturns_cpu = uturn_tensor.cpu().numpy()
+        # cf_np[gi] packs (cube_id * 12 + facet_id); vectorize the scatter.
+        cube_ids = (cf_np // 12).astype(np.int64)
+        facet_ids = (cf_np % 12).astype(np.int64)
+        fw[cube_ids, facet_ids] = uturns_cpu.astype(fw.dtype)
     else:
-        results = [_p2_uturn_worker(gi) for gi in range(G)]
-
-    # Stage E: Scatter into fw
-    for ci, fi, u in results:
-        fw[ci, fi] = u
+        # Legacy MP pool path.
+        num_workers = max(1, (_os.cpu_count() or 4) - 4)
+        if num_workers > 1 and G >= 5000:
+            from corep_fast.utils.persistent_pool import get_pool
+            chunksize = max(1, G // (num_workers * 4))
+            p = get_pool(num_workers)
+            results = p.map(_p2_uturn_worker, range(G), chunksize=chunksize)
+        else:
+            results = [_p2_uturn_worker(gi) for gi in range(G)]
+        # Stage E: Scatter into fw
+        for ci, fi, u in results:
+            fw[ci, fi] = u
 
     return torch.from_numpy(fw).to(device)

@@ -61,7 +61,7 @@ LABELS_TO_LIST_VECTORIZED = os.environ.get('COREP_FAST_LABELS_TO_LIST_VECTORIZED
 # on GPU in a single batched pass. Target: ~100ms GPU, -0.8~1.5s wall.
 # Enabled by default after F1-F3 parity + determinism audit pass.
 # Set COREP_FAST_STAGE_D_GPU=0 to fall back to CPU MP Pool.
-STAGE_D_GPU = os.environ.get('COREP_FAST_STAGE_D_GPU', '0') == '1'
+STAGE_D_GPU = os.environ.get('COREP_FAST_STAGE_D_GPU', '1') == '1'
 
 
 # ---------------------------------------------------------------------------
