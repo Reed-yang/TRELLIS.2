@@ -1,0 +1,81 @@
+fn                                                  line     calls     self_ms      cum_ms
+_build_adjacency_gpu                                 634         1      1913.7      1925.1
+s7_rank_assign                                      1175         1       984.6      3635.2
+_get_ordered_points                                   53      1540         9.7         9.9
+_phase1_gpu_rank_assign                              903         1         6.9      2043.3
+_trace_with_ranks_uturn_assignment                   154        99         2.5        15.6
+<genexpr>                                           1143      4752         0.9         0.9
+_assign_face_connections                             190      3564         0.9        10.8
+<genexpr>                                           1142      1287         0.7         1.6
+_get_common_vertex                                    42      4020         0.7         0.7
+_trace_loops_from_adj                                106        99         0.6         0.7
+_assign_uturns                                       204      3564         0.4         0.5
+_match_loops_to_ranks                                260        99         0.3         0.6
+<dictcomp>                                           166        99         0.3         0.3
+_s7_rank_worker                                      428        99         0.2        16.3
+<listcomp>                                           230       872         0.1         0.1
+<genexpr>                                            284       971         0.1         0.1
+<listcomp>                                            62       757         0.1         0.1
+_get_k_for_vertex                                    181       200         0.1         0.2
+<listcomp>                                           285        99         0.1         0.1
+<listcomp>                                           280        99         0.0         0.0
+_uturn_pair_table                                    622         1         0.0         0.1
+_facet_pair_table                                    560         1         0.0         0.0
+== s7_rank_assign @ 1175: self 984.6ms cum 3635.2ms
+
+== Functions called by s7_rank_assign (via callers reverse lookup):
+fn                                      file                                      line     self_ms      cum_ms
+_phase1_gpu_rank_assign                 s7_rank_assign.py                          903         6.9      2043.3
+<method 'sum' of 'numpy.ndarray' objects~                                            0        40.7       306.3
+<method 'cpu' of 'torch._C.TensorBase' o~                                            0       243.6       243.6
+<method 'item' of 'torch._C.TensorBase' ~                                            0       171.6       171.6
+<built-in method scipy.optimize._lsap.li~                                            0       152.3       152.3
+<method 'astype' of 'numpy.ndarray' obje~                                            0       100.9       100.9
+<method 'append' of 'list' objects>     ~                                            0        76.9        76.9
+<method 'to' of 'torch._C.TensorBase' ob~                                            0        57.1        57.1
+<built-in method torch.tensor>          ~                                            0        25.9        25.9
+<built-in method torch.repeat_interleave~                                            0        18.6        18.6
+<built-in method torch.arange>          ~                                            0         3.8         3.8
+<method 'clamp' of 'torch._C.TensorBase'~                                            0         2.2         2.2
+<built-in method torch.zeros>           ~                                            0         1.2         1.2
+<built-in method builtins.max>          ~                                            0         0.9         1.0
+<method 'unsqueeze' of 'torch._C.TensorB~                                            0         0.4         0.4
+_replace_fields                         containers.py                              448         0.1         0.4
+<method 'numpy' of 'torch._C.TensorBase'~                                            0         0.4         0.4
+<method 'expand' of 'torch._C.TensorBase~                                            0         0.2         0.2
+<method 'scatter_add_' of 'torch._C.Tens~                                            0         0.2         0.2
+<built-in method posix.cpu_count>       ~                                            0         0.1         0.1
+num_cubes                               containers.py                              342         0.1         0.1
+<built-in method torch.ones>            ~                                            0         0.1         0.1
+fn=<method 'cpu' of 'torch._C.Ten from s7 callers: calls=    19 tt=   74.5ms ct=   74.5ms
+fn=<method 'item' of 'torch._C.Te from s7 callers: calls=     2 tt=    2.3ms ct=    2.3ms
+fn=<method 'numpy' of 'torch._C.T from s7 callers: calls=    19 tt=    0.1ms ct=    0.1ms
+fn=<method 'to' of 'torch._C.Tens from s7 callers: calls=   137 tt=    9.1ms ct=    9.1ms
+
+fn                                                file                             calls     self_ms      cum_ms
+_phase1_gpu_rank_assign                           s7_rank_assign.py                    1        6.89      2043.3
+<method 'sum' of 'numpy.ndarray' objects>         ~                               275539       40.71       306.3
+<built-in method scipy.optimize._lsap.linear_sum_a~                               275539      152.25       152.3
+<method 'astype' of 'numpy.ndarray' objects>      ~                               275539       77.43        77.4
+<method 'cpu' of 'torch._C.TensorBase' objects>   ~                                   11       29.15        29.1
+<built-in method torch.repeat_interleave>         ~                                    4       18.58        18.6
+<method 'append' of 'list' objects>               ~                               275539        9.90         9.9
+<built-in method torch.tensor>                    ~                                    1        8.37         8.4
+<method 'to' of 'torch._C.TensorBase' objects>    ~                                   11        4.96         5.0
+<built-in method torch.zeros>                     ~                                    4        0.10         0.1
+<method 'numpy' of 'torch._C.TensorBase' objects> ~                                   11        0.07         0.1
+_replace_fields                                   containers.py                        1        0.02         0.1
+<built-in method torch.arange>                    ~                                    3        0.04         0.0
+<method 'item' of 'torch._C.TensorBase' objects>  ~                                    1        0.03         0.0
+<built-in method posix.cpu_count>                 ~                                    1        0.03         0.0
+<method 'scatter_add_' of 'torch._C.TensorBase' ob~                                    2        0.02         0.0
+<method 'clamp' of 'torch._C.TensorBase' objects> ~                                    1        0.01         0.0
+<built-in method torch.ones>                      ~                                    1        0.01         0.0
+num_cubes                                         containers.py                        1        0.01         0.0
+<method 'unsqueeze' of 'torch._C.TensorBase' objec~                                    3        0.01         0.0
+<method 'expand' of 'torch._C.TensorBase' objects>~                                    1        0.00         0.0
+<built-in method builtins.max>                    ~                                    1        0.00         0.0
+
+Total cum_ms from callees: 2650.6 ms
+s7_rank_assign self_ms:    984.6 ms
+s7_rank_assign cum_ms:    3635.2 ms

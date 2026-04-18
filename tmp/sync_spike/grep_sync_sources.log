@@ -1,0 +1,9 @@
+Found 454 total matches across 29 files:
+  cpu_call             163
+  item                 104
+  numpy_call           91
+  tolist               86
+  bool_bridge          7
+  explicit_sync        3
+
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/sync_spike/grep_sync_sources.json  (all hits)

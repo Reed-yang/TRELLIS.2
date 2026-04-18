@@ -1,0 +1,12 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-9.0.2, pluggy-1.6.0 -- /mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/novita2/siyuan/workspace/TRELLIS.2
+plugins: dash-4.0.0, anyio-4.12.1
+collecting ... collected 3 items
+
+corep_fast/tests/regression/test_cpu_worker_optim.py::test_golden_snapshot[F1] PASSED [ 33%]
+corep_fast/tests/regression/test_cpu_worker_optim.py::test_golden_snapshot[F2] PASSED [ 66%]
+corep_fast/tests/regression/test_cpu_worker_optim.py::test_golden_snapshot[F3] PASSED [100%]
+
+============================== 3 passed in 26.01s ==============================

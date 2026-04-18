@@ -1,0 +1,43 @@
+======================================================================
+Spike at multiple N to see scaling
+======================================================================
+
+N=1000:
+  Legacy median wall: 151.262 ms
+  Triton median wall: 0.459 ms
+  Speedup: 329.70x
+  Saved per call: 150.804 ms
+  Mismatched cells (after canonical sort): 1737
+  First mismatches: [[2, 250, 1], [2, 251, 1], [2, 252, 1], [9, 287, 0], [10, 287, 0]]
+  At [2, 250]: legacy=[91, 172], triton=[91, 182]
+  PARITY: FAIL
+
+N=10000:
+  Legacy median wall: 181.613 ms
+  Triton median wall: 4.003 ms
+  Speedup: 45.37x
+  Saved per call: 177.610 ms
+  Mismatched cells (after canonical sort): 16722
+  First mismatches: [[2, 250, 1], [2, 251, 1], [9, 287, 0], [10, 287, 0], [13, 285, 0]]
+  At [2, 250]: legacy=[91, 172], triton=[91, 182]
+  PARITY: FAIL
+
+N=100000:
+  Legacy median wall: 234.867 ms
+  Triton median wall: 40.038 ms
+  Speedup: 5.87x
+  Saved per call: 194.830 ms
+  Mismatched cells (after canonical sort): 169959
+  First mismatches: [[2, 252, 1], [4, 205, 0], [4, 205, 1], [9, 287, 0], [10, 287, 0]]
+  At [2, 252]: legacy=[93, 174], triton=[93, 184]
+  PARITY: FAIL
+
+N=275541:
+  Legacy median wall: 225.532 ms
+  Triton median wall: 110.264 ms
+  Speedup: 2.05x
+  Saved per call: 115.268 ms
+  Mismatched cells (after canonical sort): 465473
+  First mismatches: [[2, 252, 1], [4, 205, 0], [4, 205, 1], [9, 287, 0], [10, 287, 0]]
+  At [2, 252]: legacy=[93, 174], triton=[93, 184]
+  PARITY: FAIL

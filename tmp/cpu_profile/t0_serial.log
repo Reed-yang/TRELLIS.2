@@ -1,0 +1,5 @@
+[warmup] mode=serial V=551079 F=1102152
+[trial 1/3] mode=serial wall=75.397s V=551079 F=1102152
+[trial 2/3] mode=serial wall=75.312s V=551079 F=1102152
+[trial 3/3] mode=serial wall=75.285s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_serial.json

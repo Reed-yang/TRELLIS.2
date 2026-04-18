@@ -1,0 +1,27 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-9.0.2, pluggy-1.6.0 -- /mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/novita2/siyuan/workspace/TRELLIS.2
+plugins: dash-4.0.0, anyio-4.12.1
+collecting ... collected 18 items
+
+corep_fast/tests/unit/test_labels_to_list_vectorized.py::test_matches_legacy_random_100 PASSED [  5%]
+corep_fast/tests/unit/test_labels_to_list_vectorized.py::test_empty_rows PASSED [ 11%]
+corep_fast/tests/unit/test_labels_to_list_vectorized.py::test_n_zero_returns_empty_list PASSED [ 16%]
+corep_fast/tests/unit/test_labels_to_list_vectorized.py::test_all_same_label_one_component_per_row PASSED [ 22%]
+corep_fast/tests/unit/test_labels_to_list_vectorized.py::test_all_distinct_labels_singleton_components PASSED [ 27%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_matches_legacy_random_100_groups PASSED [ 33%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_empty_groups_list PASSED [ 38%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_zero_segments_group_zero_uturn PASSED [ 44%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_single_edge_two_endpoints_same_edge_one_uturn PASSED [ 50%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_closed_loop_zero_uturn PASSED [ 55%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_max_s_convergence PASSED [ 61%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_large_batch_50000 PASSED [ 66%]
+corep_fast/tests/unit/test_hungarian_batched.py::test_1x1_hot_path PASSED [ 72%]
+corep_fast/tests/unit/test_hungarian_batched.py::test_1xk_argmin PASSED  [ 77%]
+corep_fast/tests/unit/test_hungarian_batched.py::test_brute_force_nxn_matches_scipy PASSED [ 83%]
+corep_fast/tests/unit/test_hungarian_batched.py::test_rect_reverse_left_for_fallback PASSED [ 88%]
+corep_fast/tests/unit/test_hungarian_batched.py::test_tie_detection_leaves_minus_one PASSED [ 94%]
+corep_fast/tests/unit/test_hungarian_batched.py::test_empty_batch PASSED [100%]
+
+============================== 18 passed in 7.57s ==============================

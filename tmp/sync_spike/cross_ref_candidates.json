@@ -1,0 +1,72 @@
+[
+  {
+    "name": "<built-in method searchsorted of type object at 0x7f856cc1fec0>",
+    "ts": 1313753041298.031,
+    "dur": 7427.169,
+    "args": {
+      "Python parent id": 66709,
+      "Python id": 66711,
+      "Ev Idx": 111727
+    }
+  },
+  {
+    "name": "corep_fast/stages/s1_voxelize.py(106): _expand_candidates",
+    "ts": 1313753025538.803,
+    "dur": 47866.851,
+    "args": {
+      "Python parent id": 66696,
+      "Python id": 66709,
+      "Ev Idx": 111725
+    }
+  },
+  {
+    "name": "corep_fast/stages/s1_voxelize.py(18): s1_voxelize",
+    "ts": 1313753024709.285,
+    "dur": 57691.808,
+    "args": {
+      "Python parent id": 66693,
+      "Python id": 66696,
+      "Ev Idx": 111712
+    }
+  },
+  {
+    "name": "monkeypatch_nvtx.py(32): wrapper",
+    "ts": 1313753024677.332,
+    "dur": 57748.739,
+    "args": {
+      "Python parent id": 37699,
+      "Python id": 66693,
+      "Ev Idx": 111709
+    }
+  },
+  {
+    "name": "driver.py(63): run_pipeline",
+    "ts": 1313752944720.498,
+    "dur": 13072928.248,
+    "args": {
+      "Python parent id": 2,
+      "Python id": 37699,
+      "Ev Idx": 82715
+    }
+  },
+  {
+    "name": "driver.py(168): main",
+    "ts": 1313752924004.69,
+    "dur": 13094048.734,
+    "args": {
+      "Python parent id": 1,
+      "Python id": 2,
+      "Ev Idx": 45018
+    }
+  },
+  {
+    "name": "driver.py(210): <module>",
+    "ts": 1313752924003.832,
+    "dur": 13094049.592,
+    "args": {
+      "Python parent id": null,
+      "Python id": 1,
+      "Ev Idx": 45017
+    }
+  }
+]

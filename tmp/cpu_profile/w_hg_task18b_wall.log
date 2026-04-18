@@ -1,0 +1,5 @@
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=2.941s V=551079 F=1102152
+[trial 2/3] mode=default wall=3.400s V=551079 F=1102152
+[trial 3/3] mode=default wall=3.073s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json

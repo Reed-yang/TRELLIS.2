@@ -1,0 +1,30 @@
+Task 9 wall aggregate (9 trials, 3 runs × 3 trials on 116 GPU 4)
+================================================================
+Run 1: [5.381, 5.432, 5.279] median 5.381
+Run 2: [5.168, 5.291, 5.154] median 5.168
+Run 3: [5.245, 5.402, 5.203] median 5.245
+
+All 9 trials sorted: [5.154, 5.168, 5.203, 5.245, 5.279, 5.291, 5.381, 5.402, 5.432]
+Combined median (5th of 9): 5.279 s
+
+Baseline anchors:
+  W_L2L anchor (post 5337ms):   5.337 s
+  Legacy A/B median:            5.482 s
+
+Delta vs W_L2L anchor:   5.279 - 5.337 = -0.058 s (~1.1% faster)
+Delta vs legacy A/B:     5.279 - 5.482 = -0.203 s (~3.7% faster)
+
+Target was >= 0.8s reduction; achieved -0.06 s vs most recent anchor.
+
+Hotspot root cause (see w_sd_task9_hotspots.txt):
+  _count_uturns_gpu_batched_csr self=1063 ms, cum=1479 ms on main thread.
+  The vectorized numpy packing eliminated the per-group Python loop trap,
+  but creating the (G=1.88M, 8, 3) cube_verts buffer + (G, P_MAX, 3) padded
+  pts buffer still spends ~1.06s of main-thread time.
+
+  In the pre-W_SD baseline the MP pool's `_thread.lock.acquire` took 1605 ms
+  but ran concurrently with other main-thread work, so the wall-time gain
+  from removing it is only ~0.06 s (the part that was strictly serial).
+
+F1-F3 parity: 3/3 PASS (bit-exact)
+Unit tests:   5/5 PASS

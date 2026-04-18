@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-9.0.2, pluggy-1.6.0 -- /mnt/novita2/siyuan/workspace/TRELLIS.2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/novita2/siyuan/workspace/TRELLIS.2
+plugins: dash-4.0.0, anyio-4.12.1
+collecting ... collected 5 items
+
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_matches_legacy_random_100_groups PASSED [ 20%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_zero_segments_group_zero_uturn PASSED [ 40%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_single_edge_two_endpoints_same_edge_one_uturn PASSED [ 60%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_closed_loop_zero_uturn PASSED [ 80%]
+corep_fast/tests/unit/test_stage_d_gpu_bfs.py::test_large_batch_50000 PASSED [100%]
+
+============================== 5 passed in 7.12s ===============================

@@ -1,0 +1,4 @@
+_build_adjacency_gpu calls: 1
+Total wall: 38.61 ms
+N values: [275541]
+Avg ms/call: 38.61

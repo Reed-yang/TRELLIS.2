@@ -1,0 +1,6 @@
+[warmup] res=256
+[measure] res=256
+[measure] e2e wall = 6.544s (pipeline internal e2e = 6.315s)
+[measure] per-stage: load=0.015s, s1=0.011s, s2=0.008s, s3=0.002s, s4=3.172s, s6=1.302s, s7=1.706s, s8=0.098s
+[measure] cubes=275541 V=551079 F=1102152
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/cpu_profile/results_main/main_thread_res256.prof

@@ -1,0 +1,8 @@
+[warmup] res=256
+/mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:482: UserWarning: torch.searchsorted(): input value tensor is non-contiguous, this will lower the performance due to extra data copy when converting non-contiguous tensor to contiguous, please use contiguous input value tensor if possible. This message will only appear once per program. (Triggered internally at /pytorch/aten/src/ATen/native/BucketizationUtils.h:32.)
+  _torch.searchsorted(point_offset, p_grid, right=True) - 1
+[measure] res=256
+[measure] e2e wall = 6.567s (pipeline internal e2e = 6.314s)
+[measure] per-stage: load=0.015s, s1=0.012s, s2=0.005s, s3=0.002s, s4=3.252s, s6=1.297s, s7=1.640s, s8=0.092s
+[measure] cubes=275541 V=551079 F=1102152
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/cpu_profile/results_main/main_thread_res256.prof

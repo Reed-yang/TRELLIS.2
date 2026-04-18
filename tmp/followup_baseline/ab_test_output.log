@@ -1,0 +1,56 @@
+=== W_L2L A/B interleaved, 116 GPU 5, 2026-04-18T03:07:40Z ===
+load_before=14.59 9.75 8.96 7/3935 297190
+
+--- Round 1 / A (flag=0, legacy) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=5.570s V=551079 F=1102152
+[trial 2/3] mode=default wall=5.345s V=551079 F=1102152
+[trial 3/3] mode=default wall=5.455s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=18.78 11.36 9.52 7/3934 298148
+
+--- Round 1 / B (flag=1, vectorized) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=5.491s V=551079 F=1102152
+[trial 2/3] mode=default wall=5.541s V=551079 F=1102152
+[trial 3/3] mode=default wall=5.258s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=14.87 11.04 9.47 5/3941 299039
+
+--- Round 2 / A (flag=0, legacy) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=5.515s V=551079 F=1102152
+[trial 2/3] mode=default wall=5.476s V=551079 F=1102152
+[trial 3/3] mode=default wall=5.371s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=24.59 13.31 10.24 6/3941 300019
+
+--- Round 2 / B (flag=1, vectorized) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=5.385s V=551079 F=1102152
+[trial 2/3] mode=default wall=5.483s V=551079 F=1102152
+[trial 3/3] mode=default wall=5.384s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=41.75 18.80 12.18 5/3938 300976
+
+--- Round 3 / A (flag=0, legacy) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=5.659s V=551079 F=1102152
+[trial 2/3] mode=default wall=5.889s V=551079 F=1102152
+[trial 3/3] mode=default wall=5.482s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=35.04 19.25 12.51 11/3938 301955
+
+--- Round 3 / B (flag=1, vectorized) ---
+[warmup] mode=default V=551079 F=1102152
+[trial 1/3] mode=default wall=5.631s V=551079 F=1102152
+[trial 2/3] mode=default wall=5.448s V=551079 F=1102152
+[trial 3/3] mode=default wall=5.507s V=551079 F=1102152
+[write] tmp/cpu_profile/t0_default.json
+load=34.05 20.04 12.94 10/3941 302866
+
+=== done 2026-04-18T03:10:20Z ===
+load_after=34.05 20.04 12.94 9/3941 302868
+Traceback (most recent call last):
+  File "<stdin>", line 10, in <module>
+TypeError: 'int' object is not iterable

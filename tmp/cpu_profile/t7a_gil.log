@@ -1,0 +1,28 @@
+[warmup] res=256
+[measure] res=256
+
+========================================================================
+T7a GIL spike results (res=256)
+========================================================================
+e2e wall (ms):                     129499.3
+_p2_uturn_worker calls:            1881777
+_p2_uturn_worker total wall (ms):  125273.3
+cProfile C-ext self_tt (ms):       52079.6
+cProfile Python self_tt (ms):      71656.8
+cProfile total self_tt (ms):       123736.4
+GIL-holding fraction (lower bound): 57.9%
+
+Top Python (GIL-held) self_tt contributors inside worker:
+   1.  49679.0 ms  cc=  1881777  s4_face_point.py:305:_count_uturns
+   2.   9265.6 ms  cc=  1881777  s4_face_point.py:1329:_p2_uturn_worker
+   3.   3963.1 ms  cc=  3974410  s4_face_point.py:398:_find_or_add_node
+   4.   2926.2 ms  cc= 49682890  <built-in method builtins.issubclass>
+   5.   1266.0 ms  cc= 21332775  <method 'append' of 'list' objects>
+   6.    995.4 ms  cc=  1881909  s4_face_point.py:359:<listcomp>
+   7.    793.9 ms  cc= 11501782  <built-in method builtins.len>
+   8.    756.0 ms  cc=  1881777  s4_face_point.py:1339:<listcomp>
+   9.    502.8 ms  cc=  1881777  s4_face_point.py:331:<dictcomp>
+  10.    351.6 ms  cc=  1987205  <built-in method builtins.min>
+
+VERDICT: Angle 3 (ThreadPool) NOT VIABLE (lower bound 57.9% ≥ 30%)
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/cpu_profile/t7a_gil_result.pkl

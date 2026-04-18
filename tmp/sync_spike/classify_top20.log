@@ -1,0 +1,136 @@
+# Top-20 D2H → source candidates
+
+## rank 1: stage=s6_collapse  count=11  total_ms=60.57
+frame: <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+leaf: <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+grep candidates: <none>
+
+## rank 2: stage=s7_rank_assign  count=16  total_ms=51.99
+frame: <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+leaf: <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+grep candidates: <none>
+
+## rank 3: stage=s4_face_point  count=10  total_ms=45.61
+frame: <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+leaf: <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+grep candidates: <none>
+
+## rank 4: stage=<unknown>  count=7  total_ms=38.20
+frame: <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+leaf: <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+grep candidates: <none>
+
+## rank 5: stage=<unknown>  count=1080  total_ms=2.50
+frame: corep_fast/geom/sh_clip.py(108): _emit
+leaf: _emit
+grep candidates:
+  corep_fast/geom/sh_clip.py:95:        _emit(out, out_count, intersection, emit1)
+  corep_fast/geom/sh_clip.py:99:        _emit(out, out_count, vj, emit2)
+  corep_fast/geom/sh_clip.py:103:        _emit(out, out_count, intersection, emit3)
+  corep_fast/geom/sh_clip.py:108:def _emit(
+
+## rank 6: stage=decode_from_cubebatch  count=11  total_ms=2.19
+frame: <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+leaf: <built-in method cpu of Tensor object at 0x7f7a8e5bbd80>
+grep candidates: <none>
+
+## rank 7: stage=s7_rank_assign  count=778  total_ms=1.80
+frame: corep_fast/stages/s7_rank_assign.py(634): _build_adjacency_gpu
+leaf: _build_adjacency_gpu
+grep candidates:
+  corep_fast/stages/s7_rank_assign.py:634:def _build_adjacency_gpu(
+  corep_fast/stages/s7_rank_assign.py:923:    adj = _build_adjacency_gpu(edge_weights64, uturn64)  # (N, NODES_PER_CUBE, 2) int32
+
+## rank 8: stage=decode_from_cubebatch  count=16  total_ms=0.04
+frame: corep_fast/stages/s8_collapse.py(1629): _process_shared_edges_from_tensors
+leaf: _process_shared_edges_from_tensors
+grep candidates:
+  corep_fast/stages/s8_collapse.py:254:        return _process_shared_edges_from_tensors(
+  corep_fast/stages/s8_collapse.py:1629:def _process_shared_edges_from_tensors(
+
+## rank 9: stage=<unknown>  count=9  total_ms=0.02
+frame: <no frame>
+leaf: <no frame>
+grep candidates: <none>
+
+## rank 10: stage=decode_from_cubebatch  count=9  total_ms=0.02
+frame: corep_fast/stages/s8_collapse.py(920): process_geometry_vectorized
+leaf: process_geometry_vectorized
+grep candidates:
+  corep_fast/tests/unit/test_s8_collapse.py:596:from corep_fast.stages.s8_collapse import process_geometry_vectorized, EdgeNeighborTable
+  corep_fast/tests/unit/test_s8_collapse.py:649:        tri_verts = process_geometry_vectorized(table, tensors, device)
+  corep_fast/tests/unit/test_s8_collapse.py:666:        tri_verts = process_geometry_vectorized(empty_table, tensors, device)
+  corep_fast/tests/unit/test_s8_collapse.py:672:        tri_verts = process_geometry_vectorized(table, tensors, device)
+  corep_fast/stages/s8_collapse.py:84:    `process_geometry_vectorized` (this file, around line 891) re-derives the
+
+## rank 11: stage=<unknown>  count=8  total_ms=0.02
+frame: <built-in method repeat_interleave of type object at 0x7f856cc1fec0>
+leaf: <built-in method repeat_interleave of type object at 0x7f856cc1fec0>
+grep candidates: <none>
+
+## rank 12: stage=s6_collapse  count=7  total_ms=0.02
+frame: corep_fast/stages/s6_collapse.py(190): _fastpath_gpu_build_adjacency
+leaf: _fastpath_gpu_build_adjacency
+grep candidates:
+  corep_fast/stages/s6_collapse.py:190:def _fastpath_gpu_build_adjacency(
+  corep_fast/stages/s6_collapse.py:877:            ) = _fastpath_gpu_build_adjacency(
+
+## rank 13: stage=decode_from_cubebatch  count=6  total_ms=0.01
+frame: corep_fast/stages/s8_collapse.py(182): _pad_ragged_loops_gpu
+leaf: _pad_ragged_loops_gpu
+grep candidates:
+  corep_fast/tests/stages/test_s8_csr_helpers.py:7:    _pad_ragged_loops_gpu,
+  corep_fast/tests/stages/test_s8_csr_helpers.py:147:        edges_flat, ranks_flat = _pad_ragged_loops_gpu(
+  corep_fast/tests/stages/test_s8_csr_helpers.py:162:        edges_flat, ranks_flat = _pad_ragged_loops_gpu(
+  corep_fast/stages/s8_collapse.py:182:def _pad_ragged_loops_gpu(
+  corep_fast/stages/s8_collapse.py:664:    edges_flat, ranks_flat = _pad_ragged_loops_gpu(
+
+## rank 14: stage=s2_components  count=5  total_ms=0.01
+frame: <built-in method equal of type object at 0x7f856cc1fec0>
+leaf: <built-in method equal of type object at 0x7f856cc1fec0>
+grep candidates: <none>
+
+## rank 15: stage=s4_face_point  count=4  total_ms=0.01
+frame: corep_fast/stages/s4_face_point.py(1119): _compute_face_weights_gpu
+leaf: _compute_face_weights_gpu
+grep candidates:
+  corep_fast/tests/unit/test_s4_face_weights_gpu.py:12:    _compute_face_weights_gpu,
+  corep_fast/tests/unit/test_s4_face_weights_gpu.py:30:    fw_gpu = _compute_face_weights_gpu(batch, mesh)
+  corep_fast/stages/s4_face_point.py:101:        face_weights = _compute_face_weights_gpu(batch, mesh)
+  corep_fast/stages/s4_face_point.py:1119:def _compute_face_weights_gpu(batch: CubeBatch, mesh: MeshTensors) -> torch.Tensor:
+
+## rank 16: stage=decode_from_cubebatch  count=4  total_ms=0.01
+frame: corep_fast/stages/s8_collapse.py(777): build_edge_neighbor_table
+leaf: build_edge_neighbor_table
+grep candidates:
+  corep_fast/tests/unit/test_s8_collapse.py:13:    build_edge_neighbor_table,
+  corep_fast/tests/unit/test_s8_collapse.py:113:# ---- Tests for build_edge_neighbor_table ----
+  corep_fast/tests/unit/test_s8_collapse.py:120:        table = build_edge_neighbor_table(edge_id_per_entry, cube_ids, local_ids,
+  corep_fast/tests/unit/test_s8_collapse.py:130:        table = build_edge_neighbor_table(edge_id_per_entry, cube_ids, local_ids,
+  corep_fast/tests/unit/test_s8_collapse.py:148:        table = build_edge_neighbor_table(
+
+## rank 17: stage=decode_from_cubebatch  count=4  total_ms=0.01
+frame: <built-in method nonzero of type object at 0x7f856cc1fec0>
+leaf: <built-in method nonzero of type object at 0x7f856cc1fec0>
+grep candidates: <none>
+
+## rank 18: stage=decode_from_cubebatch  count=3  total_ms=0.01
+frame: <built-in method item of Tensor object at 0x7f7a8e5bbc90>
+leaf: <built-in method item of Tensor object at 0x7f7a8e5bbc90>
+grep candidates: <none>
+
+## rank 19: stage=s2_components  count=3  total_ms=0.01
+frame: corep_fast/stages/s2_components.py(18): s2_components
+leaf: s2_components
+grep candidates:
+  corep_fast/pipeline.py:246:    from corep_fast.stages.s2_components import s2_components
+  corep_fast/pipeline.py:260:    with stage_timer('s2_components', pc):
+  corep_fast/pipeline.py:261:        batch = s2_components(batch, mt)
+  corep_fast/tests/regression/test_s7_ab.py:13:from corep_fast.stages.s2_components import s2_components
+  corep_fast/tests/regression/test_s7_ab.py:83:        batch = s2_components(batch, mesh_ns)
+
+## rank 20: stage=s4_face_point  count=2  total_ms=0.01
+frame: <built-in method item of Tensor object at 0x7f7a8e5bbc90>
+leaf: <built-in method item of Tensor object at 0x7f7a8e5bbc90>
+grep candidates: <none>
+

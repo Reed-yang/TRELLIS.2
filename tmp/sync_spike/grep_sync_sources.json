@@ -1,0 +1,2726 @@
+[
+  {
+    "file": "corep_fast/containers.py",
+    "line": 348,
+    "pattern": "item",
+    "snippet": "return int(self.loop_cube_off[-1].item()) if self.loop_cube_off.numel() > 0 else 0"
+  },
+  {
+    "file": "corep_fast/containers.py",
+    "line": 389,
+    "pattern": "item",
+    "snippet": "lo = int(self.tri_offsets[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/containers.py",
+    "line": 390,
+    "pattern": "item",
+    "snippet": "hi = int(self.tri_offsets[cube_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/containers.py",
+    "line": 415,
+    "pattern": "item",
+    "snippet": "assert off[0].item() == 0, f\"[{stage}] {name}[0] must be 0\""
+  },
+  {
+    "file": "corep_fast/containers.py",
+    "line": 418,
+    "pattern": "item",
+    "snippet": "assert self.tri_values.shape[0] == int(self.tri_offsets[-1].item()), \\"
+  },
+  {
+    "file": "corep_fast/containers.py",
+    "line": 420,
+    "pattern": "item",
+    "snippet": "assert self.bnd_values.shape[0] == int(self.bnd_offsets[-1].item()), \\"
+  },
+  {
+    "file": "corep_fast/containers.py",
+    "line": 435,
+    "pattern": "item",
+    "snippet": "assert self.comp_face_off[0].item() == 0, f\"[{stage}] comp_face_off[0] must be 0\""
+  },
+  {
+    "file": "corep_fast/containers.py",
+    "line": 436,
+    "pattern": "item",
+    "snippet": "assert self.comp_face_val.shape[0] == int(self.comp_face_off[-1].item()), \\"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 107,
+    "pattern": "cpu_call",
+    "snippet": "ta = getattr(cb_a, fname).cpu()"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 108,
+    "pattern": "cpu_call",
+    "snippet": "tb = getattr(cb_b, fname).cpu()"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 121,
+    "pattern": "item",
+    "snippet": "cube_idx = int(diff_mask.nonzero(as_tuple=False)[0].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 122,
+    "pattern": "item",
+    "snippet": "va = int(ta[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 123,
+    "pattern": "item",
+    "snippet": "vb = int(tb[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 126,
+    "pattern": "item",
+    "snippet": "cube_idx = int(diff_mask.nonzero(as_tuple=False)[0].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 127,
+    "pattern": "tolist",
+    "snippet": "va = ta[cube_idx].tolist()"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 128,
+    "pattern": "tolist",
+    "snippet": "vb = tb[cube_idx].tolist()"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 184,
+    "pattern": "tolist",
+    "snippet": "seq = edges.tolist()"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 211,
+    "pattern": "item",
+    "snippet": "loop_lo = int(cb.loop_cube_off[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 212,
+    "pattern": "item",
+    "snippet": "loop_hi = int(cb.loop_cube_off[cube_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 215,
+    "pattern": "item",
+    "snippet": "e_lo = int(cb.loop_edge_off[l_idx].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 216,
+    "pattern": "item",
+    "snippet": "e_hi = int(cb.loop_edge_off[l_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 217,
+    "pattern": "tolist",
+    "snippet": "loops.append(cb.loop_edge_val[e_lo:e_hi].tolist())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 259,
+    "pattern": "item",
+    "snippet": "loop_lo_a = int(cb_a.loop_cube_off[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 260,
+    "pattern": "item",
+    "snippet": "loop_hi_a = int(cb_a.loop_cube_off[cube_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 261,
+    "pattern": "item",
+    "snippet": "loop_lo_b = int(cb_b.loop_cube_off[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 262,
+    "pattern": "item",
+    "snippet": "loop_hi_b = int(cb_b.loop_cube_off[cube_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 265,
+    "pattern": "item",
+    "snippet": "e_lo_a = int(cb_a.loop_edge_off[li_a].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 266,
+    "pattern": "item",
+    "snippet": "e_hi_a = int(cb_a.loop_edge_off[li_a + 1].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 267,
+    "pattern": "item",
+    "snippet": "e_lo_b = int(cb_b.loop_edge_off[li_b].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 268,
+    "pattern": "item",
+    "snippet": "e_hi_b = int(cb_b.loop_edge_off[li_b + 1].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 276,
+    "pattern": "tolist",
+    "snippet": "value_a=rank_a.tolist(),"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 277,
+    "pattern": "tolist",
+    "snippet": "value_b=rank_b.tolist(),"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 292,
+    "pattern": "item",
+    "snippet": "loop_lo_a = int(cb_a.loop_cube_off[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 293,
+    "pattern": "item",
+    "snippet": "loop_hi_a = int(cb_a.loop_cube_off[cube_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 294,
+    "pattern": "item",
+    "snippet": "loop_lo_b = int(cb_b.loop_cube_off[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 295,
+    "pattern": "item",
+    "snippet": "loop_hi_b = int(cb_b.loop_cube_off[cube_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 304,
+    "pattern": "tolist",
+    "snippet": "value_a=match_a.tolist(),"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 305,
+    "pattern": "tolist",
+    "snippet": "value_b=match_b.tolist(),"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 327,
+    "pattern": "item",
+    "snippet": "lo_a = int(cb_a.point_offsets[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 328,
+    "pattern": "item",
+    "snippet": "hi_a = int(cb_a.point_offsets[cube_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 329,
+    "pattern": "item",
+    "snippet": "lo_b = int(cb_b.point_offsets[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 330,
+    "pattern": "item",
+    "snippet": "hi_b = int(cb_b.point_offsets[cube_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 345,
+    "pattern": "cpu_call",
+    "snippet": "if pts_a.numel() > 0 and not torch.allclose(pts_a.cpu(), pts_b.cpu(), rtol=rtol, atol=atol):"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 346,
+    "pattern": "item",
+    "snippet": "max_diff = (pts_a.cpu() - pts_b.cpu()).abs().max().item()"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 346,
+    "pattern": "cpu_call",
+    "snippet": "max_diff = (pts_a.cpu() - pts_b.cpu()).abs().max().item()"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 350,
+    "pattern": "tolist",
+    "snippet": "value_a=pts_a.tolist(),"
+  },
+  {
+    "file": "corep_fast/profiling/topology_equivalence.py",
+    "line": 351,
+    "pattern": "tolist",
+    "snippet": "value_b=pts_b.tolist(),"
+  },
+  {
+    "file": "corep_fast/profiling/harness.py",
+    "line": 126,
+    "pattern": "explicit_sync",
+    "snippet": "torch.cuda.synchronize()"
+  },
+  {
+    "file": "corep_fast/profiling/harness.py",
+    "line": 137,
+    "pattern": "explicit_sync",
+    "snippet": "torch.cuda.synchronize()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 25,
+    "pattern": "cpu_call",
+    "snippet": "d['cube_indices'] = tuple(cb.cube_indices[i].cpu().tolist())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 25,
+    "pattern": "tolist",
+    "snippet": "d['cube_indices'] = tuple(cb.cube_indices[i].cpu().tolist())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 27,
+    "pattern": "item",
+    "snippet": "lo = int(cb.tri_offsets[i].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 28,
+    "pattern": "item",
+    "snippet": "hi = int(cb.tri_offsets[i + 1].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 29,
+    "pattern": "cpu_call",
+    "snippet": "d['face_indices'] = cb.tri_values[lo:hi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 29,
+    "pattern": "tolist",
+    "snippet": "d['face_indices'] = cb.tri_values[lo:hi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 31,
+    "pattern": "item",
+    "snippet": "d['num_components'] = int(cb.num_components[i].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 32,
+    "pattern": "item",
+    "snippet": "d['num_boundary'] = int(cb.num_boundary[i].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 33,
+    "pattern": "item",
+    "snippet": "d['status'] = int(cb.status[i].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 35,
+    "pattern": "cpu_call",
+    "snippet": "d['edge_weights'] = cb.edge_weights[i].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 35,
+    "pattern": "tolist",
+    "snippet": "d['edge_weights'] = cb.edge_weights[i].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 36,
+    "pattern": "cpu_call",
+    "snippet": "d['face_weights'] = cb.face_weights[i].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 36,
+    "pattern": "tolist",
+    "snippet": "d['face_weights'] = cb.face_weights[i].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 38,
+    "pattern": "item",
+    "snippet": "p_lo = int(cb.point_offsets[i].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 39,
+    "pattern": "item",
+    "snippet": "p_hi = int(cb.point_offsets[i + 1].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 40,
+    "pattern": "cpu_call",
+    "snippet": "d['component_points'] = cb.point_values[p_lo:p_hi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 40,
+    "pattern": "tolist",
+    "snippet": "d['component_points'] = cb.point_values[p_lo:p_hi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 42,
+    "pattern": "item",
+    "snippet": "l_lo = int(cb.loop_cube_off[i].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 43,
+    "pattern": "item",
+    "snippet": "l_hi = int(cb.loop_cube_off[i + 1].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 46,
+    "pattern": "item",
+    "snippet": "e_lo = int(cb.loop_edge_off[l_idx].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 47,
+    "pattern": "item",
+    "snippet": "e_hi = int(cb.loop_edge_off[l_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 48,
+    "pattern": "cpu_call",
+    "snippet": "edges = cb.loop_edge_val[e_lo:e_hi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 48,
+    "pattern": "tolist",
+    "snippet": "edges = cb.loop_edge_val[e_lo:e_hi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 49,
+    "pattern": "cpu_call",
+    "snippet": "ranks = cb.loop_edge_rank[e_lo:e_hi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/interop/to_custom.py",
+    "line": 49,
+    "pattern": "tolist",
+    "snippet": "ranks = cb.loop_edge_rank[e_lo:e_hi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 117,
+    "pattern": "cpu_call",
+    "snippet": "gpu_ci = gpu_batch.cube_indices.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 118,
+    "pattern": "cpu_call",
+    "snippet": "gpu_status = gpu_batch.status.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 126,
+    "pattern": "cpu_call",
+    "snippet": "loop_cube_off = gpu_batch.loop_cube_off.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 127,
+    "pattern": "cpu_call",
+    "snippet": "loop_edge_off = gpu_batch.loop_edge_off.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 128,
+    "pattern": "cpu_call",
+    "snippet": "loop_edge_val = gpu_batch.loop_edge_val.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 129,
+    "pattern": "cpu_call",
+    "snippet": "loop_edge_rank = gpu_batch.loop_edge_rank.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 161,
+    "pattern": "tolist",
+    "snippet": "edges = loop_edge_val[e_lo:e_hi].tolist()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 162,
+    "pattern": "tolist",
+    "snippet": "ranks = loop_edge_rank[e_lo:e_hi].tolist()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 207,
+    "pattern": "cpu_call",
+    "snippet": "gpu_ci = gpu_batch.cube_indices.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 208,
+    "pattern": "cpu_call",
+    "snippet": "gpu_status = gpu_batch.status.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 216,
+    "pattern": "cpu_call",
+    "snippet": "loop_cube_off = gpu_batch.loop_cube_off.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 217,
+    "pattern": "cpu_call",
+    "snippet": "loop_edge_off = gpu_batch.loop_edge_off.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 218,
+    "pattern": "cpu_call",
+    "snippet": "loop_edge_val = gpu_batch.loop_edge_val.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 219,
+    "pattern": "cpu_call",
+    "snippet": "loop_point_match = gpu_batch.loop_point_match.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 220,
+    "pattern": "cpu_call",
+    "snippet": "point_offsets = gpu_batch.point_offsets.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 221,
+    "pattern": "cpu_call",
+    "snippet": "point_values = gpu_batch.point_values.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 259,
+    "pattern": "cpu_call",
+    "snippet": "gpu_points = point_values[p_lo:p_hi].cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 259,
+    "pattern": "numpy_call",
+    "snippet": "gpu_points = point_values[p_lo:p_hi].cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 266,
+    "pattern": "tolist",
+    "snippet": "edges = loop_edge_val[e_lo:e_hi].tolist()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 292,
+    "pattern": "tolist",
+    "snippet": "f\"gpu_pt={gpu_pt.tolist()}, \""
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 293,
+    "pattern": "tolist",
+    "snippet": "f\"custom_pt={custom_pt.tolist()}, \""
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 307,
+    "pattern": "cpu_call",
+    "snippet": "loop_cube_off = gpu_batch.loop_cube_off.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 308,
+    "pattern": "cpu_call",
+    "snippet": "loop_point_match = gpu_batch.loop_point_match.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 309,
+    "pattern": "cpu_call",
+    "snippet": "point_offsets = gpu_batch.point_offsets.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_ab.py",
+    "line": 310,
+    "pattern": "cpu_call",
+    "snippet": "status = gpu_batch.status.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_phase1_gpu_ab.py",
+    "line": 54,
+    "pattern": "cpu_call",
+    "snippet": "batch_a_rank = s7_rank_assign(_clone_batch(batch)).loop_edge_rank.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_phase1_gpu_ab.py",
+    "line": 55,
+    "pattern": "cpu_call",
+    "snippet": "batch_a_match = s7_rank_assign(_clone_batch(batch)).loop_point_match.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_phase1_gpu_ab.py",
+    "line": 59,
+    "pattern": "cpu_call",
+    "snippet": "batch_b_rank = s7_rank_assign(_clone_batch(batch)).loop_edge_rank.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_phase1_gpu_ab.py",
+    "line": 60,
+    "pattern": "cpu_call",
+    "snippet": "batch_b_match = s7_rank_assign(_clone_batch(batch)).loop_point_match.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_phase1_gpu_ab.py",
+    "line": 132,
+    "pattern": "bool_bridge",
+    "snippet": "_cfg.S7_PHASE1_GPU = bool(phase1_gpu)"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_phase1_gpu_ab.py",
+    "line": 150,
+    "pattern": "cpu_call",
+    "snippet": "r_cpu = b_cpu.loop_edge_rank.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_phase1_gpu_ab.py",
+    "line": 151,
+    "pattern": "cpu_call",
+    "snippet": "r_gpu = b_gpu.loop_edge_rank.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_phase1_gpu_ab.py",
+    "line": 152,
+    "pattern": "cpu_call",
+    "snippet": "m_cpu = b_cpu.loop_point_match.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s7_phase1_gpu_ab.py",
+    "line": 153,
+    "pattern": "cpu_call",
+    "snippet": "m_gpu = b_gpu.loop_point_match.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_fastpath_gpu_ab.py",
+    "line": 64,
+    "pattern": "cpu_call",
+    "snippet": "a = getattr(batch_a, field).cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_fastpath_gpu_ab.py",
+    "line": 65,
+    "pattern": "cpu_call",
+    "snippet": "b = getattr(batch_b, field).cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s3_ab.py",
+    "line": 51,
+    "pattern": "cpu_call",
+    "snippet": "gpu_hash = (gpu_batch.cube_indices[:, 0].cpu().long() * R * R"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s3_ab.py",
+    "line": 52,
+    "pattern": "cpu_call",
+    "snippet": "+ gpu_batch.cube_indices[:, 1].cpu().long() * R"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s3_ab.py",
+    "line": 53,
+    "pattern": "cpu_call",
+    "snippet": "+ gpu_batch.cube_indices[:, 2].cpu().long())"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s3_ab.py",
+    "line": 63,
+    "pattern": "cpu_call",
+    "snippet": "gpu_sorted = gpu_batch.edge_weights.cpu()[gpu_order]"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s3_ab.py",
+    "line": 66,
+    "pattern": "item",
+    "snippet": "mismatches = (gpu_sorted != custom_sorted).any(dim=1).sum().item()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s3_ab.py",
+    "line": 70,
+    "pattern": "item",
+    "snippet": "f\"{(gpu_sorted != custom_sorted).any(dim=1).nonzero()[0].item()}\""
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 97,
+    "pattern": "cpu_call",
+    "snippet": "status = gpu_batch.status.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 98,
+    "pattern": "item",
+    "snippet": "gpu_ok = int((status == CubeStatus.OK).sum().item())"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 99,
+    "pattern": "item",
+    "snippet": "gpu_non_ok = int((status != CubeStatus.OK).sum().item())"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 115,
+    "pattern": "cpu_call",
+    "snippet": "gpu_ci = gpu_batch.cube_indices.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 116,
+    "pattern": "cpu_call",
+    "snippet": "gpu_status = gpu_batch.status.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 124,
+    "pattern": "cpu_call",
+    "snippet": "loop_cube_off = gpu_batch.loop_cube_off.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 125,
+    "pattern": "cpu_call",
+    "snippet": "loop_edge_off = gpu_batch.loop_edge_off.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 126,
+    "pattern": "cpu_call",
+    "snippet": "loop_edge_val = gpu_batch.loop_edge_val.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 164,
+    "pattern": "tolist",
+    "snippet": "gpu_loops.append(loop_edge_val[e_lo:e_hi].tolist())"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 190,
+    "pattern": "cpu_call",
+    "snippet": "face_weights = gpu_batch.face_weights.cpu()           # (N, 12)"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 191,
+    "pattern": "cpu_call",
+    "snippet": "status = gpu_batch.status.cpu()                        # (N,)"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 192,
+    "pattern": "cpu_call",
+    "snippet": "uturn = gpu_batch.uturn_assignment.cpu()               # (N, 12, 3)"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 198,
+    "pattern": "item",
+    "snippet": "has_face_weight = face_weights[i].any().item()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 203,
+    "pattern": "item",
+    "snippet": "assert not (uturn[i] == -1).all().item(), ("
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 207,
+    "pattern": "item",
+    "snippet": "assert (uturn[i] >= 0).all().item(), ("
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s6_ab.py",
+    "line": 212,
+    "pattern": "item",
+    "snippet": "assert (uturn[i] == -1).all().item(), ("
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s1_ab.py",
+    "line": 41,
+    "pattern": "cpu_call",
+    "snippet": "gpu_indices = gpu_batch.cube_indices.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s1_ab.py",
+    "line": 55,
+    "pattern": "cpu_call",
+    "snippet": "gpu_indices = gpu_batch.cube_indices.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s1_ab.py",
+    "line": 59,
+    "pattern": "tolist",
+    "snippet": "hash_to_idx = {int(h): i for i, h in enumerate(gpu_hash.tolist())}"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s1_ab.py",
+    "line": 71,
+    "pattern": "cpu_call",
+    "snippet": "gpu_faces = set(gpu_batch.tri_values[lo:hi].cpu().tolist())"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s1_ab.py",
+    "line": 71,
+    "pattern": "tolist",
+    "snippet": "gpu_faces = set(gpu_batch.tri_values[lo:hi].cpu().tolist())"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s2_ab.py",
+    "line": 42,
+    "pattern": "cpu_call",
+    "snippet": "gpu_nc = gpu_batch.num_components.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s2_ab.py",
+    "line": 45,
+    "pattern": "cpu_call",
+    "snippet": "gpu_hash = (gpu_batch.cube_indices[:, 0].cpu().long() * R * R"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s2_ab.py",
+    "line": 46,
+    "pattern": "cpu_call",
+    "snippet": "+ gpu_batch.cube_indices[:, 1].cpu().long() * R"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s2_ab.py",
+    "line": 47,
+    "pattern": "cpu_call",
+    "snippet": "+ gpu_batch.cube_indices[:, 2].cpu().long())"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s2_ab.py",
+    "line": 61,
+    "pattern": "item",
+    "snippet": "total_cf = int(gpu_batch.comp_face_off[-1].item())"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s2_ab.py",
+    "line": 69,
+    "pattern": "cpu_call",
+    "snippet": "gpu_nb = gpu_batch.num_boundary.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s2_ab.py",
+    "line": 71,
+    "pattern": "cpu_call",
+    "snippet": "gpu_hash = (gpu_batch.cube_indices[:, 0].cpu().long() * R * R"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s2_ab.py",
+    "line": 72,
+    "pattern": "cpu_call",
+    "snippet": "+ gpu_batch.cube_indices[:, 1].cpu().long() * R"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s2_ab.py",
+    "line": 73,
+    "pattern": "cpu_call",
+    "snippet": "+ gpu_batch.cube_indices[:, 2].cpu().long())"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_e2e_gpu_ab.py",
+    "line": 37,
+    "pattern": "cpu_call",
+    "snippet": "v = v.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_e2e_gpu_ab.py",
+    "line": 37,
+    "pattern": "numpy_call",
+    "snippet": "v = v.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_e2e_gpu_ab.py",
+    "line": 39,
+    "pattern": "cpu_call",
+    "snippet": "f = f.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_e2e_gpu_ab.py",
+    "line": 39,
+    "pattern": "numpy_call",
+    "snippet": "f = f.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_e2e_gpu_ab.py",
+    "line": 47,
+    "pattern": "cpu_call",
+    "snippet": "v = v.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_e2e_gpu_ab.py",
+    "line": 47,
+    "pattern": "numpy_call",
+    "snippet": "v = v.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_e2e_gpu_ab.py",
+    "line": 49,
+    "pattern": "cpu_call",
+    "snippet": "f = f.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_e2e_gpu_ab.py",
+    "line": 49,
+    "pattern": "numpy_call",
+    "snippet": "f = f.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_e2e_gpu_ab.py",
+    "line": 103,
+    "pattern": "explicit_sync",
+    "snippet": "torch.cuda.synchronize()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 69,
+    "pattern": "cpu_call",
+    "snippet": "ci = cube_indices.cpu().long()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 94,
+    "pattern": "cpu_call",
+    "snippet": "gpu_sorted = gpu_batch.face_weights.cpu()[gpu_order]"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 97,
+    "pattern": "item",
+    "snippet": "mismatches = (gpu_sorted != custom_sorted).any(dim=1).sum().item()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 101,
+    "pattern": "item",
+    "snippet": "f\"{(gpu_sorted != custom_sorted).any(dim=1).nonzero()[0].item()}\""
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 125,
+    "pattern": "cpu_call",
+    "snippet": "gpu_offsets = gpu_batch.point_offsets.cpu()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 126,
+    "pattern": "cpu_call",
+    "snippet": "gpu_values = gpu_batch.point_values.cpu().float()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 151,
+    "pattern": "cpu_call",
+    "snippet": "cube_idx = gpu_batch.cube_indices[gi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 151,
+    "pattern": "tolist",
+    "snippet": "cube_idx = gpu_batch.cube_indices[gi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 169,
+    "pattern": "cpu_call",
+    "snippet": "cube_idx = gpu_batch.cube_indices[gi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 169,
+    "pattern": "tolist",
+    "snippet": "cube_idx = gpu_batch.cube_indices[gi].cpu().tolist()"
+  },
+  {
+    "file": "corep_fast/tests/regression/test_s4_ab.py",
+    "line": 170,
+    "pattern": "item",
+    "snippet": "max_diff = (gpu_sorted_pts - custom_sorted_pts).abs().max().item()"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s6_collapse.py",
+    "line": 31,
+    "pattern": "item",
+    "snippet": "total_loops = int(result.loop_cube_off[-1].item())"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s6_collapse.py",
+    "line": 42,
+    "pattern": "item",
+    "snippet": "ok_count = (result.status == CubeStatus.OK).sum().item()"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_geom_closest_point.py",
+    "line": 78,
+    "pattern": "cpu_call",
+    "snippet": "assert torch.allclose(cpu_pts, gpu_pts.cpu(), atol=1e-5)"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_face_weights_gpu.py",
+    "line": 31,
+    "pattern": "item",
+    "snippet": "diff = (fw_cpu != fw_gpu).sum().item()"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 65,
+    "pattern": "tolist",
+    "snippet": "assert local_ids.tolist() == list(range(12))"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 81,
+    "pattern": "tolist",
+    "snippet": "keys_0 = set(keys[cube_ids == 0].tolist())"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 82,
+    "pattern": "tolist",
+    "snippet": "keys_1 = set(keys[cube_ids == 1].tolist())"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 178,
+    "pattern": "item",
+    "snippet": "assert owner_cube[max_neighbors_edge].item() == 0"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 540,
+    "pattern": "item",
+    "snippet": "assert tensors.loop_cube_offsets[0].item() == 0"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 551,
+    "pattern": "tolist",
+    "snippet": "assert t.cube_indices.tolist() == [[1, 2, 3]]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 552,
+    "pattern": "tolist",
+    "snippet": "assert t.cube_exception.tolist() == [False]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 553,
+    "pattern": "tolist",
+    "snippet": "assert t.cube_num_components.tolist() == [0]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 554,
+    "pattern": "tolist",
+    "snippet": "assert t.loop_cube_offsets.tolist() == [0, 0]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 571,
+    "pattern": "tolist",
+    "snippet": "assert t.loop_cube_offsets.tolist() == [0, 2]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 575,
+    "pattern": "tolist",
+    "snippet": "loop0_edges = t.loop_edges_flat[:K].tolist()"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 576,
+    "pattern": "tolist",
+    "snippet": "loop0_ranks = t.loop_ranks_flat[:K].tolist()"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s8_collapse.py",
+    "line": 591,
+    "pattern": "tolist",
+    "snippet": "assert t.cube_exception.tolist() == [True]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_constants.py",
+    "line": 34,
+    "pattern": "tolist",
+    "snippet": "assert C.CUBE_EDGES[0].tolist() == [0, 1]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_constants.py",
+    "line": 36,
+    "pattern": "tolist",
+    "snippet": "assert C.CUBE_EDGES[12].tolist() == [0, 2]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_constants.py",
+    "line": 38,
+    "pattern": "tolist",
+    "snippet": "assert C.CUBE_EDGES[17].tolist() == [0, 7]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_constants.py",
+    "line": 47,
+    "pattern": "tolist",
+    "snippet": "assert C.CUBE_FACETS[0].tolist() == [0, 1, 12]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_constants.py",
+    "line": 49,
+    "pattern": "tolist",
+    "snippet": "assert C.CUBE_FACETS[11].tolist() == [7, 8, 17]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s7_rank_assign.py",
+    "line": 36,
+    "pattern": "item",
+    "snippet": "total_loops = int(result.loop_cube_off[-1].item())"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s7_rank_assign.py",
+    "line": 64,
+    "pattern": "tolist",
+    "snippet": "for e, r in zip(edges.tolist(), ranks.tolist()):"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s7_rank_assign.py",
+    "line": 65,
+    "pattern": "item",
+    "snippet": "w = int(result.edge_weights[i, e].item())"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 39,
+    "pattern": "cpu_call",
+    "snippet": "facet_ids_first_12 = pairs['facet_id'][:12].cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 39,
+    "pattern": "numpy_call",
+    "snippet": "facet_ids_first_12 = pairs['facet_id'][:12].cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 65,
+    "pattern": "item",
+    "snippet": "assert bool(valid[0].item()) is True"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 65,
+    "pattern": "bool_bridge",
+    "snippet": "assert bool(valid[0].item()) is True"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 67,
+    "pattern": "item",
+    "snippet": "assert abs(A[0, 2].item()) < 1e-5"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 68,
+    "pattern": "item",
+    "snippet": "assert abs(B[0, 2].item()) < 1e-5"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 82,
+    "pattern": "cpu_call",
+    "snippet": "V_cpu = V.cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 82,
+    "pattern": "numpy_call",
+    "snippet": "V_cpu = V.cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 83,
+    "pattern": "cpu_call",
+    "snippet": "M_cpu = M.cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 83,
+    "pattern": "numpy_call",
+    "snippet": "M_cpu = M.cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 84,
+    "pattern": "cpu_call",
+    "snippet": "valid_cpu = valid.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 84,
+    "pattern": "numpy_call",
+    "snippet": "valid_cpu = valid.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_s4_gpu_pairs.py",
+    "line": 92,
+    "pattern": "bool_bridge",
+    "snippet": "gpu_said_valid = bool(valid_cpu[i])"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 66,
+    "pattern": "item",
+    "snippet": "assert cb.num_components[0].item() == 1"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 67,
+    "pattern": "item",
+    "snippet": "assert cb.num_components[1].item() == 2"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 68,
+    "pattern": "item",
+    "snippet": "assert cb.num_boundary[0].item() == 0"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 69,
+    "pattern": "item",
+    "snippet": "assert cb.num_boundary[1].item() == 1"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 77,
+    "pattern": "tolist",
+    "snippet": "assert cb.edge_weights[0].tolist() == list(range(18))"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 78,
+    "pattern": "tolist",
+    "snippet": "assert cb.edge_weights[1].tolist() == [1] * 18"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 86,
+    "pattern": "tolist",
+    "snippet": "assert cb.face_weights[0].tolist() == list(range(12))"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 87,
+    "pattern": "tolist",
+    "snippet": "assert cb.face_weights[1].tolist() == [0] * 12"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 96,
+    "pattern": "tolist",
+    "snippet": "assert cb.point_offsets.tolist() == [0, 1, 3]"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 108,
+    "pattern": "item",
+    "snippet": "assert cb.edge_weights[0].sum().item() == 0  # default zeros"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 109,
+    "pattern": "item",
+    "snippet": "assert cb.num_components[0].item() == 0"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_interop.py",
+    "line": 121,
+    "pattern": "item",
+    "snippet": "assert cb.edge_weights.sum().item() == 0"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_containers.py",
+    "line": 80,
+    "pattern": "item",
+    "snippet": "neg_count = (mt.face_adj == -1).sum().item()"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_geom_plane_tri.py",
+    "line": 15,
+    "pattern": "item",
+    "snippet": "assert valid[0].item() == True"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_geom_plane_tri.py",
+    "line": 16,
+    "pattern": "item",
+    "snippet": "assert abs(seg_p1[0, 2].item()) < 1e-5"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_geom_plane_tri.py",
+    "line": 17,
+    "pattern": "item",
+    "snippet": "assert abs(seg_p2[0, 2].item()) < 1e-5"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_geom_plane_tri.py",
+    "line": 26,
+    "pattern": "item",
+    "snippet": "assert valid[0].item() == False"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_geom_plane_tri.py",
+    "line": 37,
+    "pattern": "item",
+    "snippet": "assert valid[0].item() == True"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_geom_plane_tri.py",
+    "line": 38,
+    "pattern": "item",
+    "snippet": "assert valid[1].item() == False"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_geom_plane_tri.py",
+    "line": 50,
+    "pattern": "item",
+    "snippet": "assert valid[0].item() == False"
+  },
+  {
+    "file": "corep_fast/tests/unit/test_geom_plane_tri.py",
+    "line": 61,
+    "pattern": "item",
+    "snippet": "assert valid[0].item() == False"
+  },
+  {
+    "file": "corep_fast/stages/s1_voxelize.py",
+    "line": 56,
+    "pattern": "item",
+    "snippet": "total_pairs = int(offsets[-1].item())"
+  },
+  {
+    "file": "corep_fast/stages/s2_components.py",
+    "line": 47,
+    "pattern": "item",
+    "snippet": "max_faces = int(counts.max().item())"
+  },
+  {
+    "file": "corep_fast/stages/s2_components.py",
+    "line": 214,
+    "pattern": "item",
+    "snippet": "n_valid = int(cube_mask.sum().item())"
+  },
+  {
+    "file": "corep_fast/stages/s2_components.py",
+    "line": 219,
+    "pattern": "tolist",
+    "snippet": "face_set = set(face_ids.tolist())"
+  },
+  {
+    "file": "corep_fast/stages/s2_components.py",
+    "line": 236,
+    "pattern": "tolist",
+    "snippet": "face_to_slot = {int(f): s for s, f in enumerate(face_ids.tolist())}"
+  },
+  {
+    "file": "corep_fast/stages/s2_components.py",
+    "line": 239,
+    "pattern": "item",
+    "snippet": "nbr_face = int(nbrs[slot_j, e].item())"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 36,
+    "pattern": "tolist",
+    "snippet": "_EDGE_VERTS: List[Tuple[int, int]] = [tuple(e) for e in CUBE_EDGES.tolist()]"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 37,
+    "pattern": "tolist",
+    "snippet": "_TRIANGLES: List[Tuple[int, int, int]] = [tuple(f) for f in CUBE_FACETS.tolist()]"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 233,
+    "pattern": "item",
+    "snippet": "max_points = int(total_points_per_cube.max().item()) if M > 0 else 0"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 236,
+    "pattern": "cpu_call",
+    "snippet": "edge_weights_fast.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 236,
+    "pattern": "numpy_call",
+    "snippet": "edge_weights_fast.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 237,
+    "pattern": "cpu_call",
+    "snippet": "point_offset.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 237,
+    "pattern": "numpy_call",
+    "snippet": "point_offset.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 244,
+    "pattern": "item",
+    "snippet": "max_w = int(edge_weights_fast.max().item())"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 248,
+    "pattern": "cpu_call",
+    "snippet": "edge_weights_fast.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 248,
+    "pattern": "numpy_call",
+    "snippet": "edge_weights_fast.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 249,
+    "pattern": "cpu_call",
+    "snippet": "point_offset.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 249,
+    "pattern": "numpy_call",
+    "snippet": "point_offset.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 251,
+    "pattern": "cpu_call",
+    "snippet": "(total_points_per_cube == 0).cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 251,
+    "pattern": "numpy_call",
+    "snippet": "(total_points_per_cube == 0).cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 372,
+    "pattern": "cpu_call",
+    "snippet": "edge_weights_fast.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 372,
+    "pattern": "numpy_call",
+    "snippet": "edge_weights_fast.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 373,
+    "pattern": "cpu_call",
+    "snippet": "point_offset.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 373,
+    "pattern": "numpy_call",
+    "snippet": "point_offset.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 374,
+    "pattern": "cpu_call",
+    "snippet": "adj.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 374,
+    "pattern": "numpy_call",
+    "snippet": "adj.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 375,
+    "pattern": "cpu_call",
+    "snippet": "degree_ok.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 375,
+    "pattern": "numpy_call",
+    "snippet": "degree_ok.cpu().numpy(),"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 846,
+    "pattern": "cpu_call",
+    "snippet": "ew_np = edge_weights.cpu().numpy()                        # (N, 18)"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 846,
+    "pattern": "numpy_call",
+    "snippet": "ew_np = edge_weights.cpu().numpy()                        # (N, 18)"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 847,
+    "pattern": "cpu_call",
+    "snippet": "fw_np = face_weights.cpu().numpy()                        # (N, 12)"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 847,
+    "pattern": "numpy_call",
+    "snippet": "fw_np = face_weights.cpu().numpy()                        # (N, 12)"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 848,
+    "pattern": "cpu_call",
+    "snippet": "fast_mask_np = fast_path_mask.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 848,
+    "pattern": "numpy_call",
+    "snippet": "fast_mask_np = fast_path_mask.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 849,
+    "pattern": "cpu_call",
+    "snippet": "slow_mask_np = slow_path_mask.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 849,
+    "pattern": "numpy_call",
+    "snippet": "slow_mask_np = slow_path_mask.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 850,
+    "pattern": "cpu_call",
+    "snippet": "fast_fail_np = fast_gpu_fail.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 850,
+    "pattern": "numpy_call",
+    "snippet": "fast_fail_np = fast_gpu_fail.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 864,
+    "pattern": "cpu_call",
+    "snippet": "fast_eligible_np = fast_eligible.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 864,
+    "pattern": "numpy_call",
+    "snippet": "fast_eligible_np = fast_eligible.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 880,
+    "pattern": "cpu_call",
+    "snippet": "fast_idx_np = fast_idx_t.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 880,
+    "pattern": "numpy_call",
+    "snippet": "fast_idx_np = fast_idx_t.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 885,
+    "pattern": "bool_bridge",
+    "snippet": "if not bool(degree_ok_np[local_i]):"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 907,
+    "pattern": "cpu_call",
+    "snippet": "worker_idx_np = worker_idx_t.cpu().numpy().astype(np.int64, copy=False)"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 907,
+    "pattern": "numpy_call",
+    "snippet": "worker_idx_np = worker_idx_t.cpu().numpy().astype(np.int64, copy=False)"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 910,
+    "pattern": "tolist",
+    "snippet": "# Bulk gather rows once; .tolist() on the whole row block is much"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 911,
+    "pattern": "tolist",
+    "snippet": "# faster than per-cube .tolist() because the inner numpy loop is in C."
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 912,
+    "pattern": "tolist",
+    "snippet": "ew_rows = ew_np[worker_idx_np].tolist()       # list[list[int]] length n_work"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 913,
+    "pattern": "tolist",
+    "snippet": "fw_rows = fw_np[worker_idx_np].tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s6_collapse.py",
+    "line": 914,
+    "pattern": "tolist",
+    "snippet": "slow_flags = slow_mask_np[worker_idx_np].astype(bool, copy=False).tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 150,
+    "pattern": "item",
+    "snippet": "L = int(batch.loop_cube_off[-1].item())"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 275,
+    "pattern": "item",
+    "snippet": ".item() GPU sync overhead (275K syncs \u2192 0 syncs)."
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 283,
+    "pattern": "cpu_call",
+    "snippet": "ci_np = batch.cube_indices.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 283,
+    "pattern": "numpy_call",
+    "snippet": "ci_np = batch.cube_indices.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 284,
+    "pattern": "cpu_call",
+    "snippet": "ew_np = batch.edge_weights.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 284,
+    "pattern": "numpy_call",
+    "snippet": "ew_np = batch.edge_weights.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 285,
+    "pattern": "cpu_call",
+    "snippet": "status_np = batch.status.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 285,
+    "pattern": "numpy_call",
+    "snippet": "status_np = batch.status.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 286,
+    "pattern": "cpu_call",
+    "snippet": "lco_np = batch.loop_cube_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 286,
+    "pattern": "numpy_call",
+    "snippet": "lco_np = batch.loop_cube_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 287,
+    "pattern": "cpu_call",
+    "snippet": "leo_np = batch.loop_edge_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 287,
+    "pattern": "numpy_call",
+    "snippet": "leo_np = batch.loop_edge_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 288,
+    "pattern": "cpu_call",
+    "snippet": "lev_np = batch.loop_edge_val.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 288,
+    "pattern": "numpy_call",
+    "snippet": "lev_np = batch.loop_edge_val.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 289,
+    "pattern": "cpu_call",
+    "snippet": "ler_np = batch.loop_edge_rank.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 289,
+    "pattern": "numpy_call",
+    "snippet": "ler_np = batch.loop_edge_rank.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 290,
+    "pattern": "cpu_call",
+    "snippet": "lpm_np = batch.loop_point_match.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 290,
+    "pattern": "numpy_call",
+    "snippet": "lpm_np = batch.loop_point_match.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 291,
+    "pattern": "cpu_call",
+    "snippet": "po_np = batch.point_offsets.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 291,
+    "pattern": "numpy_call",
+    "snippet": "po_np = batch.point_offsets.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 292,
+    "pattern": "cpu_call",
+    "snippet": "pv_np = batch.point_values.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 292,
+    "pattern": "numpy_call",
+    "snippet": "pv_np = batch.point_values.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 295,
+    "pattern": "tolist",
+    "snippet": "# np.tolist() is a C-optimized bulk conversion that produces native Python"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 297,
+    "pattern": "tolist",
+    "snippet": "ci_py = ci_np.tolist()           # list[list[int]]"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 298,
+    "pattern": "tolist",
+    "snippet": "ew_py = ew_np.tolist()           # list[list[int]]"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 299,
+    "pattern": "tolist",
+    "snippet": "status_py = status_np.tolist()   # list[int]"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 300,
+    "pattern": "tolist",
+    "snippet": "lco_py = lco_np.tolist()         # list[int]"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 301,
+    "pattern": "tolist",
+    "snippet": "leo_py = leo_np.tolist()         # list[int]"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 302,
+    "pattern": "tolist",
+    "snippet": "lev_py = lev_np.tolist()         # list[int]"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 303,
+    "pattern": "tolist",
+    "snippet": "ler_py = ler_np.tolist()         # list[int]"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 304,
+    "pattern": "tolist",
+    "snippet": "lpm_py = lpm_np.tolist()         # list[int]"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 305,
+    "pattern": "tolist",
+    "snippet": "po_py = po_np.tolist()           # list[int]"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 306,
+    "pattern": "tolist",
+    "snippet": "pv_py = pv_np.tolist()           # list[list[float]]"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 571,
+    "pattern": "bool_bridge",
+    "snippet": "cube_exception_list.append(bool(data.get('exception', False)))"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 662,
+    "pattern": "item",
+    "snippet": "max_loop_len = max(int(lengths.max().item()), 1)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 891,
+    "pattern": "item",
+    "snippet": "R = int(cube_indices.max().item()) + 2"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1045,
+    "pattern": "item",
+    "snippet": "max_loops = int(num_loops.max().item()) if E > 0 else 0"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1394,
+    "pattern": "cpu_call",
+    "snippet": "cand_ci = tensors.cube_indices.cpu().numpy()                   # (N, 3)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1394,
+    "pattern": "numpy_call",
+    "snippet": "cand_ci = tensors.cube_indices.cpu().numpy()                   # (N, 3)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1395,
+    "pattern": "cpu_call",
+    "snippet": "cand_n_cube_cpu = cand_n_cube.cpu().numpy()                    # (M, 4)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1395,
+    "pattern": "numpy_call",
+    "snippet": "cand_n_cube_cpu = cand_n_cube.cpu().numpy()                    # (M, 4)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1447,
+    "pattern": "cpu_call",
+    "snippet": "tri_verts_torch_np = tri_verts_torch.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1447,
+    "pattern": "numpy_call",
+    "snippet": "tri_verts_torch_np = tri_verts_torch.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1490,
+    "pattern": "cpu_call",
+    "snippet": "cand_n_cube = kept_table.neighbor_cube_ids[cand_idx].cpu().numpy()  # (M, 4)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1490,
+    "pattern": "numpy_call",
+    "snippet": "cand_n_cube = kept_table.neighbor_cube_ids[cand_idx].cpu().numpy()  # (M, 4)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1491,
+    "pattern": "cpu_call",
+    "snippet": "cand_ci = tensors.cube_indices.cpu().numpy()                          # (N, 3)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1491,
+    "pattern": "numpy_call",
+    "snippet": "cand_ci = tensors.cube_indices.cpu().numpy()                          # (N, 3)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1528,
+    "pattern": "bool_bridge",
+    "snippet": "is_exc = bool(exception_cpu[ci])"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1531,
+    "pattern": "tolist",
+    "snippet": "comp_pts = pv[p_lo:p_hi].tolist() if p_hi > p_lo else []"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1546,
+    "pattern": "tolist",
+    "snippet": "edges = lev[e_lo:e_hi].tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1547,
+    "pattern": "tolist",
+    "snippet": "ranks = ler[e_lo:e_hi].tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1550,
+    "pattern": "tolist",
+    "snippet": "cp = pv[p_lo + match_idx].tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1563,
+    "pattern": "tolist",
+    "snippet": "'edge_weights': edge_weights_cpu[ci].tolist(),"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1585,
+    "pattern": "cpu_call",
+    "snippet": "cand_n_cube = kept_table.neighbor_cube_ids[cand_idx].cpu().numpy()  # (M, 4)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1585,
+    "pattern": "numpy_call",
+    "snippet": "cand_n_cube = kept_table.neighbor_cube_ids[cand_idx].cpu().numpy()  # (M, 4)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1586,
+    "pattern": "cpu_call",
+    "snippet": "cube_indices_cpu = tensors.cube_indices.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1586,
+    "pattern": "numpy_call",
+    "snippet": "cube_indices_cpu = tensors.cube_indices.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1587,
+    "pattern": "cpu_call",
+    "snippet": "edge_weights_cpu = tensors.cube_edge_weights.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1587,
+    "pattern": "numpy_call",
+    "snippet": "edge_weights_cpu = tensors.cube_edge_weights.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1588,
+    "pattern": "cpu_call",
+    "snippet": "exception_cpu = tensors.cube_exception.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1588,
+    "pattern": "numpy_call",
+    "snippet": "exception_cpu = tensors.cube_exception.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1589,
+    "pattern": "cpu_call",
+    "snippet": "lco = batch.loop_cube_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1589,
+    "pattern": "numpy_call",
+    "snippet": "lco = batch.loop_cube_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1590,
+    "pattern": "cpu_call",
+    "snippet": "leo = batch.loop_edge_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1590,
+    "pattern": "numpy_call",
+    "snippet": "leo = batch.loop_edge_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1591,
+    "pattern": "cpu_call",
+    "snippet": "lev = batch.loop_edge_val.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1591,
+    "pattern": "numpy_call",
+    "snippet": "lev = batch.loop_edge_val.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1592,
+    "pattern": "cpu_call",
+    "snippet": "ler = batch.loop_edge_rank.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1592,
+    "pattern": "numpy_call",
+    "snippet": "ler = batch.loop_edge_rank.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1593,
+    "pattern": "cpu_call",
+    "snippet": "po = batch.point_offsets.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1593,
+    "pattern": "numpy_call",
+    "snippet": "po = batch.point_offsets.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1594,
+    "pattern": "cpu_call",
+    "snippet": "pv = batch.point_values.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1594,
+    "pattern": "numpy_call",
+    "snippet": "pv = batch.point_values.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1595,
+    "pattern": "cpu_call",
+    "snippet": "lpm = batch.loop_point_match.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1595,
+    "pattern": "numpy_call",
+    "snippet": "lpm = batch.loop_point_match.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1788,
+    "pattern": "cpu_call",
+    "snippet": "tri_verts_torch_np = tri_verts_torch.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 1788,
+    "pattern": "numpy_call",
+    "snippet": "tri_verts_torch_np = tri_verts_torch.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 2225,
+    "pattern": "cpu_call",
+    "snippet": "return unique_verts.cpu(), torch.zeros((0, 3), dtype=torch.int32)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 2255,
+    "pattern": "cpu_call",
+    "snippet": "return unique_verts.cpu(), deduped_faces.cpu()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 2278,
+    "pattern": "cpu_call",
+    "snippet": "verts_np = vertices.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 2278,
+    "pattern": "numpy_call",
+    "snippet": "verts_np = vertices.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 2279,
+    "pattern": "cpu_call",
+    "snippet": "faces_np = faces.cpu().numpy() if F > 0 else np.zeros((0, 3), dtype=np.int32)"
+  },
+  {
+    "file": "corep_fast/stages/s8_collapse.py",
+    "line": 2279,
+    "pattern": "numpy_call",
+    "snippet": "faces_np = faces.cpu().numpy() if F > 0 else np.zeros((0, 3), dtype=np.int32)"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 148,
+    "pattern": "cpu_call",
+    "snippet": "_FW_CUBE_IDX = batch.cube_indices.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 148,
+    "pattern": "numpy_call",
+    "snippet": "_FW_CUBE_IDX = batch.cube_indices.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 149,
+    "pattern": "cpu_call",
+    "snippet": "_FW_TRI_OFF = batch.tri_offsets.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 149,
+    "pattern": "numpy_call",
+    "snippet": "_FW_TRI_OFF = batch.tri_offsets.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 150,
+    "pattern": "cpu_call",
+    "snippet": "_FW_TRI_VAL = batch.tri_values.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 150,
+    "pattern": "numpy_call",
+    "snippet": "_FW_TRI_VAL = batch.tri_values.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 151,
+    "pattern": "cpu_call",
+    "snippet": "mesh_verts_np = mesh.vertices.cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 151,
+    "pattern": "numpy_call",
+    "snippet": "mesh_verts_np = mesh.vertices.cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 152,
+    "pattern": "cpu_call",
+    "snippet": "mesh_faces_np = mesh.faces.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 152,
+    "pattern": "numpy_call",
+    "snippet": "mesh_faces_np = mesh.faces.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 432,
+    "pattern": "cpu_call",
+    "snippet": "num_components_np = batch.num_components.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 432,
+    "pattern": "numpy_call",
+    "snippet": "num_components_np = batch.num_components.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 433,
+    "pattern": "cpu_call",
+    "snippet": "comp_face_off_np = batch.comp_face_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 433,
+    "pattern": "numpy_call",
+    "snippet": "comp_face_off_np = batch.comp_face_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 440,
+    "pattern": "item",
+    "snippet": "total_points = int(point_offsets[-1].item())"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 480,
+    "pattern": "cpu_call",
+    "snippet": "comp_face_val_cpu = comp_face_val.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 480,
+    "pattern": "numpy_call",
+    "snippet": "comp_face_val_cpu = comp_face_val.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 481,
+    "pattern": "cpu_call",
+    "snippet": "mesh_faces_cpu = mesh_faces.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 481,
+    "pattern": "numpy_call",
+    "snippet": "mesh_faces_cpu = mesh_faces.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 482,
+    "pattern": "cpu_call",
+    "snippet": "face_adj_cpu = face_adj.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 482,
+    "pattern": "numpy_call",
+    "snippet": "face_adj_cpu = face_adj.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1149,
+    "pattern": "item",
+    "snippet": "if not bool(valid.any().item()):"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1149,
+    "pattern": "bool_bridge",
+    "snippet": "if not bool(valid.any().item()):"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1168,
+    "pattern": "cpu_call",
+    "snippet": "# Stage C: Bulk GPU\u2192CPU transfer (one .cpu() per array)"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1169,
+    "pattern": "cpu_call",
+    "snippet": "cf_np = unique_cf.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1169,
+    "pattern": "numpy_call",
+    "snippet": "cf_np = unique_cf.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1170,
+    "pattern": "cpu_call",
+    "snippet": "off_np = group_offsets.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1170,
+    "pattern": "numpy_call",
+    "snippet": "off_np = group_offsets.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1171,
+    "pattern": "cpu_call",
+    "snippet": "A_np = sorted_A.cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1171,
+    "pattern": "numpy_call",
+    "snippet": "A_np = sorted_A.cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1172,
+    "pattern": "cpu_call",
+    "snippet": "B_np = sorted_B.cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1172,
+    "pattern": "numpy_call",
+    "snippet": "B_np = sorted_B.cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1173,
+    "pattern": "cpu_call",
+    "snippet": "cube_idx_np = batch.cube_indices.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s4_face_point.py",
+    "line": 1173,
+    "pattern": "numpy_call",
+    "snippet": "cube_idx_np = batch.cube_indices.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 33,
+    "pattern": "tolist",
+    "snippet": "_EDGE_VERTS: List[Tuple[int, int]] = [tuple(e) for e in CUBE_EDGES.tolist()]"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 34,
+    "pattern": "tolist",
+    "snippet": "_TRIANGLES: List[Tuple[int, int, int]] = [tuple(f) for f in CUBE_FACETS.tolist()]"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 35,
+    "pattern": "numpy_call",
+    "snippet": "_CUBE_VERTS_NP: np.ndarray = CUBE_VERTICES.numpy()  # (8, 3) float32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 405,
+    "pattern": "item",
+    "snippet": "l_lo = int(batch.loop_cube_off[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 406,
+    "pattern": "item",
+    "snippet": "l_hi = int(batch.loop_cube_off[cube_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 409,
+    "pattern": "item",
+    "snippet": "e_lo = int(batch.loop_edge_off[li].item())"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 410,
+    "pattern": "item",
+    "snippet": "e_hi = int(batch.loop_edge_off[li + 1].item())"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 411,
+    "pattern": "tolist",
+    "snippet": "loops.append(batch.loop_edge_val[e_lo:e_hi].tolist())"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 417,
+    "pattern": "item",
+    "snippet": "p_lo = int(batch.point_offsets[cube_idx].item())"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 418,
+    "pattern": "item",
+    "snippet": "p_hi = int(batch.point_offsets[cube_idx + 1].item())"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 421,
+    "pattern": "cpu_call",
+    "snippet": "return batch.point_values[p_lo:p_hi].cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 421,
+    "pattern": "numpy_call",
+    "snippet": "return batch.point_values[p_lo:p_hi].cpu().numpy().astype(np.float64)"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 525,
+    "pattern": "tolist",
+    "snippet": "edge_verts = CUBE_EDGES.tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 526,
+    "pattern": "tolist",
+    "snippet": "facets = CUBE_FACETS.tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 586,
+    "pattern": "tolist",
+    "snippet": "edge_verts = CUBE_EDGES.tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 587,
+    "pattern": "tolist",
+    "snippet": "facets = CUBE_FACETS.tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 928,
+    "pattern": "item",
+    "snippet": "K_max = int(loop_lengths.max().item()) if L > 0 else 0"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1111,
+    "pattern": "cpu_call",
+    "snippet": "status_cpu_np = batch.status.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1111,
+    "pattern": "numpy_call",
+    "snippet": "status_cpu_np = batch.status.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1112,
+    "pattern": "cpu_call",
+    "snippet": "any_match_cpu = any_match.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1112,
+    "pattern": "numpy_call",
+    "snippet": "any_match_cpu = any_match.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1115,
+    "pattern": "cpu_call",
+    "snippet": "loop_cube_off_np = batch.loop_cube_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1115,
+    "pattern": "numpy_call",
+    "snippet": "loop_cube_off_np = batch.loop_cube_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1116,
+    "pattern": "cpu_call",
+    "snippet": "loop_off_np = batch.loop_edge_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1116,
+    "pattern": "numpy_call",
+    "snippet": "loop_off_np = batch.loop_edge_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1117,
+    "pattern": "cpu_call",
+    "snippet": "loop_edge_val_np = batch.loop_edge_val.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1117,
+    "pattern": "numpy_call",
+    "snippet": "loop_edge_val_np = batch.loop_edge_val.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1118,
+    "pattern": "cpu_call",
+    "snippet": "ew_np_all = batch.edge_weights.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1118,
+    "pattern": "numpy_call",
+    "snippet": "ew_np_all = batch.edge_weights.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1119,
+    "pattern": "cpu_call",
+    "snippet": "ut_np_all = batch.uturn_assignment.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1119,
+    "pattern": "numpy_call",
+    "snippet": "ut_np_all = batch.uturn_assignment.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1128,
+    "pattern": "cpu_call",
+    "snippet": "chosen_ranks_cpu = chosen_ranks.cpu().numpy()  # (L, K_max) int32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1128,
+    "pattern": "numpy_call",
+    "snippet": "chosen_ranks_cpu = chosen_ranks.cpu().numpy()  # (L, K_max) int32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1132,
+    "pattern": "tolist",
+    "snippet": "ew_i = ew_np_all[cube_i].tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1137,
+    "pattern": "tolist",
+    "snippet": "s6_loops.append(loop_edge_val_np[e_lo_l:e_hi_l].tolist())"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1206,
+    "pattern": "cpu_call",
+    "snippet": "ew_np = batch.edge_weights.cpu().numpy()   # (N, 18) int32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1206,
+    "pattern": "numpy_call",
+    "snippet": "ew_np = batch.edge_weights.cpu().numpy()   # (N, 18) int32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1207,
+    "pattern": "cpu_call",
+    "snippet": "ci_np = batch.cube_indices.cpu().numpy()    # (N, 3)  int32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1207,
+    "pattern": "numpy_call",
+    "snippet": "ci_np = batch.cube_indices.cpu().numpy()    # (N, 3)  int32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1212,
+    "pattern": "item",
+    "snippet": "total_loops = int(batch.loop_cube_off[-1].item())"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1215,
+    "pattern": "cpu_call",
+    "snippet": "uturn_np = batch.uturn_assignment.cpu().numpy()  # (N, 12, 3) int32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1215,
+    "pattern": "numpy_call",
+    "snippet": "uturn_np = batch.uturn_assignment.cpu().numpy()  # (N, 12, 3) int32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1218,
+    "pattern": "cpu_call",
+    "snippet": "fw_np = batch.face_weights.cpu().numpy()  # (N, 12) int32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1218,
+    "pattern": "numpy_call",
+    "snippet": "fw_np = batch.face_weights.cpu().numpy()  # (N, 12) int32"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1226,
+    "pattern": "item",
+    "snippet": "# Convert CSR to numpy once (avoid per-cube .item() GPU syncs)"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1227,
+    "pattern": "cpu_call",
+    "snippet": "loop_cube_off_np = batch.loop_cube_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1227,
+    "pattern": "numpy_call",
+    "snippet": "loop_cube_off_np = batch.loop_cube_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1228,
+    "pattern": "cpu_call",
+    "snippet": "loop_edge_off_np = batch.loop_edge_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1228,
+    "pattern": "numpy_call",
+    "snippet": "loop_edge_off_np = batch.loop_edge_off.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1229,
+    "pattern": "cpu_call",
+    "snippet": "loop_edge_val_np = batch.loop_edge_val.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1229,
+    "pattern": "numpy_call",
+    "snippet": "loop_edge_val_np = batch.loop_edge_val.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1230,
+    "pattern": "cpu_call",
+    "snippet": "status_np = batch.status.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1230,
+    "pattern": "numpy_call",
+    "snippet": "status_np = batch.status.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1296,
+    "pattern": "tolist",
+    "snippet": "ew_i = ew_np[i].tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1301,
+    "pattern": "tolist",
+    "snippet": "s6_loops.append(loop_edge_val_np[e_lo:e_hi].tolist())"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1415,
+    "pattern": "tolist",
+    "snippet": "edges = loop_edge_val_np[e_lo:e_hi].tolist()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1480,
+    "pattern": "cpu_call",
+    "snippet": "point_offsets_np = batch.point_offsets.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1480,
+    "pattern": "numpy_call",
+    "snippet": "point_offsets_np = batch.point_offsets.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1481,
+    "pattern": "cpu_call",
+    "snippet": "loop_centroids_np = loop_centroids.cpu().numpy() if total_loops > 0 \\"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1481,
+    "pattern": "numpy_call",
+    "snippet": "loop_centroids_np = loop_centroids.cpu().numpy() if total_loops > 0 \\"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1483,
+    "pattern": "cpu_call",
+    "snippet": "point_values_np = batch.point_values.cpu().numpy()"
+  },
+  {
+    "file": "corep_fast/stages/s7_rank_assign.py",
+    "line": 1483,
+    "pattern": "numpy_call",
+    "snippet": "point_values_np = batch.point_values.cpu().numpy()"
+  }
+]

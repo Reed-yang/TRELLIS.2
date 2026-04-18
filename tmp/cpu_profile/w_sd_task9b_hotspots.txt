@@ -1,0 +1,22 @@
+rank    self_ms     cum_ms      calls  function @ file:line
+----------------------------------------------------------------------------------------------------
+   1     1022.0     1749.8          1  s7_rank_assign @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s7_rank_assign.py:1175
+   2      538.1     1364.6          1  s6_collapse @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:976
+   3      473.1      501.2          1  _labels_to_list_of_lists @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:1259
+   4      370.8     1225.0          1  _compute_component_points_gpu @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:704
+   5      310.7      310.7     276329  <method 'tolist' of 'numpy.ndarray' objects> @ ~:0
+   6      283.3      393.5          1  _count_uturns_from_packed @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:548
+   7      271.9      271.9          8  <built-in method gc.collect> @ ~:0
+   8      240.1      240.1     275544  <method 'reduce' of 'numpy.ufunc' objects> @ ~:0
+   9      220.0      220.0         60  <method 'cpu' of 'torch._C.TensorBase' objects> @ ~:0
+  10      204.0      204.0     551102  <built-in method numpy.asarray> @ ~:0
+  11      162.3      162.3     275539  <built-in method scipy.optimize._lsap.linear_sum_assignment> @ ~:0
+  12      140.0      140.0          1  <listcomp> @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s6_collapse.py:1158
+  13      118.8      118.8     275555  <method 'astype' of 'numpy.ndarray' objects> @ ~:0
+  14      104.4      127.3          1  _snap_centroids_to_components @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/stages/s4_face_point.py:941
+  15       77.2       77.2    1997642  <method 'append' of 'list' objects> @ ~:0
+  16       66.0       66.0    1935897  <built-in method builtins.len> @ ~:0
+  17       64.0       64.0        293  <method 'to' of 'torch._C.TensorBase' objects> @ ~:0
+  18       44.5      322.6     275539  <method 'sum' of 'numpy.ndarray' objects> @ ~:0
+  19       42.8     5447.5          1  run_pipeline @ /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/cpu_profile/driver_main.py:28
+  20       39.6       43.0        216  _emit @ /mnt/novita2/siyuan/workspace/TRELLIS.2/corep_fast/geom/sh_clip.py:108

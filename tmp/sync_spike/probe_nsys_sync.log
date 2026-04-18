@@ -1,0 +1,12 @@
+[info] runtime API table: CUPTI_ACTIVITY_KIND_RUNTIME
+
+Top 5 longest cudaDeviceSynchronize calls:
+rank         start_ns          end_ns      dur_ms    corrId                 tid
+1          3231746876      4280118614    1048.372       132     340722829353655
+2         15334788949     15335201191       0.412    212046     340722829353655
+3          4948065950      4948336393       0.270      7616     340722829353655
+4         15216997248     15217015679       0.018    204591     340722829353655
+5         23907032196     23907048356       0.016    357824     340722829353655
+
+[ok] longest cudaDeviceSynchronize: 1048.37ms (start=3231746876, end=4280118614)
+[write] /mnt/novita2/siyuan/workspace/TRELLIS.2/tmp/sync_spike/nsys_top_devicesync.json
