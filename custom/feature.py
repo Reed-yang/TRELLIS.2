@@ -172,9 +172,10 @@ def unique_to_full_weights(unique_weights, cube_indices, res, geometry_type='edg
 
 
 if __name__ == "__main__":
-    mesh_path = 'tmp/test_mesh/banana_plant_with_pot.glb'
+    mesh_path="/mnt/novita2/siyuan/workspace/TRELLIS.2/datasets/ObjaverseXL_sketchfab/raw/hf-objaverse-v1/glbs/000-086/6eba14662bd048f9bc1ca10e63b5622f.glb"
+    # mesh_path = 'tmp/test_mesh/banana_plant_with_pot.glb'
     output_directory = "tmp/test_feature"
-    resolution = 256
+    resolution = 512
 
     mesh = trimesh.load(mesh_path, force='mesh')
 

@@ -1129,6 +1129,8 @@ def feature_to_mesh(edge_weights, face_weights, component_points, cube_indices, 
     edge_weights_full = unique_to_full_weights(edge_weights, cube_indices, resolution, geometry_type='edge')
     face_weights_full = unique_to_full_weights(face_weights, cube_indices, resolution, geometry_type='face')
 
+    os.makedirs('tmp/test_feature/debug', exist_ok=True)
+    
     inner_mask = np.ones(len(cube_indices), dtype=bool)
     boundary_mask = np.zeros(len(cube_indices), dtype=bool)
     inner_registers = [{'cube_indices': tuple(cube_indices[i]), 
@@ -1148,8 +1150,8 @@ def feature_to_mesh(edge_weights, face_weights, component_points, cube_indices, 
     solved_boundary, ambiguous_boundary, unsolvable_boundary = collapse_face_boundary(boundary_registers)
     print('collapse_face_boundary', len(solved_boundary), len(ambiguous_boundary), len(unsolvable_boundary))
 
-    face_registers = collapse_point_inner(solved_uturn, resolution, debug=False, output_directory='tmp/test_feature_banana256/debug')
-    face_registers_with_boundary = collapse_point_boundary(solved_boundary, resolution, debug=False, output_directory='tmp/test_feature_banana256/debug')
+    face_registers = collapse_point_inner(solved_uturn, resolution, debug=False, output_directory='tmp/test_feature/debug')
+    face_registers_with_boundary = collapse_point_boundary(solved_boundary, resolution, debug=False, output_directory='tmp/test_feature/debug')
 
     exception_registers = mark_exception([*ambiguous_uturn, *unsolvable_uturn, *ambiguous_boundary, *unsolvable_boundary])
 
@@ -1164,13 +1166,13 @@ def feature_to_mesh(edge_weights, face_weights, component_points, cube_indices, 
 
 if __name__ == "__main__":
 
-    weights_edge = load_pickle("tmp/test_feature_banana256/feature/weights_edge.pkl")
-    weights_face = load_pickle("tmp/test_feature_banana256/feature/weights_face.pkl")
-    cube_indices = load_pickle("tmp/test_feature_banana256/feature/occ.pkl")
-    first_2_component_points = load_pickle("tmp/test_feature_banana256/feature/points_2.pkl")
-    component_points = load_pickle("tmp/test_feature_banana256/feature/component_points.pkl")
-    resolution = 256
-    feature_to_mesh(weights_edge, weights_face, component_points, cube_indices, resolution, output_filepath="tmp/test_feature_banana256/debug/collapse_mesh.ply")
+    weights_edge = load_pickle("tmp/test_feature/feature/weights_edge.pkl")
+    weights_face = load_pickle("tmp/test_feature/feature/weights_face.pkl")
+    cube_indices = load_pickle("tmp/test_feature/feature/occ.pkl")
+    first_2_component_points = load_pickle("tmp/test_feature/feature/points_2.pkl")
+    component_points = load_pickle("tmp/test_feature/feature/component_points.pkl")
+    resolution = 512
+    feature_to_mesh(weights_edge, weights_face, component_points, cube_indices, resolution, output_filepath="tmp/test_feature/debug/collapse_mesh.ply")
 
 
 #     # Test data mimicking the structure provided in the prompt

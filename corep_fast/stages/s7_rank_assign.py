@@ -647,6 +647,19 @@ def _build_adjacency_gpu(
     NODES = _NODES_PER_CUBE
     W = _W_MAX
 
+    # Node encoding is `edge_idx * W + rank` with rank in [0, edge_weight).
+    # If any edge_weight exceeds W, rank can reach >= W and the encoded node
+    # overflows into the next edge's slot space, causing OOB indexing into
+    # fill_count / adj (which have second-dim size NODES_PER_CUBE = 18 * W).
+    # Fail loud and clear instead of emitting an async CUDA device-side assert.
+    if N > 0:
+        max_w = int(edge_weights.max().item())
+        assert max_w <= W, (
+            f"edge_weights.max()={max_w} exceeds _W_MAX={W}; "
+            f"increase _W_MAX in corep_fast/stages/s7_rank_assign.py "
+            f"or reduce resolution / mesh complexity."
+        )
+
     # Output: pre-fill with -1
     adj = torch.full((N, NODES, 2), -1, dtype=torch.int32, device=device)
     # Per-node fill counter (for atomic 2-slot assignment)
@@ -1311,10 +1324,10 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
 
         # Dispatch rank work — use temporary Pool with fork-inherited data
         if num_workers > 1 and len(rank_work_items) > 500:
-            from multiprocessing import Pool as _Pool
-            with _Pool(num_workers) as p:
-                rank_results = p.map(_s7_rank_worker, rank_work_items,
-                                     chunksize=max(1, len(rank_work_items) // (num_workers * 4)))
+            from corep_fast.utils.persistent_pool import get_pool
+            p = get_pool(num_workers)
+            rank_results = p.map(_s7_rank_worker, rank_work_items,
+                                 chunksize=max(1, len(rank_work_items) // (num_workers * 4)))
         else:
             rank_results = [_s7_rank_worker(item) for item in rank_work_items]
 
@@ -1482,34 +1495,190 @@ def s7_rank_assign(batch: CubeBatch, pool=None, num_workers: int | None = None) 
         else np.zeros((0, 3), dtype=np.float32)
     point_values_np = batch.point_values.cpu().numpy()
 
-    for cube_idx in ok_cube_indices:
-        l_lo = int(loop_cube_off_np[cube_idx])
-        l_hi = int(loop_cube_off_np[cube_idx + 1])
-        n_loops = l_hi - l_lo
-        if n_loops == 0:
-            continue
+    if _cfg.HUNGARIAN_GPU and len(ok_cube_indices) > 0:
+        # ---- W_HG batched path: hot 1x1 + 1xK + brute-force buckets on GPU
+        # ---- with scipy fallback for the rare hard cases.
+        from corep_fast.stages.s7_triton import hungarian_batched
 
-        p_lo = int(point_offsets_np[cube_idx])
-        p_hi = int(point_offsets_np[cube_idx + 1])
-        n_points = p_hi - p_lo
+        max_nl, max_np = 5, 8
+        B_total = len(ok_cube_indices)
 
-        if n_points == 0:
-            # No component points: identity match
-            for li_off in range(n_loops):
-                all_matches[l_lo + li_off] = li_off
-            continue
+        # Vectorize per-cube nl/npts derivation.
+        ok_idx_np = np.asarray(ok_cube_indices, dtype=np.int64)
+        l_lo_arr = loop_cube_off_np[ok_idx_np].astype(np.int64)
+        l_hi_arr = loop_cube_off_np[ok_idx_np + 1].astype(np.int64)
+        p_lo_arr = point_offsets_np[ok_idx_np].astype(np.int64)
+        p_hi_arr = point_offsets_np[ok_idx_np + 1].astype(np.int64)
+        nl_arr = (l_hi_arr - l_lo_arr).astype(np.int64)
+        np_arr = (p_hi_arr - p_lo_arr).astype(np.int64)
 
-        # Compute cost matrix in numpy (no GPU, no pickle)
-        centroids_i = loop_centroids_np[l_lo:l_hi]          # (n_loops, 3)
-        comp_pts_i = point_values_np[p_lo:p_hi]              # (n_points, 3)
-        diff = centroids_i[:, None, :] - comp_pts_i[None, :, :]
-        cost = (diff * diff).sum(axis=-1).astype(np.float64)  # (n_loops, n_points)
+        # Cost padded matrix; +inf for padded slots.
+        cost_padded = np.full((B_total, max_nl, max_np), np.inf, dtype=np.float32)
 
-        # scipy Hungarian (C-optimized)
-        row_ind, col_ind = linear_sum_assignment(cost)
-        for r, c in zip(row_ind, col_ind):
-            if r < n_loops:
-                all_matches[l_lo + int(r)] = int(c)
+        # Hot path vectorized: cubes with nl==1 AND npts==1.
+        hot_mask = (nl_arr == 1) & (np_arr == 1)
+        if hot_mask.any():
+            hi = np.nonzero(hot_mask)[0]
+            c_starts = l_lo_arr[hi]
+            p_starts = p_lo_arr[hi]
+            c_pts = loop_centroids_np[c_starts]   # (H, 3)
+            p_pts = point_values_np[p_starts]     # (H, 3)
+            d = c_pts - p_pts
+            cost_padded[hi, 0, 0] = (d * d).sum(axis=-1).astype(np.float32)
+
+        # Slow path: in-batch eligible (small) + the empty/fallback cases.
+        # Cubes excluded from the batched kernel: oversized / rect-reverse shapes
+        # plus the nl=0 and npts=0 degenerate cases. The later classification
+        # block (Case A / B / C below) further splits these into:
+        #   - shape_invalid_m  -> scipy fallback
+        #   - np_zero_m        -> identity assignment (Case A, no-op on kernel)
+        #   - nl_zero_m        -> nothing to write
+        # Kept named broadly so the mask's role (exclusion from the batched
+        # kernel, not just "fallbacks") is clear.
+        excluded_from_batch_mask = (nl_arr > max_nl) | (np_arr > max_np) | (np_arr < nl_arr) | (nl_arr == 0) | (np_arr == 0)
+        # Eligible-but-not-hot mask (still goes through batched kernel):
+        eligible_other = ~excluded_from_batch_mask & ~hot_mask
+        if eligible_other.any():
+            for bi in np.nonzero(eligible_other)[0]:
+                nl = int(nl_arr[bi]); npts = int(np_arr[bi])
+                l_lo = int(l_lo_arr[bi]); p_lo = int(p_lo_arr[bi])
+                c_i = loop_centroids_np[l_lo:l_lo + nl]
+                p_i = point_values_np[p_lo:p_lo + npts]
+                diff = c_i[:, None, :] - p_i[None, :, :]
+                cost_padded[bi, :nl, :npts] = (diff * diff).sum(axis=-1).astype(np.float32)
+
+        # Send to GPU and run.
+        cost_padded_t = torch.from_numpy(cost_padded).to(device)
+        nl_t = torch.from_numpy(nl_arr).to(device)
+        np_t = torch.from_numpy(np_arr).to(device)
+        matches = hungarian_batched(cost_padded_t, nl_t, np_t, max_nl, max_np).cpu().numpy()
+
+        # ---- Vectorized apply phase (Task 18b) ----
+        # Classify cubes into hot / valid / invalid shape / npts-zero / nl-zero
+        # using boolean masks of length B_total, then do bulk fancy assignment.
+        #
+        # Convert all_matches to a numpy array once for vectorized writes;
+        # convert back to list at the end so the tail packing logic is
+        # unchanged.
+        all_matches_np = np.asarray(all_matches, dtype=np.int64)
+
+        # Shape classification masks (all length B_total).
+        nl_zero_m = (nl_arr == 0)
+        np_zero_m = (np_arr == 0) & ~nl_zero_m
+        shape_invalid_m = (
+            (nl_arr > max_nl) | (np_arr > max_np) | (np_arr < nl_arr)
+        ) & ~nl_zero_m & ~np_zero_m
+        shape_valid_m = ~nl_zero_m & ~np_zero_m & ~shape_invalid_m
+
+        # For shape_valid rows, detect "any -1" in the first nl slots (tie).
+        # Vectorize via arange mask: position < nl_arr[bi].
+        if shape_valid_m.any():
+            valid_idx = np.nonzero(shape_valid_m)[0]
+            pos = np.arange(max_nl, dtype=np.int64)
+            in_range = pos[None, :] < nl_arr[valid_idx, None]    # (M, max_nl)
+            has_sentinel = ((matches[valid_idx] == -1) & in_range).any(axis=1)
+            tie_rows = valid_idx[has_sentinel]
+            apply_rows = valid_idx[~has_sentinel]
+        else:
+            tie_rows = np.empty(0, dtype=np.int64)
+            apply_rows = np.empty(0, dtype=np.int64)
+
+        # Case A: npts == 0 (and nl > 0) → identity match.
+        # For each such row, write all_matches[l_lo + li_off] = li_off for li_off in range(nl).
+        if np_zero_m.any():
+            rows = np.nonzero(np_zero_m)[0]
+            # repeat l_lo by nl; add cumulative offsets 0..nl-1 within each group.
+            nl_here = nl_arr[rows]
+            l_lo_here = l_lo_arr[rows]
+            # Build the full destination index array.
+            total = int(nl_here.sum())
+            if total > 0:
+                # Flat offsets via cumsum: for each row, [0, 1, ..., nl-1].
+                ends = np.cumsum(nl_here)
+                starts = ends - nl_here
+                # li_off = arange(total) - starts[row_of_flat] — compute via repeat.
+                row_of_flat = np.repeat(np.arange(len(rows), dtype=np.int64), nl_here)
+                li_off = np.arange(total, dtype=np.int64) - starts[row_of_flat]
+                dst = l_lo_here[row_of_flat] + li_off
+                all_matches_np[dst] = li_off
+
+        # Case B: shape_valid & no tie → apply matches[bi, :nl].
+        # 5-iter outer loop over li_off (max_nl = 5), bulk vector write per slot.
+        if apply_rows.size > 0:
+            nl_ap = nl_arr[apply_rows]
+            l_lo_ap = l_lo_arr[apply_rows]
+            for li_off in range(max_nl):
+                active = (li_off < nl_ap)
+                if not active.any():
+                    # All remaining li_off slots also empty (mask is monotone).
+                    break
+                rows_i = apply_rows[active]
+                dst = l_lo_ap[active] + li_off
+                all_matches_np[dst] = matches[rows_i, li_off]
+
+        # Case C: shape_invalid OR tie → scipy fallback.
+        # Build fallback list via cube indices.
+        fallback_cubes: List[int] = []
+        if shape_invalid_m.any():
+            fallback_cubes.extend(ok_idx_np[shape_invalid_m].tolist())
+        if tie_rows.size > 0:
+            fallback_cubes.extend(ok_idx_np[tie_rows].tolist())
+
+        # Convert back to list for downstream torch.tensor(...) in pack step.
+        all_matches = all_matches_np.tolist()
+
+        # Scipy fallback for the rare hard cases.
+        for cube_idx in fallback_cubes:
+            l_lo = int(loop_cube_off_np[cube_idx])
+            l_hi = int(loop_cube_off_np[cube_idx + 1])
+            n_loops = l_hi - l_lo
+            if n_loops == 0:
+                continue
+            p_lo = int(point_offsets_np[cube_idx])
+            p_hi = int(point_offsets_np[cube_idx + 1])
+            n_points = p_hi - p_lo
+            if n_points == 0:
+                for li_off in range(n_loops):
+                    all_matches[l_lo + li_off] = li_off
+                continue
+            centroids_i = loop_centroids_np[l_lo:l_hi]
+            comp_pts_i = point_values_np[p_lo:p_hi]
+            diff = centroids_i[:, None, :] - comp_pts_i[None, :, :]
+            cost = (diff * diff).sum(axis=-1).astype(np.float64)
+            row_ind, col_ind = linear_sum_assignment(cost)
+            for r, c in zip(row_ind, col_ind):
+                if r < n_loops:
+                    all_matches[l_lo + int(r)] = int(c)
+    else:
+        # ---- Legacy scipy path (unchanged) ----
+        for cube_idx in ok_cube_indices:
+            l_lo = int(loop_cube_off_np[cube_idx])
+            l_hi = int(loop_cube_off_np[cube_idx + 1])
+            n_loops = l_hi - l_lo
+            if n_loops == 0:
+                continue
+
+            p_lo = int(point_offsets_np[cube_idx])
+            p_hi = int(point_offsets_np[cube_idx + 1])
+            n_points = p_hi - p_lo
+
+            if n_points == 0:
+                # No component points: identity match
+                for li_off in range(n_loops):
+                    all_matches[l_lo + li_off] = li_off
+                continue
+
+            # Compute cost matrix in numpy (no GPU, no pickle)
+            centroids_i = loop_centroids_np[l_lo:l_hi]          # (n_loops, 3)
+            comp_pts_i = point_values_np[p_lo:p_hi]              # (n_points, 3)
+            diff = centroids_i[:, None, :] - comp_pts_i[None, :, :]
+            cost = (diff * diff).sum(axis=-1).astype(np.float64)  # (n_loops, n_points)
+
+            # scipy Hungarian (C-optimized)
+            row_ind, col_ind = linear_sum_assignment(cost)
+            for r, c in zip(row_ind, col_ind):
+                if r < n_loops:
+                    all_matches[l_lo + int(r)] = int(c)
 
     # ===================================================================
     # Pack results

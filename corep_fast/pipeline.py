@@ -89,6 +89,14 @@ def _run_custom_s1_to_s7(
     from utils import fetch_np_array
 
     mesh = trimesh.load(mesh_path)
+
+    normalized_mesh = mesh.copy()
+    normalized_mesh.merge_vertices(merge_tex=True, merge_norm=True)
+    normalized_mesh.remove_unreferenced_vertices()
+    mask = normalized_mesh.unique_faces() & normalized_mesh.nondegenerate_faces()
+    normalized_mesh.update_faces(mask)
+    mesh = normalized_mesh
+
     pc = collector or ProfilingCollector()
 
     with stage_timer('s1_voxelize', pc):
@@ -251,6 +259,14 @@ def corep_encode(
 
     pc = collector or ProfilingCollector()
     mesh = trimesh.load(mesh_path, force='mesh')
+
+    normalized_mesh = mesh.copy()
+    normalized_mesh.merge_vertices(merge_tex=True, merge_norm=True)
+    normalized_mesh.remove_unreferenced_vertices()
+    mask = normalized_mesh.unique_faces() & normalized_mesh.nondegenerate_faces()
+    normalized_mesh.update_faces(mask)
+    mesh = normalized_mesh
+    
     mt = MeshTensors.from_trimesh(mesh, resolution, device=device)
 
     # NOTE: no PersistentWorkerPool here. Each stage creates its own temp Pool
@@ -329,6 +345,14 @@ def mesh_to_param(
 
     pc = collector or ProfilingCollector()
     mesh = trimesh.load(mesh_path, force='mesh')
+
+    normalized_mesh = mesh.copy()
+    normalized_mesh.merge_vertices(merge_tex=True, merge_norm=True)
+    normalized_mesh.remove_unreferenced_vertices()
+    mask = normalized_mesh.unique_faces() & normalized_mesh.nondegenerate_faces()
+    normalized_mesh.update_faces(mask)
+    mesh = normalized_mesh
+    
     mt = MeshTensors.from_trimesh(mesh, resolution, device=device)
 
     with stage_timer('s1_voxelize', pc):
@@ -370,10 +394,13 @@ def _unique_to_full_edge_weights(unique: np.ndarray, cube_indices: np.ndarray, r
     D_XY, D_XZ, D_YZ = U[..., 3], U[..., 4], U[..., 5]
 
     def shift(grid, dx, dy, dz):
-        s = np.copy(grid)
-        if dx == 1: s[:-1, :, :] = s[1:, :, :]
-        if dy == 1: s[:, :-1, :] = s[:, 1:, :]
-        if dz == 1: s[:, :, :-1] = s[:, :, 1:]
+        # Return s where s[x,y,z] = grid[x+dx, y+dy, z+dz], zero-padded at
+        # out-of-bounds positions. Previous implementation copied the original
+        # value at the boundary, which wrongly leaked the current cube's
+        # weights into non-existent neighbors.
+        s = np.zeros_like(grid)
+        sx, sy, sz = grid.shape[:3]
+        s[:sx - dx, :sy - dy, :sz - dz] = grid[dx:, dy:, dz:]
         return s
 
     F = np.zeros((res, res, res, 18), dtype=unique.dtype)
@@ -409,10 +436,13 @@ def _unique_to_full_face_weights(unique: np.ndarray, cube_indices: np.ndarray, r
     T_Lft1, T_Lft2 = U[..., 4], U[..., 5]
 
     def shift(grid, dx, dy, dz):
-        s = np.copy(grid)
-        if dx == 1: s[:-1, :, :] = s[1:, :, :]
-        if dy == 1: s[:, :-1, :] = s[:, 1:, :]
-        if dz == 1: s[:, :, :-1] = s[:, :, 1:]
+        # Return s where s[x,y,z] = grid[x+dx, y+dy, z+dz], zero-padded at
+        # out-of-bounds positions. Previous implementation copied the original
+        # value at the boundary, which wrongly leaked the current cube's
+        # weights into non-existent neighbors.
+        s = np.zeros_like(grid)
+        sx, sy, sz = grid.shape[:3]
+        s[:sx - dx, :sy - dy, :sz - dz] = grid[dx:, dy:, dz:]
         return s
 
     F = np.zeros((res, res, res, 12), dtype=unique.dtype)

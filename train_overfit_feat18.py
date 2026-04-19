@@ -40,8 +40,10 @@ def param_to_feats(param: CorepParam) -> tuple[np.ndarray, np.ndarray]:
 
     The 18-dim feature per voxel is:
         [point1_xyz(3), point2_xyz(3), edge_weights(6), face_weights(6)]
-    Cubes with only 1 component point get zeros for the second point.
-    Cubes with 0 points get zeros for both.
+    For cubes with >= 2 points, the two points that are farthest apart
+    (in Euclidean distance) are selected. Cubes with only 1 component
+    point get zeros for the second point. Cubes with 0 points get zeros
+    for both.
 
     Points are stored in LOCAL cube coordinates (expected in [0, 1]):
         local = point_global * resolution - cube_index
@@ -54,26 +56,43 @@ def param_to_feats(param: CorepParam) -> tuple[np.ndarray, np.ndarray]:
     cube_idx_f = param.cube_indices.astype(np.float32)
 
     first_2 = np.zeros((N, 6), dtype=np.float32)
+    all_local_parts: list[np.ndarray] = []
 
-    mask1 = n_pts >= 1
+    # Single-point cubes: store that point as p1.
+    mask1 = n_pts == 1
     if mask1.any():
         idx1 = offsets[:-1][mask1]
-        p1_local = param.point_values[idx1] * R - cube_idx_f[mask1]
-        first_2[mask1, :3] = p1_local
+        p1_only_local = param.point_values[idx1] * R - cube_idx_f[mask1]
+        first_2[mask1, :3] = p1_only_local
+        all_local_parts.append(p1_only_local)
 
-    mask2 = n_pts >= 2
+    # Two-point cubes: both points are trivially the farthest pair.
+    mask2 = n_pts == 2
     if mask2.any():
-        idx2 = offsets[:-1][mask2] + 1
-        p2_local = param.point_values[idx2] * R - cube_idx_f[mask2]
-        first_2[mask2, 3:6] = p2_local
+        idx2a = offsets[:-1][mask2]
+        p1_local_2 = param.point_values[idx2a] * R - cube_idx_f[mask2]
+        p2_local_2 = param.point_values[idx2a + 1] * R - cube_idx_f[mask2]
+        first_2[mask2, :3] = p1_local_2
+        first_2[mask2, 3:6] = p2_local_2
+        all_local_parts.append(p1_local_2)
+        all_local_parts.append(p2_local_2)
+
+    # Cubes with >= 3 points: pick the pair with max pairwise distance.
+    mask3_idx = np.where(n_pts >= 3)[0]
+    for i in mask3_idx:
+        start = int(offsets[i])
+        n = int(n_pts[i])
+        pts_local = param.point_values[start:start + n] * R - cube_idx_f[i]
+        diff = pts_local[:, None, :] - pts_local[None, :, :]
+        dists_sq = np.sum(diff * diff, axis=-1)
+        a, b = np.unravel_index(np.argmax(dists_sq), dists_sq.shape)
+        first_2[i, :3] = pts_local[a]
+        first_2[i, 3:6] = pts_local[b]
+        all_local_parts.append(pts_local)
 
     # Outlier check: local coordinates should lie in [0, 1].
     tol = 1e-3
-    all_local = []
-    if mask1.any():
-        all_local.append(p1_local)
-    if mask2.any():
-        all_local.append(p2_local)
+    all_local = all_local_parts
     if all_local:
         pts = np.concatenate(all_local, axis=0)
         out_mask = (pts < -tol) | (pts > 1.0 + tol)

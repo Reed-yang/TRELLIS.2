@@ -428,6 +428,207 @@ def _fastpath_trace_loops_numpy(
     return loops
 
 
+def _fastpath_trace_loops_gpu(
+    point_offset: "torch.Tensor",   # (N, 19) int64  — per-cube offsets
+    adj: "torch.Tensor",            # (N, max_points, 2) int32 — neighbors per point
+    total_points: "torch.Tensor",   # (N,) int64 — active points per cube
+) -> "tuple[torch.Tensor, torch.Tensor, torch.Tensor]":
+    """Batched per-cube loop-tracing — W4 vectorized padded-walk impl.
+
+    Algorithm (pure PyTorch, §3.4 of T5a design sketch):
+    - Maintain per-cube state tensors (curr, prev, start, visited, loop_id,
+      flat_ptr) of shape (N,) or (N, max_points).
+    - Outer loop over candidate start points p = 0, 1, ..., max_points-1:
+      cubes where point p is not yet visited open a new loop rooted at p.
+    - Inner walk runs at most max_points iterations, advancing every active
+      cube in lockstep. Each step picks the next neighbor: if prev == -1
+      pick adj[curr, 0], else pick the neighbor that is not prev.
+    - Matches the numpy reference's tiebreaker (start=0,1,... and
+      first-step pick adj[start, 0]) so output is bit-exact up to
+      loop-ordering (which the consumer canonicalizes).
+
+    Returns GLOBAL CSR:
+        loop_count:   (N,)               int32  — number of loops in each cube
+        loop_offsets: (N, max_loops + 1) int32  — GLOBAL CSR ptrs into edge_ids
+        edge_ids:     (total_edges,)     int32  — flat CSR payload across all cubes
+    """
+    import torch as _torch
+
+    device = adj.device
+    N = adj.shape[0]
+
+    if N == 0:
+        loop_count = _torch.zeros((0,), dtype=_torch.int32, device=device)
+        loop_offsets = _torch.zeros((0, 1), dtype=_torch.int32, device=device)
+        edge_ids = _torch.zeros((0,), dtype=_torch.int32, device=device)
+        return loop_count, loop_offsets, edge_ids
+
+    max_points = adj.shape[1]
+    total_points_i64 = total_points.to(_torch.int64)
+
+    if max_points == 0:
+        loop_count = _torch.zeros((N,), dtype=_torch.int32, device=device)
+        loop_offsets = _torch.zeros((N, 1), dtype=_torch.int32, device=device)
+        edge_ids = _torch.zeros((0,), dtype=_torch.int32, device=device)
+        return loop_count, loop_offsets, edge_ids
+
+    # --- Precompute edge_of_point[n, p] ---
+    # For each (n, p) with p < total_points[n], edge id is
+    #   searchsorted(point_offset[n, :19], p, side='right') - 1
+    # We compute for all p in [0, max_points) but only active entries matter.
+    p_grid = _torch.arange(max_points, device=device, dtype=_torch.int64) \
+        .view(1, max_points).expand(N, -1).contiguous()  # (N, max_points)
+    edge_of_point = (
+        _torch.searchsorted(point_offset, p_grid, right=True) - 1
+    ).to(_torch.int32)  # (N, max_points) int32
+
+    # --- Per-cube state ---
+    arange_N = _torch.arange(N, device=device, dtype=_torch.int64)
+    int_neg1 = _torch.full((N,), -1, dtype=_torch.int32, device=device)
+    int_zero = _torch.zeros((N,), dtype=_torch.int32, device=device)
+
+    curr = int_neg1.clone()       # (N,) current point, -1 if idle
+    prev = int_neg1.clone()       # (N,) previous point, -1 at loop start
+    start_p = int_neg1.clone()    # (N,) loop start point
+    loop_id = int_zero.clone()    # (N,) which loop index we're writing (0-based)
+    visited = _torch.zeros((N, max_points), dtype=_torch.bool, device=device)
+
+    # Each loop contributes at most max_points edges, and loop_count <= max_points.
+    # Flat slot count per cube <= max_points, so allocate (N, max_points).
+    flat_out = _torch.zeros((N, max_points), dtype=_torch.int32, device=device)
+    flat_ptr = _torch.zeros((N,), dtype=_torch.int32, device=device)  # per-cube write ptr
+
+    # Per-cube, per-loop start slot into flat_out (for building loop_offsets later).
+    # Max loops in a cube is bounded by ceil(max_points/2) = max_points // 2 rounded up.
+    # Safe upper bound: max_points (one point per loop in degenerate case).
+    max_loops_cap = max_points
+    loop_start_slot = _torch.zeros(
+        (N, max_loops_cap + 1), dtype=_torch.int32, device=device
+    )  # loop_start_slot[n, k] = flat_ptr at the time loop k opened
+
+    # --- Outer loop: iterate candidate start points in order 0, 1, ..., max_points-1 ---
+    # This mirrors the numpy reference's `for start in range(total_points)`.
+    for p in range(max_points):
+        # Cubes where p is a valid, unvisited active point AND cube is currently idle
+        # (curr == -1): open a new loop rooted at p.
+        p_active = p_grid[:, p] < total_points_i64           # (N,) bool — p is active
+        p_unvisited = ~visited[:, p]                          # (N,) bool
+        is_idle = (curr == -1)                                # (N,) bool
+        open_mask = p_active & p_unvisited & is_idle          # (N,)
+
+        if not bool(open_mask.any().item()):
+            # No new loops to open at this start point — but still need to drain
+            # any cubes still walking (unlikely since prior start drained them).
+            continue
+
+        # Record loop-start slot for cubes opening here
+        cubes_opening = arange_N[open_mask]                   # (K,)
+        loop_idx_here = loop_id[cubes_opening].to(_torch.int64)   # (K,)
+        loop_start_slot[cubes_opening, loop_idx_here] = flat_ptr[cubes_opening]
+
+        # Initialize walking state for these cubes
+        p_i32 = _torch.full_like(curr, p, dtype=_torch.int32)
+        curr = _torch.where(open_mask, p_i32, curr)
+        prev = _torch.where(open_mask, int_neg1, prev)
+        start_p = _torch.where(open_mask, p_i32, start_p)
+
+        # --- Inner walk loop: advance all active cubes up to max_points steps ---
+        # A cube is active iff curr != -1.
+        for step in range(max_points):
+            active = curr != -1                                # (N,) bool
+            if not bool(active.any().item()):
+                break
+
+            # Gather neighbors of curr for active cubes (default 0 for idle to keep gather safe)
+            safe_curr = _torch.where(active, curr, int_zero).to(_torch.int64)
+            n0 = adj[arange_N, safe_curr, 0]                   # (N,) int32
+            n1 = adj[arange_N, safe_curr, 1]                   # (N,) int32
+
+            # Pick next: if prev == -1 -> n0, else (if n0 == prev -> n1 else n0)
+            nxt = _torch.where(prev == -1, n0,
+                               _torch.where(n0 == prev, n1, n0))
+
+            # Record: flat_out[n, flat_ptr[n]] = edge_of_point[n, curr], only for active
+            ptr64 = flat_ptr.to(_torch.int64)
+            # edge id for curr — gather
+            eid = edge_of_point[arange_N, safe_curr]           # (N,) int32
+            # Scatter-like write only for active (use masked assignment)
+            flat_out[arange_N[active], ptr64[active]] = eid[active]
+
+            # Advance flat_ptr by 1 for active cubes
+            flat_ptr = _torch.where(active, flat_ptr + 1, flat_ptr)
+
+            # Mark curr as visited for active cubes
+            vis_mask = _torch.zeros((N, max_points), dtype=_torch.bool, device=device)
+            vis_mask[arange_N[active], safe_curr[active]] = True
+            visited = visited | vis_mask
+
+            # Check closure: next == start means loop closed
+            closed = active & (nxt == start_p)
+
+            # Update prev/curr
+            new_prev = _torch.where(active, curr, prev)
+            # If closed, curr becomes -1 (idle). Else curr = nxt.
+            new_curr = _torch.where(closed, int_neg1,
+                                    _torch.where(active, nxt, curr))
+            prev = new_prev
+            curr = new_curr
+
+            # Bump loop_id for cubes that just closed
+            loop_id = _torch.where(closed, loop_id + 1, loop_id)
+
+            if not bool((curr != -1).any().item()):
+                break
+        # End inner walk. At this point every cube that opened a loop at p has
+        # closed it (curr == -1). We continue to next candidate p.
+
+    # --- Build output CSR ---
+    # loop_count per cube = loop_id (since we bumped on each closure)
+    loop_count = loop_id.clone()  # (N,) int32
+
+    # loop_offsets[n, k] = loop_start_slot[n, k] for k in [0, loop_count[n]],
+    # and for k > loop_count[n] we want loop_offsets[n, k] = flat_ptr[n].
+    # Also loop_offsets[n, loop_count[n]] should equal flat_ptr[n] (total edges written).
+    # Trim to max_loops actually used (capped at max_loops_cap+1).
+    max_loops = int(loop_count.max().item()) if N > 0 else 0
+    loop_offsets = loop_start_slot[:, : max_loops + 1].clone()
+    # Overwrite the tail (k >= loop_count[n]) with flat_ptr[n] so that
+    # loop_offsets[n, loop_count[n]] is the write pointer end, and beyond that
+    # remains flat_ptr (yielding empty slices if consumer over-reads).
+    # Build a (N, max_loops+1) mask
+    k_arange = _torch.arange(max_loops + 1, device=device, dtype=_torch.int32) \
+        .view(1, -1)
+    tail_mask = k_arange >= loop_count.view(-1, 1)  # (N, max_loops+1)
+    loop_offsets = _torch.where(tail_mask, flat_ptr.view(-1, 1), loop_offsets)
+
+    # Edge ids: compact flat_out[n, :flat_ptr[n]] into a single 1-D tensor,
+    # AND rebase loop_offsets onto a GLOBAL index. Currently loop_offsets[n, k]
+    # is a LOCAL offset (into flat_out[n]). To match the T5c stub's contract
+    # (GLOBAL offsets into the concatenated edge_ids), we add the cube-base.
+    per_cube_edges = flat_ptr.to(_torch.int64)                    # (N,)
+    cube_base = _torch.cat([
+        _torch.zeros((1,), dtype=_torch.int64, device=device),
+        _torch.cumsum(per_cube_edges, dim=0),
+    ])  # (N+1,)
+
+    # Concat flat_out active portion per cube into edge_ids
+    total_edges = int(cube_base[-1].item())
+    edge_ids = _torch.empty((total_edges,), dtype=_torch.int32, device=device)
+    if total_edges > 0:
+        # For each (n, slot) with slot < flat_ptr[n], place into
+        # edge_ids[cube_base[n] + slot] = flat_out[n, slot].
+        slot_grid = _torch.arange(max_points, device=device, dtype=_torch.int64) \
+            .view(1, -1).expand(N, -1)                           # (N, max_points)
+        active_slot = slot_grid < per_cube_edges.view(-1, 1)     # (N, max_points)
+        dst_idx = cube_base[:-1].view(-1, 1) + slot_grid         # (N, max_points)
+        edge_ids[dst_idx[active_slot]] = flat_out[active_slot]
+
+    # Rebase loop_offsets to GLOBAL: loop_offsets[n, k] += cube_base[n]
+    loop_offsets = loop_offsets + cube_base[:-1].view(-1, 1).to(_torch.int32)
+
+    return loop_count, loop_offsets, edge_ids
+
+
 # ---------------------------------------------------------------------------
 # Slow path: U-Turn enumeration (face_weights > 0)
 # ---------------------------------------------------------------------------
@@ -878,17 +1079,38 @@ def s6_collapse(batch: CubeBatch, pool=None, num_workers: int | None = None) -> 
                 ew_fast, k12_fast, k23_fast, k31_fast,
             )
             fast_idx_np = fast_idx_t.cpu().numpy()
-            total_points_per_cube = point_offset_np[:, -1]
+            # W4: GPU-vectorized loop tracer. Replaces the per-cube
+            # Python loop that called _fastpath_trace_loops_numpy ~275k
+            # times per res=256 run (T0 #1 hotspot, 1891 ms self).
+            # Build device-side inputs from the numpy outputs of
+            # _fastpath_gpu_build_adjacency, run the padded-walk tracer,
+            # then convert the CSR output back to List[List[int]] per cube.
+            device_for_trace = edge_weights.device
+            po_gpu = torch.from_numpy(point_offset_np).to(device_for_trace)
+            adj_gpu = torch.from_numpy(adj_np).to(device_for_trace)
+            tot_gpu = torch.from_numpy(
+                point_offset_np[:, -1].astype(np.int64, copy=False)
+            ).to(device_for_trace)
+            loop_count_t, loop_offsets_t, edge_ids_t = _fastpath_trace_loops_gpu(
+                po_gpu, adj_gpu, tot_gpu,
+            )
+            # Adapter: GPU CSR -> per-cube List[List[int]]. Uses bulk
+            # .tolist() to keep Python overhead low.
+            loop_count_np = loop_count_t.cpu().numpy()
+            loop_offsets_np = loop_offsets_t.cpu().numpy()
+            edge_ids_np = edge_ids_t.cpu().numpy()
             for local_i in range(M_fast):
                 cube_idx = int(fast_idx_np[local_i])
-                tp = int(total_points_per_cube[local_i])
                 if not bool(degree_ok_np[local_i]):
                     fastpath_gpu_results[cube_idx] = ([], CubeStatus.UNSOLVABLE)
                     continue
-                loops = _fastpath_trace_loops_numpy(
-                    point_offset_np[local_i], adj_np[local_i], tp,
-                )
-                fastpath_gpu_results[cube_idx] = (loops, CubeStatus.OK)
+                n_loops = int(loop_count_np[local_i])
+                loops_list: List[List[int]] = []
+                for k in range(n_loops):
+                    lo = int(loop_offsets_np[local_i, k])
+                    hi = int(loop_offsets_np[local_i, k + 1])
+                    loops_list.append(edge_ids_np[lo:hi].tolist())
+                fastpath_gpu_results[cube_idx] = (loops_list, CubeStatus.OK)
 
     # ------------------------------------------------------------------
     # W3 / O7: tensor-native work-item dispatch.
@@ -921,10 +1143,10 @@ def s6_collapse(batch: CubeBatch, pool=None, num_workers: int | None = None) -> 
 
     # Dispatch via temp Pool (fork-inherited) or run serially
     if num_workers > 1 and len(work_items) > 500:
-        from multiprocessing import Pool as _Pool
-        with _Pool(num_workers) as p:
-            results = p.map(_s6_worker, work_items,
-                            chunksize=max(1, len(work_items) // (num_workers * 4)))
+        from corep_fast.utils.persistent_pool import get_pool
+        p = get_pool(num_workers)
+        results = p.map(_s6_worker, work_items,
+                        chunksize=max(1, len(work_items) // (num_workers * 4)))
     else:
         results = [_s6_worker(item) for item in work_items]
 

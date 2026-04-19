@@ -47,6 +47,35 @@ S7_PHASE1_GPU = os.environ.get('COREP_FAST_S7_PHASE1_GPU', '1') == '1'
 # Set COREP_FAST_S6_FASTPATH_GPU=0 to fall back to per-cube CPU MP path.
 S6_FASTPATH_GPU = os.environ.get('COREP_FAST_S6_FASTPATH_GPU', '1') == '1'
 
+# Followup W_L2L (s4): Numpy-vectorize _labels_to_list_of_lists bucket loop.
+# Disabled by default — 2026-04-17 measurement on 116 GPU 4 showed self_ms
+# dropped 484 -> 122 but wall regressed +0.36s because np.split +
+# per-component .tolist() overhead is higher than legacy's tight int()/append
+# loop at 275k cubes. Flag retained for future retry with a flat-tolist
+# strategy; until then leave off. See logs/findings_w_l2l_vectorized.md.
+# Set COREP_FAST_LABELS_TO_LIST_VECTORIZED=1 to enable the vectorized path.
+LABELS_TO_LIST_VECTORIZED = os.environ.get('COREP_FAST_LABELS_TO_LIST_VECTORIZED', '0') == '1'
+
+# Followup W_SD (s4): Stage D GPU BFS + U-turn counting. Eliminates per-cube
+# Python BFS in _p2_uturn_worker (~49s worker wall over 275k cubes) by running
+# on GPU in a single batched pass. Target: ~100ms GPU, -0.8~1.5s wall.
+# Enabled by default after F1-F3 parity + determinism audit pass.
+# Set COREP_FAST_STAGE_D_GPU=0 to fall back to CPU MP Pool.
+STAGE_D_GPU = os.environ.get('COREP_FAST_STAGE_D_GPU', '1') == '1'
+
+# Followup W_BAF (s7): Triton kernel fusion for _build_adjacency_gpu.
+# Replaces 12*3*W=576 Python-loop scatter launches with single fused kernel.
+# Disabled by default until Task 11 spike confirms wall-time gain.
+# Set COREP_FAST_BUILD_ADJACENCY_TRITON=1 to enable Triton path.
+BUILD_ADJACENCY_TRITON = os.environ.get('COREP_FAST_BUILD_ADJACENCY_TRITON', '0') == '1'
+
+# Followup W_HG (s7): Batched brute-force Hungarian on GPU for s7 Phase 3.
+# Replaces 275k * scipy.linear_sum_assignment main-thread loop with a single
+# batched pass (brute-force enumeration over n<=5 permutations).
+# Enabled by default after Task 17/18 PyTorch parity confirmed (F1-F3 bit-exact).
+# Set COREP_FAST_HUNGARIAN_GPU=0 to fall back to scipy serial path.
+HUNGARIAN_GPU = os.environ.get('COREP_FAST_HUNGARIAN_GPU', '1') == '1'
+
 
 # ---------------------------------------------------------------------------
 # Mode (debug level)
