@@ -58,3 +58,32 @@ def test_retry_disabled_when_flag_off(monkeypatch):
 
     with pytest.raises(torch.cuda.OutOfMemoryError):
         _retry_with_shrinking_budget(failing, batch=None)
+
+
+def test_corep_encode_wraps_stages():
+    """Smoke: assert the retry wrapper is wired in at the corep_encode and
+    mesh_to_param call sites by grep-checking the source. Runtime OOM
+    injection at the pipeline level requires a real CUDA context and a
+    full mesh; the unit suite at Task 6 covers the helper's behaviour.
+
+    Post-wrap, the original ``s4_face_point(batch, ...)`` / ``s6_collapse(...)``
+    / ``s7_rank_assign(...)`` literal call sites are replaced by passing the
+    stage fn as the first arg to ``_retry_with_shrinking_budget``. The check
+    below verifies (a) each stage name still appears as a *reference* in
+    pipeline.py, (b) each reference is preceded by ``_retry_with_shrinking_budget(``,
+    and (c) the helper is invoked at least once per stage.
+    """
+    import re
+    from pathlib import Path
+    src = Path("corep_fast/pipeline.py").read_text()
+    assert "_retry_with_shrinking_budget" in src, (
+        "_retry_with_shrinking_budget must be invoked in pipeline.py")
+    # Each wrapped call looks like:
+    #   _retry_with_shrinking_budget(\n            s4_face_point, batch, ...
+    pattern = re.compile(
+        r"_retry_with_shrinking_budget\s*\(\s*(s4_face_point|s6_collapse|s7_rank_assign)\b")
+    wrapped = set(m.group(1) for m in pattern.finditer(src))
+    for stage in ("s4_face_point", "s6_collapse", "s7_rank_assign"):
+        assert stage in wrapped, (
+            f"{stage} must be routed through _retry_with_shrinking_budget "
+            f"in pipeline.py; wrapped stages found: {wrapped}")

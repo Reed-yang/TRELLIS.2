@@ -318,11 +318,14 @@ def corep_encode(
     with stage_timer('s3_edge_weights', pc):
         batch = s3_edge_weights(batch, mt)
     with stage_timer('s4_face_point', pc):
-        batch = s4_face_point(batch, mt, num_workers=num_workers)
+        batch = _retry_with_shrinking_budget(
+            s4_face_point, batch, mesh=mt, num_workers=num_workers)
     with stage_timer('s6_collapse', pc):
-        batch = s6_collapse(batch, num_workers=num_workers)
+        batch = _retry_with_shrinking_budget(
+            s6_collapse, batch, num_workers=num_workers)
     with stage_timer('s7_rank_assign', pc):
-        batch = s7_rank_assign(batch, num_workers=num_workers)
+        batch = _retry_with_shrinking_budget(
+            s7_rank_assign, batch, num_workers=num_workers)
 
     return batch
 
@@ -402,7 +405,8 @@ def mesh_to_param(
     with stage_timer('s3_edge_weights', pc):
         batch = s3_edge_weights(batch, mt)
     with stage_timer('s4_face_point', pc):
-        batch = s4_face_point(batch, mt, num_workers=num_workers)
+        batch = _retry_with_shrinking_budget(
+            s4_face_point, batch, mesh=mt, num_workers=num_workers)
 
     # Extract and compact the representation
     ew_full = batch.edge_weights.cpu().numpy()   # (N, 18) int32
