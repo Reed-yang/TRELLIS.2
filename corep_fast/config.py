@@ -78,12 +78,17 @@ HUNGARIAN_GPU = os.environ.get('COREP_FAST_HUNGARIAN_GPU', '1') == '1'
 
 # 2026-04-21 — 168k throughput + VRAM rescue track (see
 # docs/superpowers/specs/2026-04-21-168k-throughput-design.md).
-# VRAM_RESCUE gates QW1/QW3/QW5/QW6 + OOM retry chain. S2_SPARSE swaps the
-# dense (N, M, M) adjacency label-prop for a CSR scatter_min path.
-# ASYNC_D2H removes the 1.048s deviceSync at s1:56 and batches .item()
-# leaks in s4/s6/s7. All three default off during rollout; flipped to 1 for
-# the 168k production run after the 4000-mesh validation pass.
-VRAM_RESCUE = os.environ.get('COREP_FAST_VRAM_RESCUE', '0') == '1'
+# VRAM_RESCUE gates QW1/QW3/QW6 + OOM retry chain (QW5 disabled in-place
+# in s2_components.py; see logs/findings_qw5_regression.md). S2_SPARSE
+# swaps the dense (N, M, M) adjacency label-prop for a CSR scatter_min
+# path (known p99 regression on real meshes, stays default off pending
+# redesign). ASYNC_D2H removes the 1.048s deviceSync at s1:56 and batches
+# .item() leaks in s6 (default off until independently validated).
+#
+# VRAM_RESCUE flipped default-on after 500-mesh 10-min A/B on 2026-04-21
+# (findings_qw5_regression.md): 100% success vs 75.7% baseline; same-mesh
+# wall delta -0.54s (faster); 168k extrapolation 3.1 days.
+VRAM_RESCUE = os.environ.get('COREP_FAST_VRAM_RESCUE', '1') == '1'
 S2_SPARSE = os.environ.get('COREP_FAST_S2_SPARSE', '0') == '1'
 ASYNC_D2H = os.environ.get('COREP_FAST_ASYNC_D2H', '0') == '1'
 
