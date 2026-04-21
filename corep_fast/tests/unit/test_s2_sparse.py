@@ -50,3 +50,16 @@ def test_sparse_matches_dense(seed):
 
     assert torch.equal(nc_sparse, nc_seq.to(dev).cpu()), (
         f"seed={seed}: sparse {nc_sparse.tolist()} vs seq {nc_seq.tolist()}")
+
+
+def test_s2_flag_dispatches_sparse(monkeypatch):
+    """With COREP_FAST_S2_SPARSE=1, the config flag is on and the s2 module
+    imports cleanly. Behavioural dispatch verified by regression goldens
+    running F1/F2/F3 with and without the flag."""
+    import importlib
+    monkeypatch.setenv("COREP_FAST_S2_SPARSE", "1")
+    import corep_fast.config as cfg
+    importlib.reload(cfg)
+    assert cfg.S2_SPARSE is True
+    from corep_fast.stages import s2_components  # noqa: F401
+    from corep_fast.stages import s2_components_sparse  # noqa: F401

@@ -114,7 +114,9 @@ def s2_components(batch: CubeBatch, mesh: MeshTensors) -> CubeBatch:
     # p99 s2 VRAM spike at res=512. Cubes with M > 32 fall through to
     # _label_propagation_sequential (slower but avoids the O(M^2) spike).
     from corep_fast.config import VRAM_RESCUE as _VRAM_RESCUE
+    from corep_fast.config import S2_SPARSE as _S2_SPARSE
     _dense_threshold = 32 if _VRAM_RESCUE else 64
+    _overrule_num_components = None
     if max_faces <= _dense_threshold:
         # Direct comparison approach -- memory-feasible for small max_faces
         neighbors_exp = neighbors_of.unsqueeze(-1)  # (N, M, 3, 1)
@@ -143,6 +145,18 @@ def s2_components(batch: CubeBatch, mesh: MeshTensors) -> CubeBatch:
             labels[~mask] = max_faces
             if torch.equal(labels, old_labels):
                 break
+    elif _S2_SPARSE:
+        # P2 (2026-04-21): sparse scatter_min path -- avoids the (N, M, M)
+        # match-tensor spike that produced the 62 GB p99 VRAM on pathological
+        # meshes at res=512. Labels for the comp_face CSR step still come
+        # from _label_propagation_sequential; only the num_components count
+        # uses the sparse algorithm.
+        from corep_fast.stages.s2_components_sparse import _sparse_num_components
+        _overrule_num_components = _sparse_num_components(
+            padded_faces, face_adj, mask)
+        labels = _label_propagation_sequential(
+            padded_faces, neighbors_of, mask, N, max_faces, device
+        )
     else:
         # Fallback for very large max_faces: per-cube sequential processing
         labels = _label_propagation_sequential(
@@ -168,6 +182,8 @@ def s2_components(batch: CubeBatch, mesh: MeshTensors) -> CubeBatch:
         transitions[:, 1:] = valid_transition & not_padding
 
     num_components = transitions.sum(dim=1).to(torch.int32)  # (N,)
+    if _S2_SPARSE and max_faces > _dense_threshold and _overrule_num_components is not None:
+        num_components = _overrule_num_components
 
     # --- Step 6: Build comp_face CSR (face ids grouped by component per cube) ---
     # Sort each cube's face slots by component label so faces of the same
