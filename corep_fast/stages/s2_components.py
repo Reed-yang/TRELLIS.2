@@ -109,7 +109,13 @@ def s2_components(batch: CubeBatch, mesh: MeshTensors) -> CubeBatch:
     # padded_faces: (N, max_faces) -> (N, 1, 1, max_faces)
     # Match: (N, max_faces, 3, max_faces) -- could be large but max_faces is small
 
-    if max_faces <= 64:
+    # QW5 (2026-04-21): lower dense threshold to cap the (N, M, M) match
+    # allocation at 32^2 = 1024 instead of 64^2 = 4096, avoiding the 62 GB
+    # p99 s2 VRAM spike at res=512. Cubes with M > 32 fall through to
+    # _label_propagation_sequential (slower but avoids the O(M^2) spike).
+    from corep_fast.config import VRAM_RESCUE as _VRAM_RESCUE
+    _dense_threshold = 32 if _VRAM_RESCUE else 64
+    if max_faces <= _dense_threshold:
         # Direct comparison approach -- memory-feasible for small max_faces
         neighbors_exp = neighbors_of.unsqueeze(-1)  # (N, M, 3, 1)
         faces_exp = padded_faces.unsqueeze(1).unsqueeze(2)  # (N, 1, 1, M)
