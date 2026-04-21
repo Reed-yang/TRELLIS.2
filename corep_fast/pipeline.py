@@ -589,9 +589,11 @@ def param_to_mesh(
     )
 
     with stage_timer('s6_collapse', pc):
-        batch = s6_collapse(batch, num_workers=num_workers)
+        batch = _retry_with_shrinking_budget(
+            s6_collapse, batch, num_workers=num_workers)
     with stage_timer('s7_rank_assign', pc):
-        batch = s7_rank_assign(batch, num_workers=num_workers)
+        batch = _retry_with_shrinking_budget(
+            s7_rank_assign, batch, num_workers=num_workers)
     with stage_timer('s8_decode', pc):
         vertices, faces = corep_decode(batch, merge_decimals=merge_decimals)
 
