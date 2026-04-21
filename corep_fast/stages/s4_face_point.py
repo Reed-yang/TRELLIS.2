@@ -572,6 +572,35 @@ def _count_uturns_gpu_batched_csr(
     return _torch.from_numpy(out_np[inverse_order])
 
 
+def _csr_to_groups_for_cpu_fallback(cf_np, group_off_np, A_np, B_np,
+                                    cube_idx_np, step):
+    """Convert CSR-array layout back to the list-of-tuples form expected by
+    `_count_uturns_gpu_batched` (the CPU fallback). Used by QW6 for single
+    groups whose P_MAX exceeds the GPU chunk budget.
+
+    Mirrors the unpacking done internally by `_count_uturns_gpu_batched_csr_chunk`
+    but returns the caller a Python list so the legacy entry works.
+    """
+    import numpy as _np
+
+    G = int(cf_np.shape[0])
+    groups = []
+    for gi in range(G):
+        lo = int(group_off_np[gi]); hi = int(group_off_np[gi + 1])
+        segs = [(A_np[si], B_np[si]) for si in range(lo, hi)]
+        cube_id = int(cf_np[gi] // 12)
+        facet_id = int(cf_np[gi] % 12)
+        base = cube_idx_np[cube_id].astype(_np.float64) * step
+        cube_verts = base + _V_OFFSETS * step
+        vert_ids = FACET_VERTS[facet_id]
+        edge_ids = FACET_EDGES[facet_id]
+        V0 = cube_verts[vert_ids[0]]
+        V1 = cube_verts[vert_ids[1]]
+        V2 = cube_verts[vert_ids[2]]
+        groups.append((segs, V0, V1, V2, cube_verts, vert_ids, edge_ids))
+    return groups
+
+
 def _count_uturns_gpu_batched_csr_chunk(
     cf_np,          # (G,) int64  — packed cube_id*12 + facet_id
     group_off_np,   # (G+1,) int64 — CSR offsets into A/B
@@ -602,6 +631,23 @@ def _count_uturns_gpu_batched_csr_chunk(
     if max_s == 0:
         return _torch.zeros(G, dtype=_torch.int64)
     P_MAX = 2 * max_s
+
+    # QW6 (2026-04-21): single-group oversized P rescue. If G=1 and the
+    # single group's P^2 already exceeds the chunk budget, the dense (G,P,P)
+    # tensors would exceed 80 GB HBM. Route to the legacy CPU list-of-tuples
+    # path, which is slow but handles any P. Gated on VRAM_RESCUE.
+    import os as _os
+    from corep_fast.config import VRAM_RESCUE as _VRAM_RESCUE
+    if _VRAM_RESCUE and G == 1:
+        try:
+            _budget = int(_os.environ.get(
+                'COREP_FAST_S4_UTURN_CHUNK_ELEMS', str(250_000_000)))
+        except ValueError:
+            _budget = 250_000_000
+        if P_MAX * P_MAX > _budget:
+            _groups = _csr_to_groups_for_cpu_fallback(
+                cf_np, group_off_np, A_np, B_np, cube_idx_np, step)
+            return _count_uturns_gpu_batched(_groups)
 
     dev = _torch.device('cuda:0' if _torch.cuda.is_available() else 'cpu')
 
