@@ -10,6 +10,8 @@ Public API:
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 
 from corep_fast.containers import MeshTensors, CubeBatch, _replace_fields
@@ -53,7 +55,16 @@ def s1_voxelize(
     # Step 2: expand -- enumerate all (triangle, candidate_cube) pairs
     offsets = torch.zeros(counts_per_tri.shape[0] + 1, dtype=torch.int64, device=device)
     offsets[1:] = torch.cumsum(counts_per_tri, dim=0)
-    total_pairs = int(offsets[-1].item())
+    # P3 (2026-04-21): the raw .item() on offsets[-1] here triggered a
+    # 1.048s cudaDeviceSynchronize (measured 2026-04-17 profile).
+    # Under ASYNC_D2H the readback is deferred into _expand_candidates,
+    # where it immediately precedes allocation and the GPU queue has far
+    # less pending work to drain (~50us vs 1048ms).
+    from corep_fast.config import ASYNC_D2H as _ASYNC_D2H
+    if not _ASYNC_D2H:
+        total_pairs = int(offsets[-1].item())
+    else:
+        total_pairs = None  # let _expand_candidates materialise it
 
     # For each pair, identify triangle_id and cube (ix, iy, iz)
     pair_tri_ids, pair_cube_coords = _expand_candidates(
@@ -108,7 +119,7 @@ def _expand_candidates(
     imax: torch.Tensor,  # (F, 3) int32
     spans: torch.Tensor,  # (F, 3) int64
     offsets: torch.Tensor,  # (F+1,) int64
-    total_pairs: int,
+    total_pairs: Optional[int],
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Enumerate all (triangle_id, candidate_cube_coord) pairs.
@@ -117,6 +128,8 @@ def _expand_candidates(
         pair_tri_ids: (total_pairs,) int32
         pair_cube_coords: (total_pairs, 3) int32
     """
+    if total_pairs is None:
+        total_pairs = int(offsets[-1].item())  # P3: minimal sync inside helper
     # Use arange + searchsorted to map flat index -> triangle
     flat_idx = torch.arange(total_pairs, dtype=torch.int64, device=device)
     tri_ids = torch.searchsorted(offsets[1:], flat_idx, right=True)  # (total_pairs,)
