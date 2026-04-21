@@ -504,6 +504,13 @@ def _fastpath_trace_loops_gpu(
     # QW3 (2026-04-21): gated on VRAM_RESCUE. See post-walk block below where
     # loop_start_slot is explicitly released after loop_offsets is cloned.
     from corep_fast.config import VRAM_RESCUE as _VRAM_RESCUE
+    # P3 (2026-04-21): when ASYNC_D2H is on, skip the per-iteration `.item()`
+    # early-exit checks in the outer and inner walker loops. Each check costs
+    # one cudaStreamSynchronize per call; skipping them turns the body into a
+    # pure GPU op sequence. Correctness preserved because when the early-exit
+    # condition is true the body is already a masked no-op (where(mask, ...)
+    # leaves untouched state when the mask is all-False).
+    from corep_fast.config import ASYNC_D2H as _ASYNC_D2H
     max_loops_cap = max_points
     loop_start_slot = _torch.zeros(
         (N, max_loops_cap + 1), dtype=_torch.int32, device=device
@@ -519,10 +526,11 @@ def _fastpath_trace_loops_gpu(
         is_idle = (curr == -1)                                # (N,) bool
         open_mask = p_active & p_unvisited & is_idle          # (N,)
 
-        if not bool(open_mask.any().item()):
-            # No new loops to open at this start point — but still need to drain
-            # any cubes still walking (unlikely since prior start drained them).
-            continue
+        if not _ASYNC_D2H:
+            if not bool(open_mask.any().item()):
+                # No new loops to open at this start point — but still need to drain
+                # any cubes still walking (unlikely since prior start drained them).
+                continue
 
         # Record loop-start slot for cubes opening here
         cubes_opening = arange_N[open_mask]                   # (K,)
@@ -539,8 +547,9 @@ def _fastpath_trace_loops_gpu(
         # A cube is active iff curr != -1.
         for step in range(max_points):
             active = curr != -1                                # (N,) bool
-            if not bool(active.any().item()):
-                break
+            if not _ASYNC_D2H:
+                if not bool(active.any().item()):
+                    break
 
             # Gather neighbors of curr for active cubes (default 0 for idle to keep gather safe)
             safe_curr = _torch.where(active, curr, int_zero).to(_torch.int64)
@@ -580,8 +589,9 @@ def _fastpath_trace_loops_gpu(
             # Bump loop_id for cubes that just closed
             loop_id = _torch.where(closed, loop_id + 1, loop_id)
 
-            if not bool((curr != -1).any().item()):
-                break
+            if not _ASYNC_D2H:
+                if not bool((curr != -1).any().item()):
+                    break
         # End inner walk. At this point every cube that opened a loop at p has
         # closed it (curr == -1). We continue to next candidate p.
 
