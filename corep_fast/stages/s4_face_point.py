@@ -702,6 +702,13 @@ def _count_uturns_from_packed(pts, pts_valid, facet_verts, edge_ids_t):
     # Invalid slots -> P sentinel
     canonical_idx = _torch.where(pts_valid, canonical_idx,
                                  _torch.full_like(canonical_idx, P))
+    # QW1 (2026-04-21): free Phase-A intermediates before Phase B allocates
+    # its own (G,P,P) bool edge_mask. Gated on VRAM_RESCUE so A/B measurable.
+    from corep_fast.config import VRAM_RESCUE as _VRAM_RESCUE
+    if _VRAM_RESCUE:
+        del d, valid_pair, match, match_lower, node_raw, big_P, j_ar, tri_lower
+        if _torch.cuda.is_available():
+            _torch.cuda.empty_cache()
 
     # A slot is a "representative" iff its canonical equals its own index.
     idx_row = _torch.arange(P, device=dev, dtype=_torch.int64).unsqueeze(0)
