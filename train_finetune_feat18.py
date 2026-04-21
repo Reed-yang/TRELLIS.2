@@ -47,10 +47,12 @@ NOTE on augmentation:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import glob
 import json
 import os
 import time
+import zipfile
 
 import numpy as np
 import torch
@@ -58,7 +60,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 import trimesh
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -257,6 +259,22 @@ def load_pretrained_into(
 # ──────────────────────────── dataset / loader ───────────────────────────────
 
 
+def _read_npz_array_shape(path: str, array_name: str) -> tuple:
+    """Read only the .npy header for one array inside a .npz, without
+    decompressing its data. Much faster than np.load() when we only need
+    to know sample sizes (e.g. for bucket sampling by voxel count)."""
+    with zipfile.ZipFile(path) as zf:
+        with zf.open(f"{array_name}.npy") as f:
+            version = np.lib.format.read_magic(f)
+            if version == (1, 0):
+                shape, _, _ = np.lib.format.read_array_header_1_0(f)
+            elif version == (2, 0):
+                shape, _, _ = np.lib.format.read_array_header_2_0(f)
+            else:
+                shape, _, _ = np.lib.format._read_array_header(f, version)
+    return shape
+
+
 class Feat18Dataset(Dataset):
     """Loads precomputed .npz shards and applies random integer translation."""
 
@@ -266,6 +284,8 @@ class Feat18Dataset(Dataset):
         resolution: int,
         max_translate: int = 16,
         augment: bool = True,
+        precompute_voxel_counts: bool = False,
+        max_voxels: int = 0,
     ):
         self.files = sorted(glob.glob(os.path.join(data_dir, "*.npz")))
         if not self.files:
@@ -273,6 +293,22 @@ class Feat18Dataset(Dataset):
         self.resolution = resolution
         self.max_translate = max_translate
         self.augment = augment
+        self.max_voxels = int(max_voxels)  # 0 → disabled
+        self.num_voxels: np.ndarray | None = None
+        if precompute_voxel_counts:
+            self.num_voxels = np.array(
+                [int(_read_npz_array_shape(f, "cube_indices")[0]) for f in self.files],
+                dtype=np.int64,
+            )
+
+    def effective_voxels(self) -> np.ndarray | None:
+        """Per-sample voxel count after the --max_voxels cap (used by the
+        bucket sampler to match what the model actually processes)."""
+        if self.num_voxels is None:
+            return None
+        if self.max_voxels <= 0:
+            return self.num_voxels
+        return np.minimum(self.num_voxels, self.max_voxels)
 
     def __len__(self) -> int:
         return len(self.files)
@@ -283,6 +319,28 @@ class Feat18Dataset(Dataset):
         feats = d["feats"].astype(np.float32)               # (N, 18)
         num_boundary = d["num_boundary"].astype(np.int32)
         sha = os.path.splitext(os.path.basename(self.files[idx]))[0]
+
+        # ── voxel cap (deterministic per-sample subsample) ──
+        # When a sample has more than --max_voxels voxels, keep a
+        # reproducible random subset. The seed is derived from the sample's
+        # sha so the kept indices are stable across epochs and DataLoader
+        # workers; this preserves flex_gemm rulebook cache locality (same
+        # sample → same coords → rulebook hits).
+        #
+        # num_boundary is not used in the training forward/backward path
+        # (only in mesh export during eval dumps, and eval uses
+        # max_voxels=0), so we don't subsample it here.
+        if self.max_voxels > 0 and cube_indices.shape[0] > self.max_voxels:
+            # Derive a 32-bit seed from the first 8 hex chars of the sha.
+            try:
+                seed = int(sha[:8], 16) & 0xFFFFFFFF
+            except ValueError:
+                seed = abs(hash(sha)) & 0xFFFFFFFF
+            rng = np.random.default_rng(seed)
+            keep = rng.choice(cube_indices.shape[0], size=self.max_voxels, replace=False)
+            keep.sort()
+            cube_indices = cube_indices[keep]
+            feats = feats[keep]
 
         if self.augment and self.max_translate > 0:
             R = self.resolution
@@ -329,6 +387,89 @@ def collate_fn(batch):
         "num_boundary_per_sample": num_boundary_list,
         "shas": shas,
     }
+
+
+# ──────────────────────────── bucket sampler ────────────────────────────────
+
+
+class BucketedDistributedSampler(Sampler):
+    """Emit indices so that within each global batch (``num_replicas * batch_size``)
+    samples have similar voxel counts, limiting the 'slowest rank' tail.
+
+    Strategy:
+      1. Sort all sample indices by ``voxels_per_sample`` (stable ascending).
+      2. Reshape into rows of ``num_replicas * batch_size`` (drop last tail).
+      3. Shuffle the *row order* every epoch (so during any given global batch
+         all 8 ranks see similarly-sized samples, but across the whole epoch
+         batches still span small → large → small in a random walk).
+      4. Within each row, shuffle the column order so rank assignment is
+         randomized.
+      5. Slice per-rank: rank ``r`` gets ``indices[r::num_replicas]``.
+    """
+
+    def __init__(
+        self,
+        voxels_per_sample: np.ndarray,
+        num_replicas: int,
+        rank: int,
+        batch_size: int,
+        shuffle: bool = True,
+        seed: int = 0,
+        sort_mode: str = "shuffle",
+    ):
+        if sort_mode not in ("shuffle", "ascending"):
+            raise ValueError(
+                f"BucketedDistributedSampler: unknown sort_mode={sort_mode!r}; "
+                "expected 'shuffle' or 'ascending'."
+            )
+        self.voxels = np.asarray(voxels_per_sample, dtype=np.int64)
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        self.sort_mode = sort_mode
+        self.epoch = 0
+
+        self._row = num_replicas * batch_size
+        self._kept = (len(self.voxels) // self._row) * self._row
+        if self._kept <= 0:
+            raise ValueError(
+                f"BucketedDistributedSampler: only {len(self.voxels)} samples, "
+                f"need at least num_replicas*batch_size={self._row}."
+            )
+        self._len_per_rank = self._kept // num_replicas
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __len__(self) -> int:
+        return self._len_per_rank
+
+    def __iter__(self):
+        sorted_idx = np.argsort(self.voxels, kind="stable")[: self._kept]
+        rows = sorted_idx.reshape(-1, self._row)
+        g = np.random.default_rng(self.seed + self.epoch)
+        if self.shuffle and self.sort_mode == "shuffle":
+            # Fully random row order, plus per-row column shuffle.
+            rows = rows[g.permutation(rows.shape[0])]
+            col_perm = np.stack(
+                [g.permutation(self._row) for _ in range(rows.shape[0])], axis=0
+            )
+            rows = np.take_along_axis(rows, col_perm, axis=1)
+        elif self.sort_mode == "ascending":
+            # Keep rows in ascending voxel-count order across each epoch
+            # (this removes the big-bucket "stall bursts" and lets triton
+            # autotune / allocator warm up monotonically). Still shuffle the
+            # per-row column assignment every epoch so ranks don't always
+            # see the same end of a bucket.
+            if self.shuffle:
+                col_perm = np.stack(
+                    [g.permutation(self._row) for _ in range(rows.shape[0])], axis=0
+                )
+                rows = np.take_along_axis(rows, col_perm, axis=1)
+        flat = rows.reshape(-1)
+        return iter(flat[self.rank :: self.num_replicas].tolist())
 
 
 # ──────────────────────────── normalisation ──────────────────────────────────
@@ -421,20 +562,52 @@ def train(args):
         resolution=args.resolution,
         max_translate=args.max_translate,
         augment=True,
+        precompute_voxel_counts=args.bucket_sampler,
+        max_voxels=args.max_voxels,
     )
     eval_set = Feat18Dataset(
         data_dir,
         resolution=args.resolution,
         max_translate=0,
         augment=False,
+        max_voxels=0,
     )
     _log(f"[data] {len(train_set)} samples in {data_dir}")
+    if train_set.num_voxels is not None:
+        nv = train_set.num_voxels
+        _log(
+            f"[data] raw voxels per sample: min={int(nv.min())} "
+            f"p50={int(np.median(nv))} p90={int(np.percentile(nv, 90))} "
+            f"max={int(nv.max())}"
+        )
+        if args.max_voxels > 0:
+            ev = train_set.effective_voxels()
+            n_clipped = int((nv > args.max_voxels).sum())
+            _log(
+                f"[data] --max_voxels={args.max_voxels}: {n_clipped}/{len(nv)} "
+                f"samples clipped; effective max={int(ev.max())}"
+            )
 
-    sampler = (
-        DistributedSampler(train_set, shuffle=True, drop_last=True)
-        if is_dist
-        else None
-    )
+    if args.bucket_sampler:
+        if not is_dist:
+            raise RuntimeError("--bucket_sampler currently requires distributed training")
+        sampler = BucketedDistributedSampler(
+            voxels_per_sample=train_set.effective_voxels(),
+            num_replicas=world_size,
+            rank=rank,
+            batch_size=args.batch_size,
+            shuffle=True,
+            seed=0,
+            sort_mode=args.bucket_sort_mode,
+        )
+        _log(
+            f"[data] using BucketedDistributedSampler "
+            f"(len per rank = {len(sampler)}, sort_mode={args.bucket_sort_mode})"
+        )
+    elif is_dist:
+        sampler = DistributedSampler(train_set, shuffle=True, drop_last=True)
+    else:
+        sampler = None
     # Expose num_workers to worker_init_fn via env.
     os.environ["_FT_NUM_WORKERS"] = str(max(args.num_workers, 1))
     loader = DataLoader(
@@ -528,18 +701,29 @@ def train(args):
             feats = normalize(feats_raw, mean_t, std_t)
 
             x = sp.SparseTensor(feats=feats, coords=coords)
-            z, mu, logvar = encoder(x, sample_posterior=True, return_raw=True)
-            decoded = decoder(z)
-            h, subs_gt, subs = decoded
+            autocast_ctx = (
+                torch.autocast("cuda", dtype=torch.bfloat16)
+                if args.use_bf16
+                else contextlib.nullcontext()
+            )
+            with autocast_ctx:
+                z, mu, logvar = encoder(x, sample_posterior=True, return_raw=True)
+                decoded = decoder(z)
+                h, subs_gt, subs = decoded
 
             # Reconstruction in normalised space — every channel contributes
-            # on a roughly unit scale.
-            loss_recon = F.mse_loss(h.feats, x.feats)
-            loss_kl = 0.5 * torch.mean(mu.pow(2) + logvar.exp() - logvar - 1)
+            # on a roughly unit scale. Losses computed in fp32 for stability
+            # even when forward runs under bf16 autocast.
+            loss_recon = F.mse_loss(h.feats.float(), x.feats.float())
+            mu_f = mu.float()
+            logvar_f = logvar.float()
+            loss_kl = 0.5 * torch.mean(
+                mu_f.pow(2) + logvar_f.exp() - logvar_f - 1
+            )
             loss_subdiv = torch.tensor(0.0, device=device)
             for sub_gt, sub in zip(subs_gt, subs):
                 loss_subdiv = loss_subdiv + F.binary_cross_entropy_with_logits(
-                    sub.feats, sub_gt.float()
+                    sub.feats.float(), sub_gt.float()
                 )
             if len(subs) > 0:
                 loss_subdiv = loss_subdiv / len(subs)
@@ -616,7 +800,7 @@ def train(args):
 
             if (step % args.i_save == 0 or step == args.max_steps) and is_master:
                 ckpt_path = os.path.join(
-                    args.output_dir, f"ckpt_step{step:07d}.pt"
+                    args.output_dir, f"ckpt_latest.pt"
                 )
                 torch.save(
                     {
@@ -629,7 +813,8 @@ def train(args):
                 )
                 tqdm.write(f"  [save] {ckpt_path}")
 
-            if step % args.i_sample == 0 or step == args.max_steps or step == 1:
+            _sample_at_step_one = (step == 1) and args.sample_at_step_one
+            if step % args.i_sample == 0 or step == args.max_steps or _sample_at_step_one:
                 # Only rank 0 dumps meshes; other ranks wait at the barrier.
                 if is_master:
                     sample_dir = os.path.join(
@@ -754,11 +939,55 @@ def parse_args():
     p.add_argument("--lambda_kl", type=float, default=1e-6)
     p.add_argument("--lambda_subdiv", type=float, default=0.1)
     p.add_argument("--grad_clip", type=float, default=1.0)
+    p.add_argument(
+        "--use_bf16",
+        action="store_true",
+        default=False,
+        help="Wrap encoder/decoder forward in torch.autocast(bf16). Losses stay fp32.",
+    )
+    p.add_argument(
+        "--bucket_sampler",
+        action="store_true",
+        default=False,
+        help="Use a bucket-by-voxel-count distributed sampler so each global "
+        "batch contains similarly-sized samples (reduces slowest-rank tail).",
+    )
+    p.add_argument(
+        "--bucket_sort_mode",
+        choices=["shuffle", "ascending"],
+        default="shuffle",
+        help="Row order for BucketedDistributedSampler. 'shuffle' (default) "
+        "permutes rows every epoch. 'ascending' keeps rows in ascending "
+        "voxel-count order so every epoch processes small→large samples "
+        "monotonically (warms up caches; hides autotune bursts at the tail).",
+    )
+    p.add_argument(
+        "--max_voxels",
+        type=int,
+        default=0,
+        help="If >0, deterministically subsample per-sample cubes down to "
+        "this cap during training. Shrinks the ~75x voxel-count dynamic "
+        "range (min/max) that causes minutes-long 'big bucket' stalls. "
+        "Uses a sha-derived seed so kept voxels are stable across epochs "
+        "(rulebook cache remains hot). Eval/dump samples are never capped.",
+    )
 
     # ── logging ──
     p.add_argument("--i_save", type=int, default=2000)
     p.add_argument("--i_sample", type=int, default=2000)
     p.add_argument("--n_dump", type=int, default=2)
+    p.add_argument(
+        "--sample_at_step_one",
+        action="store_true",
+        default=False,
+        help="Dump a mesh sample at step 1 (useful as a first-step sanity check).",
+    )
+    p.add_argument(
+        "--no_sample_at_step_one",
+        action="store_false",
+        dest="sample_at_step_one",
+        help="Skip the step-1 mesh dump (use when benchmarking step time).",
+    )
     return p.parse_args()
 
 

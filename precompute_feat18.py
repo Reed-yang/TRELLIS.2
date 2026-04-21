@@ -200,18 +200,28 @@ def param_to_feats(param: CorepParam) -> tuple[np.ndarray, np.ndarray]:
     mask2 = n_pts == 2
     if mask2.any():
         starts = offsets[:-1][mask2]
-        first_2[mask2, :3] = param.point_values[starts] * R - cube_idx_f[mask2]
-        first_2[mask2, 3:6] = param.point_values[starts + 1] * R - cube_idx_f[mask2]
+        p0 = param.point_values[starts] * R - cube_idx_f[mask2]
+        p1 = param.point_values[starts + 1] * R - cube_idx_f[mask2]
+        swap = p0[:, 2] > p1[:, 2]
+        first_2[mask2, :3] = np.where(swap[:, np.newaxis], p1, p0)
+        first_2[mask2, 3:6] = np.where(swap[:, np.newaxis], p0, p1)
 
     mask_many = n_pts >= 3
     for cube_i in np.where(mask_many)[0]:
         s, e = offsets[cube_i], offsets[cube_i + 1]
         pts_local = param.point_values[s:e] * R - cube_idx_f[cube_i]
+        z_order = np.argsort(pts_local[:, 2], kind="stable")
+        pts_local = pts_local[z_order]
         diffs = pts_local[:, None, :] - pts_local[None, :, :]
         dists_sq = np.einsum("ijk,ijk->ij", diffs, diffs)
         i, j = np.unravel_index(np.argmax(dists_sq), dists_sq.shape)
-        first_2[cube_i, :3] = pts_local[i]
-        first_2[cube_i, 3:6] = pts_local[j]
+        pi, pj = pts_local[i], pts_local[j]
+        if pi[2] <= pj[2]:
+            first_2[cube_i, :3] = pi
+            first_2[cube_i, 3:6] = pj
+        else:
+            first_2[cube_i, :3] = pj
+            first_2[cube_i, 3:6] = pi
 
     # Clip silently: corep_fast occasionally emits points slightly outside
     # [0, 1] for boundary cubes; clipping keeps the downstream normalisation
@@ -290,6 +300,15 @@ def parse_args():
         type=int,
         default=None,
         help="Process only the first N (post-shard) entries — useful for smoke tests.",
+    )
+    p.add_argument(
+        "--max_mesh_file_mb",
+        type=float,
+        default=None,
+        help=(
+            "Skip meshes larger than this on-disk file size (MiB). "
+            "Rough proxy for slow trimesh load / voxelize; default: no limit."
+        ),
     )
     p.add_argument(
         "--verbose",
@@ -386,6 +405,21 @@ def main():
         if not os.path.exists(mesh_path):
             failed.append((sha, "missing_file"))
             continue
+
+        if args.max_mesh_file_mb is not None:
+            try:
+                mesh_sz_mb = os.path.getsize(mesh_path) / (1024 * 1024)
+            except OSError as e:
+                failed.append((sha, f"stat:{e}"))
+                continue
+            if mesh_sz_mb > args.max_mesh_file_mb:
+                msg = f"skipped_too_large_file:{mesh_sz_mb:.1f}MB"
+                failed.append((sha, msg))
+                tqdm.write(
+                    f"[skip] {sha[:16]} {mesh_sz_mb:.1f} MB > "
+                    f"--max_mesh_file_mb={args.max_mesh_file_mb}"
+                )
+                continue
 
         # Heartbeat so the user can see we are NOT hung when corep_fast is
         # silently grinding (each mesh takes ~10–60 s; without this line the

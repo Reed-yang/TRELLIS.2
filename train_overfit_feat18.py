@@ -41,7 +41,8 @@ def param_to_feats(param: CorepParam) -> tuple[np.ndarray, np.ndarray]:
     The 18-dim feature per voxel is:
         [point1_xyz(3), point2_xyz(3), edge_weights(6), face_weights(6)]
     For cubes with >= 2 points, the two points that are farthest apart
-    (in Euclidean distance) are selected. Cubes with only 1 component
+    (in Euclidean distance) are selected, then ordered by local z from
+    low to high in the 6-dim point block. Cubes with only 1 component
     point get zeros for the second point. Cubes with 0 points get zeros
     for both.
 
@@ -72,8 +73,9 @@ def param_to_feats(param: CorepParam) -> tuple[np.ndarray, np.ndarray]:
         idx2a = offsets[:-1][mask2]
         p1_local_2 = param.point_values[idx2a] * R - cube_idx_f[mask2]
         p2_local_2 = param.point_values[idx2a + 1] * R - cube_idx_f[mask2]
-        first_2[mask2, :3] = p1_local_2
-        first_2[mask2, 3:6] = p2_local_2
+        swap = p1_local_2[:, 2] > p2_local_2[:, 2]
+        first_2[mask2, :3] = np.where(swap[:, np.newaxis], p2_local_2, p1_local_2)
+        first_2[mask2, 3:6] = np.where(swap[:, np.newaxis], p1_local_2, p2_local_2)
         all_local_parts.append(p1_local_2)
         all_local_parts.append(p2_local_2)
 
@@ -83,11 +85,18 @@ def param_to_feats(param: CorepParam) -> tuple[np.ndarray, np.ndarray]:
         start = int(offsets[i])
         n = int(n_pts[i])
         pts_local = param.point_values[start:start + n] * R - cube_idx_f[i]
+        z_order = np.argsort(pts_local[:, 2], kind="stable")
+        pts_local = pts_local[z_order]
         diff = pts_local[:, None, :] - pts_local[None, :, :]
         dists_sq = np.sum(diff * diff, axis=-1)
         a, b = np.unravel_index(np.argmax(dists_sq), dists_sq.shape)
-        first_2[i, :3] = pts_local[a]
-        first_2[i, 3:6] = pts_local[b]
+        pa, pb = pts_local[a], pts_local[b]
+        if pa[2] <= pb[2]:
+            first_2[i, :3] = pa
+            first_2[i, 3:6] = pb
+        else:
+            first_2[i, :3] = pb
+            first_2[i, 3:6] = pa
         all_local_parts.append(pts_local)
 
     # Outlier check: local coordinates should lie in [0, 1].
