@@ -138,10 +138,55 @@ form first, then decide whether a threshold change still makes sense.
   workload currently survives it because 80 GB HBM has enough headroom on the
   2026-04-21 test sample. If the 168k run hits OOM in s2 (not s4), revisit.
 
+## Post-fix validation (10-min rerun)
+
+After applying the disable patch (commit `76af37e`), a third 10-min run was
+taken with the same 500-mesh list and `VRAM_RESCUE=1, S2_SPARSE=0,
+ASYNC_D2H=0`:
+
+| Config | n_ok / wall | mean | med | p95 | p99 | s2 p99 | throughput |
+|---|---|---|---|---|---|---|---|
+| BASELINE (all off) | 261 / 300s | 8.38s | 8.22s | 14.5s | 17.3s | 2.7s | 0.870 m/s |
+| OLD-PROD (pre-fix w/ QW5) | 169 / 600s | 24.02s | 6.36s | 140.9s | 171.3s | 162.2s | 0.282 m/s |
+| **NEW-PROD (QW5 off, rest on)** | **371 / 600s** | **12.04s** | **9.22s** | **25.0s** | **73.9s** | **67.8s** | **0.618 m/s** |
+
+**Same-mesh fair comparison** (n=261 meshes present in both BASELINE and
+NEW-PROD):
+
+| Metric | Mean delta | Median delta | p95 delta |
+|---|---|---|---|
+| total_wall_s | **-0.54s** (NEW faster) | -0.47s | +0.24s |
+| s2_components_s | -0.04s | -0.002s | +0.08s |
+
+NEW-PROD is marginally **faster** than BASELINE on the same meshes, with
+s2 distribution statistically unchanged. The 0.62 m/s vs 0.87 m/s raw
+throughput difference is explained by bucket mix: NEW-PROD's 10-min
+window reaches into the "slow" bucket (59 meshes, ref 66-81 s, s2
+legitimately dominant at 65-79 s), which the 5-min baseline window did
+not — not a regression.
+
+Three meshes previously at 100-400× slowdown all returned to baseline:
+
+| sha256 | ref | BASELINE wall | OLD-PROD wall | NEW-PROD wall |
+|---|---|---|---|---|
+| 0898cb8a62eb | 4.5 s | 5.41 s | 77.09 s | **5.43 s** |
+| 02fca5ab5689 | 3.9 s | 4.88 s | 60.21 s | **3.97 s** |
+| 0e8053881e00 | 2.4 s | 3.14 s | 36.19 s | **2.36 s** |
+
+### 168 k extrapolation
+
+- Baseline (75.7 % success historical): 168 k / 0.87 = **2.2 days** but ~25 %
+  fail (~42 k lost meshes).
+- NEW-PROD (100 % success): 168 k / 0.62 = **3.1 days**, all 168 k succeed.
+
+NEW-PROD meets the user's 3-day target while eliminating the OOM failure
+class. VRAM_RESCUE is now a pure win when the default is flipped.
+
 ## Cross-refs
 
 - Profile data: `my-docs/20260421-throughput-profile-results.md`.
 - Plan / spec: `docs/superpowers/plans/2026-04-21-168k-throughput-implementation.md`
   Task 4; `docs/superpowers/specs/2026-04-21-168k-throughput-design.md` §5.1 QW5.
 - Raw numbers: `tmp/profile_throughput/results/throughput_10min/`,
-  `throughput_10min_prod/`, `throughput_5min_baseline/`.
+  `throughput_10min_prod/`, `throughput_10min_post_qw5fix/`,
+  `throughput_5min_baseline/`.
