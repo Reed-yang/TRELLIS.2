@@ -475,6 +475,113 @@ def _count_uturns_gpu_batched_csr(
 ):
     """CSR-array batched GPU U-turn counting (production dispatch).
 
+    Memory-bounded chunking wrapper. The core packs padded ``(G, P, P)``
+    tensors whose peak memory scales with ``G * P_MAX^2``. At high resolution
+    (e.g. 512), a single shot exceeds any single-GPU's VRAM. This wrapper:
+
+      1. Sorts groups by per-group segment count (descending) so the largest
+         ``P_MAX`` lives in its own small chunk;
+      2. Walks the sorted groups left-to-right, growing each chunk until its
+         peak element count ``G_chunk * (2 * chunk_max_s)^2`` hits the budget
+         (env ``COREP_FAST_S4_UTURN_CHUNK_ELEMS``, default ~2.5e8 elements ≈
+         2 GB per ``(G, P, P)`` i64/f64 tensor);
+      3. Runs each chunk through ``_count_uturns_gpu_batched_csr_chunk``
+         (the original packing + core call);
+      4. Restores the caller's group order.
+
+    Returns (G,) int64 torch.Tensor of U-turn counts (CPU when the core
+    ran on CUDA, matching the single-chunk behaviour).
+    """
+    import os as _os
+    import numpy as np
+    import torch as _torch
+
+    G = int(cf_np.shape[0])
+    if G == 0:
+        return _torch.zeros(0, dtype=_torch.int64)
+
+    segs_per_group_np = (group_off_np[1:] - group_off_np[:-1]).astype(np.int64)  # (G,)
+    max_s = int(segs_per_group_np.max()) if G > 0 else 0
+    if max_s == 0:
+        return _torch.zeros(G, dtype=_torch.int64)
+
+    global_p_max = 2 * max_s
+    try:
+        budget_elems = int(_os.environ.get(
+            'COREP_FAST_S4_UTURN_CHUNK_ELEMS', str(250_000_000)))
+    except ValueError:
+        budget_elems = 250_000_000
+
+    # Fast path: the whole batch fits the budget, skip sort/permute overhead.
+    if G * (global_p_max ** 2) <= budget_elems:
+        return _count_uturns_gpu_batched_csr_chunk(
+            cf_np, group_off_np, A_np, B_np, cube_idx_np, step,
+        )
+
+    # Sort groups by segment count descending. Localising large-P groups keeps
+    # later (smaller-P) chunks dense, minimising the total number of chunks.
+    order = np.argsort(-segs_per_group_np, kind='stable')
+    inverse_order = np.argsort(order, kind='stable')
+
+    sorted_segs = segs_per_group_np[order]
+    sorted_cf = cf_np[order]
+
+    # Rebuild the CSR in the sorted order. seg_perm[new_idx] = old_seg_idx.
+    total_segs = int(group_off_np[-1])
+    new_off = np.concatenate(([0], np.cumsum(sorted_segs))).astype(np.int64)
+    src_starts = group_off_np[order].astype(np.int64)
+
+    seg_perm = np.empty(total_segs, dtype=np.int64)
+    for i in range(G):
+        c = int(sorted_segs[i])
+        if c == 0:
+            continue
+        s = int(src_starts[i])
+        d = int(new_off[i])
+        seg_perm[d:d + c] = np.arange(s, s + c, dtype=np.int64)
+
+    sorted_A = A_np[seg_perm]
+    sorted_B = B_np[seg_perm]
+
+    out_np = np.zeros(G, dtype=np.int64)
+    g_start = 0
+    while g_start < G:
+        chunk_max_s = int(sorted_segs[g_start])
+        chunk_p_max_sq = (2 * chunk_max_s) ** 2 if chunk_max_s > 0 else 1
+        max_chunk_g = max(1, budget_elems // max(1, chunk_p_max_sq))
+        g_end = min(G, g_start + int(max_chunk_g))
+
+        chunk_cf = sorted_cf[g_start:g_end]
+        chunk_off = new_off[g_start:g_end + 1] - new_off[g_start]
+        chunk_A = sorted_A[new_off[g_start]:new_off[g_end]]
+        chunk_B = sorted_B[new_off[g_start]:new_off[g_end]]
+
+        chunk_result = _count_uturns_gpu_batched_csr_chunk(
+            chunk_cf, chunk_off, chunk_A, chunk_B, cube_idx_np, step,
+        )
+        # chunk_result is a (G_chunk,) int64 tensor, on CPU when core ran on
+        # CUDA (see `_count_uturns_from_packed`), else on the core's device.
+        out_np[g_start:g_end] = chunk_result.detach().cpu().numpy()
+
+        # Release cached GPU memory between chunks to reduce fragmentation.
+        if _torch.cuda.is_available():
+            _torch.cuda.empty_cache()
+
+        g_start = g_end
+
+    return _torch.from_numpy(out_np[inverse_order])
+
+
+def _count_uturns_gpu_batched_csr_chunk(
+    cf_np,          # (G,) int64  — packed cube_id*12 + facet_id
+    group_off_np,   # (G+1,) int64 — CSR offsets into A/B
+    A_np,           # (S, 3) float64 — segment start points
+    B_np,           # (S, 3) float64 — segment end points
+    cube_idx_np,    # (N, 3) int (any int dtype) — cube voxel indices
+    step: float,    # 1.0 / resolution
+):
+    """Single-chunk CSR pack + dispatch to `_count_uturns_from_packed`.
+
     Optimised CSR packing (Task 9b): all big intermediates built on GPU,
     no per-cube (G, 8, 3) cube_verts materialisation, dtype f32 throughout.
     Reuses the shared core `_count_uturns_from_packed`.

@@ -647,6 +647,19 @@ def _build_adjacency_gpu(
     NODES = _NODES_PER_CUBE
     W = _W_MAX
 
+    # Node encoding is `edge_idx * W + rank` with rank in [0, edge_weight).
+    # If any edge_weight exceeds W, rank can reach >= W and the encoded node
+    # overflows into the next edge's slot space, causing OOB indexing into
+    # fill_count / adj (which have second-dim size NODES_PER_CUBE = 18 * W).
+    # Fail loud and clear instead of emitting an async CUDA device-side assert.
+    if N > 0:
+        max_w = int(edge_weights.max().item())
+        assert max_w <= W, (
+            f"edge_weights.max()={max_w} exceeds _W_MAX={W}; "
+            f"increase _W_MAX in corep_fast/stages/s7_rank_assign.py "
+            f"or reduce resolution / mesh complexity."
+        )
+
     # Output: pre-fill with -1
     adj = torch.full((N, NODES, 2), -1, dtype=torch.int32, device=device)
     # Per-node fill counter (for atomic 2-slot assignment)
