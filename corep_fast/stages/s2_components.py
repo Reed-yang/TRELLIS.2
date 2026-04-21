@@ -109,13 +109,23 @@ def s2_components(batch: CubeBatch, mesh: MeshTensors) -> CubeBatch:
     # padded_faces: (N, max_faces) -> (N, 1, 1, max_faces)
     # Match: (N, max_faces, 3, max_faces) -- could be large but max_faces is small
 
-    # QW5 (2026-04-21): lower dense threshold to cap the (N, M, M) match
-    # allocation at 32^2 = 1024 instead of 64^2 = 4096, avoiding the 62 GB
-    # p99 s2 VRAM spike at res=512. Cubes with M > 32 fall through to
-    # _label_propagation_sequential (slower but avoids the O(M^2) spike).
-    from corep_fast.config import VRAM_RESCUE as _VRAM_RESCUE
+    # QW5 (2026-04-21): DISABLED — see logs/findings_qw5_regression.md.
+    # Original intent: lower dense threshold 64 -> 32 under VRAM_RESCUE to
+    # cap the (N, M, M) match tensor at M^2=1024 and avoid a 62 GB p99 VRAM
+    # spike at res=512. Outcome on real meshes: cubes with max_faces in the
+    # [33, 64] band got redirected to `_label_propagation_sequential`, a
+    # Python `for cube_idx in range(N)` loop that performs ~3*n_valid .item()
+    # D2H syncs per cube. Measured 100x-400x s2 slowdown on affected meshes
+    # in the 2026-04-21 10-min A/B (s2 p99 2.7s -> 162s). The 62 GB spike
+    # the rescue was supposed to mitigate actually comes from max_faces > 64
+    # cubes that already use sequential regardless of threshold, so QW5
+    # provided no VRAM benefit on those and only hurt the [33, 64] band.
+    # Pinning threshold at 64 (legacy) until `_label_propagation_sequential`
+    # is vectorised; VRAM_RESCUE remains import'd for future re-enablement
+    # and to avoid a commit-log churn of removing then restoring.
+    from corep_fast.config import VRAM_RESCUE as _VRAM_RESCUE  # noqa: F401
     from corep_fast.config import S2_SPARSE as _S2_SPARSE
-    _dense_threshold = 32 if _VRAM_RESCUE else 64
+    _dense_threshold = 64
     _overrule_num_components = None
     if max_faces <= _dense_threshold:
         # Direct comparison approach -- memory-feasible for small max_faces
