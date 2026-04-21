@@ -76,6 +76,17 @@ BUILD_ADJACENCY_TRITON = os.environ.get('COREP_FAST_BUILD_ADJACENCY_TRITON', '0'
 # Set COREP_FAST_HUNGARIAN_GPU=0 to fall back to scipy serial path.
 HUNGARIAN_GPU = os.environ.get('COREP_FAST_HUNGARIAN_GPU', '1') == '1'
 
+# 2026-04-21 — 168k throughput + VRAM rescue track (see
+# docs/superpowers/specs/2026-04-21-168k-throughput-design.md).
+# VRAM_RESCUE gates QW1/QW3/QW5/QW6 + OOM retry chain. S2_SPARSE swaps the
+# dense (N, M, M) adjacency label-prop for a CSR scatter_min path.
+# ASYNC_D2H removes the 1.048s deviceSync at s1:56 and batches .item()
+# leaks in s4/s6/s7. All three default off during rollout; flipped to 1 for
+# the 168k production run after the 4000-mesh validation pass.
+VRAM_RESCUE = os.environ.get('COREP_FAST_VRAM_RESCUE', '0') == '1'
+S2_SPARSE = os.environ.get('COREP_FAST_S2_SPARSE', '0') == '1'
+ASYNC_D2H = os.environ.get('COREP_FAST_ASYNC_D2H', '0') == '1'
+
 
 # ---------------------------------------------------------------------------
 # Mode (debug level)
