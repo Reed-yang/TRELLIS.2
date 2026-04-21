@@ -33,6 +33,46 @@ from corep_fast.profiling.harness import ProfilingCollector, stage_timer
 _VALID_IMPLS = frozenset({'custom', 'corep_fast'})
 
 
+# ---------------------------------------------------------------------------
+# OOM retry wrapper (2026-04-21 throughput + VRAM rescue track)
+# ---------------------------------------------------------------------------
+
+_S4_BUDGET_ENV = "COREP_FAST_S4_UTURN_CHUNK_ELEMS"
+_S4_BUDGET_DEFAULT = 250_000_000
+
+
+def _retry_with_shrinking_budget(stage_fn, batch, **kwargs):
+    """Run `stage_fn(batch, **kwargs)`. On torch.cuda.OutOfMemoryError, shrink
+    the s4 U-turn chunk budget 4x and retry up to twice. Third OOM propagates.
+
+    Only active when corep_fast.config.VRAM_RESCUE is True; otherwise a direct
+    passthrough (preserves legacy behaviour for non-rescue runs).
+    """
+    import gc as _gc
+    import os as _os
+    import torch as _torch
+    from corep_fast.config import VRAM_RESCUE as _VRAM_RESCUE
+
+    if not _VRAM_RESCUE:
+        return stage_fn(batch, **kwargs)
+
+    for attempt in range(3):
+        try:
+            return stage_fn(batch, **kwargs)
+        except _torch.cuda.OutOfMemoryError:
+            if attempt == 2:
+                raise  # third strike -- driver will write .failed sentinel
+            try:
+                current = int(_os.environ.get(_S4_BUDGET_ENV, str(_S4_BUDGET_DEFAULT)))
+            except ValueError:
+                current = _S4_BUDGET_DEFAULT
+            new = max(1, current // 4)
+            _os.environ[_S4_BUDGET_ENV] = str(new)
+            _gc.collect()
+            if _torch.cuda.is_available():
+                _torch.cuda.empty_cache()
+
+
 @dataclass
 class PipelineConfig:
     """Configuration for the hybrid pipeline.
