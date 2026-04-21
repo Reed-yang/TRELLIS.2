@@ -501,6 +501,9 @@ def _fastpath_trace_loops_gpu(
     # Per-cube, per-loop start slot into flat_out (for building loop_offsets later).
     # Max loops in a cube is bounded by ceil(max_points/2) = max_points // 2 rounded up.
     # Safe upper bound: max_points (one point per loop in degenerate case).
+    # QW3 (2026-04-21): gated on VRAM_RESCUE. See post-walk block below where
+    # loop_start_slot is explicitly released after loop_offsets is cloned.
+    from corep_fast.config import VRAM_RESCUE as _VRAM_RESCUE
     max_loops_cap = max_points
     loop_start_slot = _torch.zeros(
         (N, max_loops_cap + 1), dtype=_torch.int32, device=device
@@ -592,6 +595,12 @@ def _fastpath_trace_loops_gpu(
     # Trim to max_loops actually used (capped at max_loops_cap+1).
     max_loops = int(loop_count.max().item()) if N > 0 else 0
     loop_offsets = loop_start_slot[:, : max_loops + 1].clone()
+    if _VRAM_RESCUE:
+        # Release the parent (N, max_points+1) allocation now that the
+        # trimmed view has been cloned.
+        del loop_start_slot
+        if _torch.cuda.is_available():
+            _torch.cuda.empty_cache()
     # Overwrite the tail (k >= loop_count[n]) with flat_ptr[n] so that
     # loop_offsets[n, loop_count[n]] is the write pointer end, and beyond that
     # remains flat_ptr (yielding empty slices if consumer over-reads).
