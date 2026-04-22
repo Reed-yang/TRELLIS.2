@@ -1123,79 +1123,99 @@ def _snap_centroids_to_components(
             face_ids_padded[k, :n] = face_ids
 
     face_ids_t = torch.from_numpy(face_ids_padded).to(device)  # (P, max_k)
-    mask = face_ids_t >= 0  # (P, max_k) bool
-    safe_ids = face_ids_t.clamp(min=0)  # replace -1 with 0 for safe indexing
-
-    # Gather triangles: (P, max_k, 3, 3)
+    mask_full = face_ids_t >= 0
+    safe_ids_full = face_ids_t.clamp(min=0)
     all_triangles = mesh.triangles.float()  # (F, 3, 3)
-    comp_tris = all_triangles[safe_ids]  # (P, max_k, 3, 3)
 
-    # Batched closest-point-on-triangle (Ericson §5.1.5) for (P, max_k) pairs.
-    # Shape trick: each query is paired with its own row of max_k triangles.
-    q = centroids.unsqueeze(1)  # (P, 1, 3)
-    a = comp_tris[:, :, 0, :]   # (P, max_k, 3)
-    b = comp_tris[:, :, 1, :]
-    c = comp_tris[:, :, 2, :]
+    # OOM-resilient chunked dispatch (2026-04-21). The per-centroid
+    # closest-point-on-triangle kernel allocates ~20 intermediate
+    # (P, max_k, 3) f32 tensors (ab/ac/aq/bq/cq, closest, diff, etc.).
+    # Combined live footprint ≈ 200 * P * max_k bytes. Chunking by P is
+    # semantically safe — each centroid's snap is independent.
+    P = int(face_ids_t.shape[0])
+    _per_elem_bytes = max(1, 200 * max_k)  # dominant multiplier
 
-    ab = b - a                  # (P, max_k, 3)
-    ac = c - a
-    aq = q - a                  # (P, max_k, 3)
-    bq = q - b
-    cq = q - c
+    def _snap_chunk(ps: int, pe: int) -> torch.Tensor:
+        face_ids_c = face_ids_t[ps:pe]
+        mask_c = mask_full[ps:pe]
+        safe_c = safe_ids_full[ps:pe]
+        comp_tris = all_triangles[safe_c]            # (pc, max_k, 3, 3)
+        q = centroids[ps:pe].unsqueeze(1)           # (pc, 1, 3)
+        a = comp_tris[:, :, 0, :]
+        b = comp_tris[:, :, 1, :]
+        c = comp_tris[:, :, 2, :]
+        ab = b - a; ac = c - a
+        aq = q - a; bq = q - b; cq = q - c
+        d1 = (ab * aq).sum(dim=-1); d2 = (ac * aq).sum(dim=-1)
+        d3 = (ab * bq).sum(dim=-1); d4 = (ac * bq).sum(dim=-1)
+        d5 = (ab * cq).sum(dim=-1); d6 = (ac * cq).sum(dim=-1)
+        region_a = (d1 <= 0) & (d2 <= 0)
+        region_b = (d3 >= 0) & (d4 <= d3)
+        region_c = (d6 >= 0) & (d5 <= d6)
+        vc = d1 * d4 - d3 * d2
+        edge_ab = (vc <= 0) & (d1 >= 0) & (d3 <= 0)
+        v_ab = d1 / (d1 - d3 + 1e-30)
+        vb = d5 * d2 - d1 * d6
+        edge_ac = (vb <= 0) & (d2 >= 0) & (d6 <= 0)
+        w_ac = d2 / (d2 - d6 + 1e-30)
+        va2 = d3 * d6 - d5 * d4
+        edge_bc = (va2 <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)
+        w_bc = (d4 - d3) / ((d4 - d3) + (d5 - d6) + 1e-30)
+        denom = 1.0 / (va2 + vb + vc + 1e-30)
+        v_int = vb * denom
+        w_int = vc * denom
+        closest = a + v_int.unsqueeze(-1) * ab + w_int.unsqueeze(-1) * ac
+        closest = torch.where(edge_bc.unsqueeze(-1), b + w_bc.unsqueeze(-1) * (c - b), closest)
+        closest = torch.where(edge_ac.unsqueeze(-1), a + w_ac.unsqueeze(-1) * ac, closest)
+        closest = torch.where(edge_ab.unsqueeze(-1), a + v_ab.unsqueeze(-1) * ab, closest)
+        closest = torch.where(region_c.unsqueeze(-1), c, closest)
+        closest = torch.where(region_b.unsqueeze(-1), b, closest)
+        closest = torch.where(region_a.unsqueeze(-1), a, closest)
+        diff = q - closest
+        sq_dists = (diff * diff).sum(dim=-1)
+        sq_dists = torch.where(mask_c, sq_dists, torch.full_like(sq_dists, float('inf')))
+        min_idx = sq_dists.argmin(dim=1)
+        best_idx = min_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, 3)
+        snapped = closest.gather(1, best_idx).squeeze(1)
+        any_valid = mask_c.any(dim=1)
+        return torch.where(any_valid.unsqueeze(-1), snapped, centroids[ps:pe])
 
-    d1 = (ab * aq).sum(dim=-1)  # (P, max_k)
-    d2 = (ac * aq).sum(dim=-1)
-    d3 = (ab * bq).sum(dim=-1)
-    d4 = (ac * bq).sum(dim=-1)
-    d5 = (ab * cq).sum(dim=-1)
-    d6 = (ac * cq).sum(dim=-1)
+    def _free_vram_bytes() -> int:
+        if device.type != "cuda":
+            return 20 * (1024 ** 3)
+        try:
+            torch.cuda.empty_cache()
+            f, _t = torch.cuda.mem_get_info(device)
+            return int(f)
+        except Exception:  # noqa: BLE001
+            return 20 * (1024 ** 3)
 
-    region_a = (d1 <= 0) & (d2 <= 0)
-    region_b = (d3 >= 0) & (d4 <= d3)
-    region_c = (d6 >= 0) & (d5 <= d6)
+    # Tier 0: full-P run if nominal peak fits 70% of free VRAM.
+    if P * _per_elem_bytes <= int(0.7 * _free_vram_bytes()):
+        try:
+            return _snap_chunk(0, P)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
 
-    vc = d1 * d4 - d3 * d2
-    edge_ab = (vc <= 0) & (d1 >= 0) & (d3 <= 0)
-    v_ab = d1 / (d1 - d3 + 1e-30)
-
-    vb = d5 * d2 - d1 * d6
-    edge_ac = (vb <= 0) & (d2 >= 0) & (d6 <= 0)
-    w_ac = d2 / (d2 - d6 + 1e-30)
-
-    va2 = d3 * d6 - d5 * d4
-    edge_bc = (va2 <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)
-    w_bc = (d4 - d3) / ((d4 - d3) + (d5 - d6) + 1e-30)
-
-    denom = 1.0 / (va2 + vb + vc + 1e-30)
-    v_int = vb * denom
-    w_int = vc * denom
-
-    closest = a + v_int.unsqueeze(-1) * ab + w_int.unsqueeze(-1) * ac  # (P, max_k, 3)
-    closest = torch.where(edge_bc.unsqueeze(-1), b + w_bc.unsqueeze(-1) * (c - b), closest)
-    closest = torch.where(edge_ac.unsqueeze(-1), a + w_ac.unsqueeze(-1) * ac, closest)
-    closest = torch.where(edge_ab.unsqueeze(-1), a + v_ab.unsqueeze(-1) * ab, closest)
-    closest = torch.where(region_c.unsqueeze(-1), c, closest)
-    closest = torch.where(region_b.unsqueeze(-1), b, closest)
-    closest = torch.where(region_a.unsqueeze(-1), a, closest)
-
-    diff = q - closest                        # (P, max_k, 3)
-    sq_dists = (diff * diff).sum(dim=-1)      # (P, max_k)
-
-    # Mask out padding triangles (set distance to +inf)
-    sq_dists = torch.where(mask, sq_dists, torch.full_like(sq_dists, float('inf')))
-
-    # For each centroid, pick the triangle with minimum distance
-    min_idx = sq_dists.argmin(dim=1)  # (P,)
-
-    # Gather the best closest point per centroid
-    # closest: (P, max_k, 3) → pick closest[k, min_idx[k], :] for each k
-    best_idx = min_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, 3)  # (P, 1, 3)
-    snapped = closest.gather(1, best_idx).squeeze(1)  # (P, 3)
-
-    # Components with no triangles (all masked out) keep original centroid
-    any_valid = mask.any(dim=1)  # (P,) bool
-    result = torch.where(any_valid.unsqueeze(-1), snapped, centroids)
-    return result
+    # Tier 1: chunked with reactive OOM retry.
+    last_err: BaseException | None = None
+    for frac in (0.75, 0.40, 0.20, 0.10):
+        budget = max(_per_elem_bytes, int(frac * _free_vram_bytes()))
+        chunk_rows = max(1, budget // _per_elem_bytes)
+        try:
+            outs = []
+            for ps in range(0, P, chunk_rows):
+                pe = min(ps + chunk_rows, P)
+                outs.append(_snap_chunk(ps, pe))
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+            return torch.cat(outs, dim=0)
+        except torch.cuda.OutOfMemoryError as exc:
+            last_err = exc
+            torch.cuda.empty_cache()
+            continue
+    assert last_err is not None
+    raise last_err
 
 
 def _get_local_components_np(
