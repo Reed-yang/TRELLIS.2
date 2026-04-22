@@ -128,33 +128,17 @@ def s2_components(batch: CubeBatch, mesh: MeshTensors) -> CubeBatch:
     _dense_threshold = 64
     _overrule_num_components = None
     if max_faces <= _dense_threshold:
-        # Direct comparison approach -- memory-feasible for small max_faces
-        neighbors_exp = neighbors_of.unsqueeze(-1)  # (N, M, 3, 1)
-        faces_exp = padded_faces.unsqueeze(1).unsqueeze(2)  # (N, 1, 1, M)
-        # match[i, j, e, k] = True if neighbor e of slot j matches slot k
-        match = (neighbors_exp == faces_exp) & mask.unsqueeze(1).unsqueeze(2)  # (N, M, 3, M)
-        # Collapse edge dimension: adj[i, j, k] = any match over edges
-        adj = match.any(dim=2)  # (N, M, M) bool
-        # Symmetrize (shouldn't be needed but safety)
-        adj = adj | adj.transpose(1, 2)
-        # Mask out padding rows/cols
-        adj = adj & mask.unsqueeze(2) & mask.unsqueeze(1)
-
-        # --- Step 4: Iterative label propagation ---
-        # label[i,j] = min(label[i,j], min over k where adj[i,j,k] of label[i,k])
-        # Converges in O(diameter) iterations; for small subgraphs, ~max_faces iters worst case
-        max_iters = min(max_faces, 32)
-        for _ in range(max_iters):
-            old_labels = labels.clone()
-            # For each (i, j), find min label among adjacent slots
-            # Set non-adjacent entries to max_faces (so they don't affect min)
-            adj_labels = labels.unsqueeze(1).expand(N, max_faces, max_faces).clone()  # (N, M, M)
-            adj_labels[~adj] = max_faces
-            min_neighbor = adj_labels.min(dim=2).values  # (N, M)
-            labels = torch.minimum(labels, min_neighbor)
-            labels[~mask] = max_faces
-            if torch.equal(labels, old_labels):
-                break
+        # OOM-resilient chunked dense label-propagation (2026-04-21 s2 OOM
+        # fallback track). The dense path used to build `(N, M, M)` tensors
+        # directly — adj_labels clone = 8*N*M^2 bytes — which OOMs on 80 GiB
+        # HBM for res=512 meshes with N in the millions. The helper below
+        # chunks N into batches sized to 75% of free VRAM, with reactive
+        # OOM retry and a CPU fallback. Tier 0 (full-N) runs when the whole
+        # thing fits, preserving bit-exact output.
+        # See corep_fast/stages/s2_dense_chunked.py.
+        from corep_fast.stages.s2_dense_chunked import _s2_dense_label_prop_chunked
+        labels = _s2_dense_label_prop_chunked(
+            padded_faces, neighbors_of, mask, N, max_faces, device)
     elif _S2_SPARSE:
         # P2 (2026-04-21): sparse scatter_min path -- avoids the (N, M, M)
         # match-tensor spike that produced the 62 GB p99 VRAM on pathological
