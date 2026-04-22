@@ -730,31 +730,13 @@ def _count_uturns_from_packed(pts, pts_valid, facet_verts, edge_ids_t):
     dev = pts.device
 
     # ---- Phase A: node coalescence (1e-8 tolerance, first-occurrence wins) ----
-    # cdist for valid pts only; padded zeros would spuriously match each other.
-    # Mask padded rows/cols by setting their pairwise distance to a huge value.
-    d = _torch.cdist(pts, pts)                                # (G, P, P) f64
-    valid_pair = pts_valid.unsqueeze(2) & pts_valid.unsqueeze(1)
-    # padded-pair distance -> large so match=False
-    d = _torch.where(valid_pair, d, _torch.full_like(d, 1.0))
-    match = (d < 1e-8)                                         # (G, P, P) bool
-
-    tri_lower = _torch.tril(_torch.ones((P, P), dtype=_torch.bool, device=dev))
-    match_lower = match & tri_lower.unsqueeze(0)
-    # For each i, smallest j<=i with match -> canonical representative slot.
-    j_ar = _torch.arange(P, device=dev, dtype=_torch.int64).view(1, 1, P).expand(G, P, P)
-    big_P = _torch.full_like(j_ar, P)
-    node_raw = _torch.where(match_lower, j_ar, big_P)
-    canonical_idx = node_raw.min(dim=-1).values                # (G, P) in [0..P]
-    # Invalid slots -> P sentinel
-    canonical_idx = _torch.where(pts_valid, canonical_idx,
-                                 _torch.full_like(canonical_idx, P))
-    # QW1 (2026-04-21): free Phase-A intermediates before Phase B allocates
-    # its own (G,P,P) bool edge_mask. Gated on VRAM_RESCUE so A/B measurable.
-    from corep_fast.config import VRAM_RESCUE as _VRAM_RESCUE
-    if _VRAM_RESCUE:
-        del d, valid_pair, match, match_lower, node_raw, big_P, j_ar, tri_lower
-        if _torch.cuda.is_available():
-            _torch.cuda.empty_cache()
+    # OOM-resilient three-tier dispatch (2026-04-22 s4 phase-A fallback track).
+    # Tier 0: dense (single-chunk) GPU; Tier 1: row-chunked GPU; Tier 2: CPU chunked.
+    # QW1 (free Phase-A intermediates) is subsumed by the chunked dispatch —
+    # each tier's helper releases its per-chunk tensors within its own scope by
+    # construction, so no top-level `del ...` block is needed here.
+    from corep_fast.stages.s4_phase_a_chunked import phase_a_dispatch
+    canonical_idx = phase_a_dispatch(pts, pts_valid)           # (G, P) int64
 
     # A slot is a "representative" iff its canonical equals its own index.
     idx_row = _torch.arange(P, device=dev, dtype=_torch.int64).unsqueeze(0)
