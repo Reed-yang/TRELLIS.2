@@ -208,6 +208,11 @@ def main() -> int:
         wall_encode = time.perf_counter() - t_enc0
         status = "oom"
         error_msg = (str(exc) or repr(exc))[:300]
+        # Print full stack trace on OOM so the .log file pinpoints the exact
+        # allocation site for the OOM-fallback debugging track.
+        print("--- OOM stack trace ---", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        print("--- end OOM stack trace ---", file=sys.stderr, flush=True)
     except Exception as exc:  # noqa: BLE001
         wall_encode = time.perf_counter() - t_enc0
         status = f"other_error:{type(exc).__name__}"

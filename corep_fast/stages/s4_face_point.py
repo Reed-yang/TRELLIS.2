@@ -1361,50 +1361,89 @@ def _get_local_components_gpu_batched(
     if N == 0 or M == 0:
         return torch.full(batched_face_ids.shape, 0, device=device, dtype=torch.int64)
 
-    fids = batched_face_ids.to(torch.int64)                    # (N, M)
-    mask = fids >= 0                                           # (N, M) bool
+    # OOM-resilient chunked dispatch (2026-04-21). The core `match` tensor
+    # below is (N, M, 3, M) bool — at M=64 N=3.5M this alone is ~40 GiB and
+    # is the dominant OOM source at res=512. Per-cube label prop is
+    # independent, so chunking by N is semantically safe and bit-exact.
+    #
+    # Heuristic mirrors s2_dense_chunked / s4_phase_a_chunked:
+    #   - Tier 0 (full N): if nominal peak fits ~70% of free VRAM.
+    #   - Tier 1 (chunked GPU): 75% of free VRAM per chunk, reactive OOM
+    #     retry halves via empty_cache + smaller chunks.
+    # Peak per cube (live simultaneously): match 3·M² bool + any_match 3·M
+    # + nbr_local 3·M int64 + labels 2·M int64 + padded_labels (M+1) int64
+    # ≈ dominated by 3·M² bool + ~40·M bytes ≈ 3·M² + 40·M per cube.
+    _per_cube_bytes = max(1, 3 * M * M + 40 * M)
 
-    # Guard -1 lookups for face_adj (invalid slots still need a valid index).
-    safe_fids = fids.clamp(min=0)
-    neighbors = face_adj.to(torch.int64)[safe_fids]            # (N, M, 3)
+    def _run_chunk(idx_start: int, idx_end: int) -> torch.Tensor:
+        fids_c = batched_face_ids[idx_start:idx_end].to(torch.int64)
+        mask_c = fids_c >= 0
+        safe_fids = fids_c.clamp(min=0)
+        neighbors_c = face_adj.to(torch.int64)[safe_fids]          # (nc, M, 3)
 
-    # Membership: for each (i, j, e), find slot k in cube i where
-    # fids[i, k] == neighbors[i, j, e].
-    # Shape (N, M, 3, M) via broadcast eq.
-    # Memory: N * M^2 * 3 bool. At M=32, N=275k -> 844 MB — acceptable.
-    #          at M=64, N=275k -> 3.4 GB — tight; we expect M typically << 32.
-    nbr_bcast = neighbors.unsqueeze(-1)                        # (N, M, 3, 1)
-    fids_bcast = fids.unsqueeze(1).unsqueeze(2)                # (N, 1, 1, M)
-    match = (nbr_bcast == fids_bcast) & (nbr_bcast >= 0) & mask.unsqueeze(1).unsqueeze(2)
-    # (N, M, 3, M) bool
-    any_match = match.any(dim=-1)                              # (N, M, 3)
-    nbr_local = match.to(torch.int8).argmax(dim=-1).to(torch.int64)  # (N, M, 3)
-    # SENTINEL = M (index into padded label vector)
-    nbr_local = torch.where(any_match, nbr_local,
-                            torch.full_like(nbr_local, M))     # (N, M, 3)
-    # Release the big (N, M, 3, M) intermediate.
-    del match, nbr_bcast, fids_bcast
+        nbr_bcast = neighbors_c.unsqueeze(-1)                      # (nc, M, 3, 1)
+        fids_bcast = fids_c.unsqueeze(1).unsqueeze(2)              # (nc, 1, 1, M)
+        match_c = (nbr_bcast == fids_bcast) & (nbr_bcast >= 0) & mask_c.unsqueeze(1).unsqueeze(2)
+        any_match_c = match_c.any(dim=-1)                          # (nc, M, 3)
+        nbr_local_c = match_c.to(torch.int8).argmax(dim=-1).to(torch.int64)
+        nbr_local_c = torch.where(any_match_c, nbr_local_c,
+                                  torch.full_like(nbr_local_c, M))
+        del match_c, nbr_bcast, fids_bcast
 
-    # Label propagation. labels[i, j] = j for valid, M (sentinel) for pad.
-    col_idx = torch.arange(M, device=device, dtype=torch.int64).unsqueeze(0).expand(N, M)
-    labels = torch.where(mask, col_idx, torch.full_like(col_idx, M))  # (N, M)
-    SENTINEL = M
+        nc = idx_end - idx_start
+        col_idx = torch.arange(M, device=device, dtype=torch.int64).unsqueeze(0).expand(nc, M)
+        labels_c = torch.where(mask_c, col_idx, torch.full_like(col_idx, M))
+        pad_col = torch.full((nc, 1), M, device=device, dtype=torch.int64)
+        max_iters = min(M + 1, 64)
+        for _ in range(max_iters):
+            padded_labels = torch.cat([labels_c, pad_col], dim=1)
+            nbr_labels = padded_labels.gather(1, nbr_local_c.reshape(nc, M * 3)).reshape(nc, M, 3)
+            min_nbr = nbr_labels.min(dim=-1).values
+            new_labels = torch.minimum(labels_c, min_nbr)
+            new_labels = torch.where(mask_c, new_labels, torch.full_like(new_labels, M))
+            if torch.equal(new_labels, labels_c):
+                break
+            labels_c = new_labels
+        return labels_c
 
-    # Pad labels with 1 extra column (SENTINEL) for neighbor gather.
-    pad_col = torch.full((N, 1), SENTINEL, device=device, dtype=torch.int64)
-    max_iters = min(M + 1, 64)  # diameter of intra-cube graph, capped
-    for _ in range(max_iters):
-        padded_labels = torch.cat([labels, pad_col], dim=1)      # (N, M+1)
-        # Gather neighbor labels: padded_labels[i, nbr_local[i, j, e]]
-        nbr_labels = padded_labels.gather(1, nbr_local.reshape(N, M * 3)).reshape(N, M, 3)
-        min_nbr = nbr_labels.min(dim=-1).values                  # (N, M)
-        new_labels = torch.minimum(labels, min_nbr)
-        # Keep sentinel for pad slots.
-        new_labels = torch.where(mask, new_labels, torch.full_like(new_labels, SENTINEL))
-        if torch.equal(new_labels, labels):
-            break
-        labels = new_labels
-    return labels
+    def _query_free_vram() -> int:
+        if device.type != "cuda":
+            return 20 * (1024 ** 3)
+        try:
+            torch.cuda.empty_cache()
+            free, _total = torch.cuda.mem_get_info(device)
+            return int(free)
+        except Exception:  # noqa: BLE001
+            return 20 * (1024 ** 3)
+
+    # Tier 0 attempt: full-N run if nominal peak fits 70% of free VRAM.
+    free_vram = _query_free_vram()
+    if N * _per_cube_bytes <= int(0.7 * free_vram):
+        try:
+            return _run_chunk(0, N)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+
+    # Tier 1: chunked GPU with reactive OOM retry (halve on each OOM).
+    last_err: BaseException | None = None
+    for frac in (0.75, 0.40, 0.20, 0.10):
+        free_vram = _query_free_vram()
+        budget = max(_per_cube_bytes, int(frac * free_vram))
+        chunk_rows = max(1, budget // _per_cube_bytes)
+        try:
+            outs = []
+            for ns in range(0, N, chunk_rows):
+                ne = min(ns + chunk_rows, N)
+                outs.append(_run_chunk(ns, ne))
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+            return torch.cat(outs, dim=0)
+        except torch.cuda.OutOfMemoryError as exc:
+            last_err = exc
+            torch.cuda.empty_cache()
+            continue
+    assert last_err is not None
+    raise last_err
 
 
 def _labels_to_list_of_lists(
