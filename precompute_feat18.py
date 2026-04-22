@@ -318,6 +318,17 @@ def parse_args():
             "which sub-stage (s1/s2/s3/s4/s6/s7) is running on a slow mesh."
         ),
     )
+    p.add_argument(
+        "--skip_done_fast",
+        action="store_true",
+        help=(
+            "Pre-filter metadata by listing OUT_DIR/data/*.npz once, excluding "
+            "already-done sha from the loop entirely. Skips the per-file "
+            "np.load used to accumulate running stats on resume — use the "
+            "separate scripts/preprocess-by-rank/compute_stats.py post-run to get "
+            "global mean/std. Turns a 5-10min resume scan into <5s."
+        ),
+    )
     return p.parse_args()
 
 
@@ -340,6 +351,39 @@ def main():
     metadata = metadata.iloc[args.rank :: args.world_size].reset_index(drop=True)
     if args.limit is not None:
         metadata = metadata.head(args.limit).reset_index(drop=True)
+
+    # Fast resume: scan the output dir ONCE with os.listdir (very cheap,
+    # just a directory enumeration) and remove already-done / already-
+    # failed sha from the work queue so the main loop never even iterates
+    # over them. Skips the per-file np.load that the row-level resume
+    # path below uses to accumulate running stats — callers that rely on
+    # the per-rank stats_rank<r>.npz must run compute_stats.py post-run.
+    n_skipped_fast = 0
+    if args.skip_done_fast:
+        t_list = time.time()
+        done: set[str] = set()
+        failed_pre: set[str] = set()
+        try:
+            with os.scandir(data_dir) as it:
+                for e in it:
+                    n = e.name
+                    if n.endswith(".npz.failed"):
+                        failed_pre.add(n[: -len(".npz.failed")])
+                    elif n.endswith(".npz"):
+                        done.add(n[: -len(".npz")])
+        except OSError as e:
+            print(f"[fast-resume] WARN listing {data_dir}: {e}", flush=True)
+        skip_set = done | failed_pre
+        if skip_set:
+            before = len(metadata)
+            metadata = metadata[~metadata["sha256"].isin(skip_set)].reset_index(drop=True)
+            n_skipped_fast = before - len(metadata)
+        print(
+            f"[fast-resume] rank={args.rank}: listed {len(done)} done + "
+            f"{len(failed_pre)} failed sentinels in {time.time() - t_list:.1f}s; "
+            f"pre-filtered {n_skipped_fast} rows out of work queue",
+            flush=True,
+        )
 
     # Share the CPU budget across parallel ranks. Without this, each of the
     # N ranks would spawn ~(cpu_count - 4) fork workers, for a total of
