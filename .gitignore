@@ -224,3 +224,14 @@ docs
 
 # CoReP-Fast profiling outputs (large JSON, session-local)
 profiling/runs/
+
+# Claude Code session + worktrees (per-session, can grow to 100s of MB)
+.claude/
+
+# OOM-validation experiment-variant result dirs (the base 'results' is
+# already matched by the top-level 'results' rule above)
+scripts/oom_validation/results_*/
+
+# preprocess-by-rank derived artefacts (regenerable from scan → labels →
+# fit in <1min; full_ranked.csv alone is 35MB and not worth versioning)
+scripts/preprocess-by-rank/out/
