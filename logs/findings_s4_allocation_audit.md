@@ -161,6 +161,61 @@ With **both together**:
   extreme (>80 GiB) cases where both s2 AND s4 would need to go chunked
   on multiple paths simultaneously.
 
+## T3 redux-3 — four meshes PASS (2026-04-21 late evening)
+
+After landing four chunking commits, all four target OOM meshes succeed
+end-to-end at res=512 on 117:
+
+| Mesh | Historical OOM | Status | Wall | Peak VRAM | Cubes | s2 wall | s4 wall |
+|---|---:|---|---:|---:|---:|---:|---:|
+| easy-40GiB    |   40.15 GiB | ✓ ok | 184 s | 17.1 GB | 590 k   | 164.7 s | 10.2 s |
+| median-90GiB  |   90.00 GiB | ✓ ok | 337 s | 37.2 GB | 1.29 M  | 304.1 s | ~11 s  |
+| medium-400GiB |  400.11 GiB | ✓ ok | 533 s | 56.3 GB | 1.95 M  | 473.0 s | 37.4 s |
+| hard-1800GiB  | 1809.60 GiB | ✓ ok | 450 s | 23.2 GB | 798 k   | 364.9 s | 59.5 s |
+
+Chunking commits that landed to achieve 4/4 coverage:
+- `ea338d0`+`28d2103`+`583b8aa` — s4 Phase A chunked (cdist dispatch).
+- `3e8c687` — s2 dense label-prop chunked.
+- `81d5910` — `_get_local_components_gpu_batched` chunked.
+- `91dff3d` — `_snap_centroids_to_components` chunked.
+
+Peak VRAM is now 17-56 GB (vs OOM failures at 40-75 GB before) — well
+within 80 GiB HBM headroom.
+
+**s2 now dominates wall** (164-473 s out of 184-533 s total = 70-90% of
+encode time). This is the Python `_label_propagation_sequential` path
+for max_faces > 64 cubes. Each cube's Union-Find has ~3·n_valid `.item()`
+D2H syncs, amortizing to many seconds per complex mesh. Acceptable for
+the 168k OOM rescue scope but is the next candidate for optimisation
+(vectorise Union-Find via sparse scatter_min).
+
+## Extreme 51 TiB mesh — deferred (T4, 2026-04-21)
+
+Launched the 51 TiB historical-OOM mesh
+(`raw/hf-objaverse-v1/glbs/000-134/b74a3e5b9e6c4547b2692299fdd740c7.glb`,
+75-sub-mesh rigged character, 119k V / 175k F but with 36 copies clustered
+per anchor point) on 117 GPU 0 with the full stack of chunking fixes.
+
+After 16 minutes no stage completed (log empty, worker process alive at
+60% CPU with 30 GB GPU VRAM and 1.8 GB host RSS — stuck in s1 voxelize
+or early s2). Extrapolating from the four-mesh successes, the 75×
+flattening means s2 sequential cost could exceed 30-60 min for a single
+mesh. Killed — not worth the wall time relative to the 0.5 % OOM
+population this represents (max request 51 316 GiB; only 10 of 2193 OOM
+events exceeded 10 000 GiB).
+
+**Decision**: extreme cases (>10 000 GiB requested, < 0.5 % of OOM class)
+remain out of scope for the 168k run. The `_retry_with_shrinking_budget`
+wrapper at pipeline.py will catch any such OOM and write a `.failed`
+sentinel; expected impact on the 168k run: ≤ 0.5 % failure rate
+concentrated on pathological rigged-character assets.
+
+For a future spec targeting 100 % coverage: vectorise
+`_label_propagation_sequential` (sparse CSR scatter_min, similar to the
+failed Task 8 sparse module but correctly symmetrised) so s2 stops
+dominating. That unlocks the extreme tail because Python per-cube
+iteration is what makes the extreme mesh untractable, not GPU memory.
+
 ## Implementation note — `torch.cdist` non-determinism near zero
 
 While implementing the chunked dispatcher the S1 subagent (commit `ea338d0`)
