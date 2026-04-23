@@ -432,10 +432,10 @@ def train(cfg: VaeTrainConfig) -> None:
                           keep_k=cfg.rolling_ckpts, prefix="ckpt")
                 if cfg.use_ema:
                     save_ckpt(ema.state_dict(), cfg.output_dir, step,
-                              keep_k=cfg.rolling_ckpts,
+                              keep_k=cfg.rolling_ckpts_ema,
                               prefix=f"ema_{cfg.ema_rate}_enc")
                     save_ckpt(ema_dec.state_dict(), cfg.output_dir, step,
-                              keep_k=cfg.rolling_ckpts,
+                              keep_k=cfg.rolling_ckpts_ema,
                               prefix=f"ema_{cfg.ema_rate}_dec")
                 misc = {
                     "epoch": epoch,
@@ -447,6 +447,26 @@ def train(cfg: VaeTrainConfig) -> None:
                 }
                 save_ckpt(misc, cfg.output_dir, step,
                           keep_k=cfg.rolling_ckpts, prefix="misc")
+
+            # Deep-eval on 8 golden assets (rank-0 does work, others barrier)
+            if step % cfg.i_save == 0 and step > 0:
+                try:
+                    from coart.eval.deep_eval import run_deep_eval
+                    _deep_results = run_deep_eval(
+                        encoder=encoder, decoder=decoder,
+                        stats={"mean": mean_t, "std": std_t},
+                        step=step, logger=logger, cfg=cfg,
+                    )
+                except Exception as e:
+                    import traceback; traceback.print_exc()
+                    if is_master:
+                        logger.alert(
+                            title="deep_eval crashed",
+                            text=f"step={step}: {e!r}",
+                            level="ERROR",
+                        )
+                    _deep_results = {}
+                # _deep_results is consumed by Watchdog hook (added in Task 13)
 
             # Val MSE pass
             if is_master and val_set is not None and (
