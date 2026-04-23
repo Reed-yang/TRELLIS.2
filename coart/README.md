@@ -183,6 +183,30 @@ coart.vae.__main__
 
 ## 4. 使用指南
 
+### 4.0 Wandb 监控（首次 setup）
+
+`coart.vae` 默认开启 wandb online 日志。首次使用：
+
+```bash
+.venv/bin/pip install "wandb>=0.26" "protobuf>=7.34.1"
+.venv/bin/wandb login   # 粘贴 WANDB_API_KEY；或直接编辑 ~/.netrc
+```
+
+默认 project 是 `coart-vae`。切换到离线或禁用：
+```bash
+# 离线：日志写到 results/<run>/wandb/offline-run-*/；train 结束后
+#       `wandb sync` 批量上传
+python -m coart.vae --wandb_mode offline ...
+# 完全禁用
+python -m coart.vae --no_wandb ...
+```
+
+多节点训练：每个训练节点都需要能读到 wandb 凭据。两种做法：
+1. 在每个节点上各跑一次 `wandb login`（凭据写入该节点的 `~/.netrc`）
+2. 通过 `export WANDB_API_KEY=...` 由 launch script 注入环境变量
+
+TensorBoard 始终开启作为本地备份：`tensorboard --logdir results/<run>/tb_logs/`。
+
 ### 4.1 前置准备（一次性）
 
 ```bash
