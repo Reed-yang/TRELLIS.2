@@ -25,21 +25,27 @@ def test_wrap_ddp_flags_applied():
     if not dist.is_initialized():
         dist.init_process_group("gloo", rank=0, world_size=1)
 
-    from coart.common.dist_utils import wrap_ddp
+    try:
+        from coart.common.dist_utils import wrap_ddp
 
-    with mock.patch(
-        "coart.common.dist_utils.DDP",
-        wraps=__import__(
-            "torch.nn.parallel", fromlist=["DistributedDataParallel"],
-        ).DistributedDataParallel,
-    ) as spy:
-        try:
-            wrap_ddp(_make_linear(), local_rank=0)
-        except Exception:
-            pass  # DDP may fail to fully init under gloo+cuda; spy still records kwargs
-        assert spy.called, "DDP constructor was not invoked"
-        kwargs = spy.call_args.kwargs
-        assert kwargs.get("gradient_as_bucket_view") is True
-        assert kwargs.get("broadcast_buffers") is False
-        assert kwargs.get("bucket_cap_mb") == 128
-        assert kwargs.get("find_unused_parameters") is False
+        with mock.patch(
+            "coart.common.dist_utils.DDP",
+            wraps=__import__(
+                "torch.nn.parallel", fromlist=["DistributedDataParallel"],
+            ).DistributedDataParallel,
+        ) as spy:
+            try:
+                wrap_ddp(_make_linear(), local_rank=0)
+            except Exception:
+                pass  # DDP may fail to fully init under gloo+cuda; spy still records kwargs
+            assert spy.called, "DDP constructor was not invoked"
+            kwargs = spy.call_args.kwargs
+            assert kwargs.get("gradient_as_bucket_view") is True
+            assert kwargs.get("broadcast_buffers") is False
+            assert kwargs.get("bucket_cap_mb") == 128
+            assert kwargs.get("find_unused_parameters") is False
+    finally:
+        # Destroy process group so subsequent tests don't observe gloo state
+        # (ReduceOp.AVG is unsupported on gloo → breaks logger.flush_if_due).
+        if dist.is_initialized():
+            dist.destroy_process_group()
