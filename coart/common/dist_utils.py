@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 
 import numpy as np
 import torch
@@ -12,6 +13,11 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 def init_dist():
     """Initialise torch.distributed if launched via torchrun.
 
+    Uses a 1-hour NCCL collective timeout (vs default 10 min) to absorb
+    triton autotune stalls on novel sparse-conv shapes and deep-eval
+    forward passes on large golden assets (helmet ~1.6M voxels can take
+    several minutes in JIT-cold state).
+
     Returns (rank, world_size, local_rank, is_dist).
     """
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
@@ -20,7 +26,10 @@ def init_dist():
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(local_rank)
         if not dist.is_initialized():
-            dist.init_process_group("nccl", rank=rank, world_size=world_size)
+            dist.init_process_group(
+                "nccl", rank=rank, world_size=world_size,
+                timeout=timedelta(hours=1),
+            )
         return rank, world_size, local_rank, True
     return 0, 1, 0, False
 
