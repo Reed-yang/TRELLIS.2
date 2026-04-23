@@ -48,6 +48,21 @@ from .loss import compute_vae_loss
 from .sampling import dump_samples
 
 
+def _build_optimizer(trainable_params, lr: float) -> torch.optim.Optimizer:
+    """AdamW with fused=True when supported; otherwise plain AdamW.
+
+    Fused kernel requires CUDA + PyTorch >= 2.0; falls back on CPU or
+    older torch. Any failure is logged to stderr and demoted to fused=False.
+    """
+    try:
+        return torch.optim.AdamW(trainable_params, lr=lr, weight_decay=0.0, fused=True)
+    except (TypeError, RuntimeError) as e:
+        import sys
+        print(f"[coart] fused AdamW unavailable ({e}); falling back to fused=False",
+              file=sys.stderr)
+        return torch.optim.AdamW(trainable_params, lr=lr, weight_decay=0.0, fused=False)
+
+
 def _set_backbone_requires_grad(encoder, decoder, requires_grad: bool) -> None:
     """Freeze / unfreeze every parameter that is NOT input_layer / output_layer / to_latent / from_latent."""
     enc_io_prefixes = ("input_layer.", "to_latent.")
@@ -227,7 +242,7 @@ def train(cfg: VaeTrainConfig) -> None:
         decoder = wrap_ddp(decoder, local_rank)
 
     trainable = _trainable(encoder, decoder)
-    optimizer = torch.optim.AdamW(trainable, lr=cfg.lr, weight_decay=0.0)
+    optimizer = _build_optimizer(trainable, lr=cfg.lr)
 
     grad_clipper = AdaptiveGradClipper(
         max_norm=cfg.grad_clip_max, clip_percentile=cfg.grad_clip_pct,
@@ -348,7 +363,7 @@ def train(cfg: VaeTrainConfig) -> None:
                     encoder = wrap_ddp(unwrap(encoder), local_rank)
                     decoder = wrap_ddp(unwrap(decoder), local_rank)
                 trainable = _trainable(encoder, decoder)
-                optimizer = torch.optim.AdamW(trainable, lr=cfg.lr, weight_decay=0.0)
+                optimizer = _build_optimizer(trainable, lr=cfg.lr)
                 unfrozen = True
                 step_at_unfreeze = step
                 _log(f"[optim] unfrozen at step {step}; "
