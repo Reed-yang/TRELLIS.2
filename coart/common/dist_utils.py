@@ -31,13 +31,21 @@ def unwrap(m):
 
 
 def wrap_ddp(model, local_rank):
-    """Wrap model in DDP with canonical settings (bucket=128MB, find_unused=False)."""
+    """Wrap model in DDP with canonical settings.
+
+    - bucket_cap_mb=128: coalesce grad all-reduce buckets at 128MB
+    - find_unused_parameters=False: all params receive grad every step
+    - gradient_as_bucket_view=True: bucket zero-copy (saves one grad alloc per step)
+    - broadcast_buffers=False: model has no BN, skip per-step buffer sync
+    """
     return DDP(
         model,
         device_ids=[local_rank],
         output_device=local_rank,
         bucket_cap_mb=128,
         find_unused_parameters=False,
+        gradient_as_bucket_view=True,
+        broadcast_buffers=False,
     )
 
 
