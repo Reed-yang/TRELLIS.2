@@ -73,6 +73,18 @@ class VaeTrainConfig:
     rolling_ckpts: int
     resume_from: str       # "none", "latest", or explicit path
 
+    # Wandb logging
+    use_wandb: bool
+    wandb_project: str
+    wandb_mode: str        # "online" / "offline" / "disabled"
+
+    # EMA ckpt rolling (split from rolling_ckpts so EMA doesn't waste disk)
+    rolling_ckpts_ema: int
+
+    # Deep-eval / dump
+    log_3d: bool
+    n_dump_names: list
+
 
 def _build_output_dir(output_dir: Optional[str], run_tag: str) -> str:
     """If `output_dir` None: auto-build `results/coart_feat18_{YYYYMMDD}_{run_tag}`."""
@@ -158,6 +170,24 @@ def parse_args() -> VaeTrainConfig:
     p.add_argument("--rolling_ckpts", type=int, default=3)
     p.add_argument("--resume_from", default="latest",
                    help='"none", "latest", or explicit ckpt path')
+
+    # Wandb
+    p.add_argument("--use_wandb", action="store_true", default=True)
+    p.add_argument("--no_wandb", action="store_false", dest="use_wandb")
+    p.add_argument("--wandb_project", default="coart-vae")
+    p.add_argument("--wandb_mode", choices=["online", "offline", "disabled"],
+                   default="online")
+
+    # EMA rolling split
+    p.add_argument("--rolling_ckpts_ema", type=int, default=1,
+                   help="rolling K for EMA ckpts (separate from --rolling_ckpts)")
+
+    # Deep-eval dump
+    p.add_argument("--log_3d", action="store_true", default=False,
+                   help="log wandb.Object3D of decoded mesh (VRAM-hungry)")
+    p.add_argument("--n_dump_names", nargs="+",
+                   default=["helmet", "val_p95"],
+                   help="asset names for normal-map renders in wandb")
 
     args = p.parse_args()
 
