@@ -204,6 +204,13 @@ COMMON=(
 if [[ -n "${MAX_MESH_FILE_MB:-}" ]]; then
   COMMON+=(--max_mesh_file_mb "${MAX_MESH_FILE_MB}")
 fi
+# Per-mesh wall-time guard. 0 / unset = disabled; typical long-tail
+# killer at res=512 is 180 (3 min). Meshes exceeding this are marked
+# .failed and skipped without retry — prevents one pathological sample
+# from stalling a rank for hours inside the OOM shrink-budget loop.
+if [[ -n "${PER_MESH_TIMEOUT_S:-}" && "${PER_MESH_TIMEOUT_S}" != "0" ]]; then
+  COMMON+=(--per_mesh_timeout_s "${PER_MESH_TIMEOUT_S}")
+fi
 # Forward any user-supplied extra args (e.g. --limit 1000 for smoke tests).
 EXTRA_ARGS_ARR=()
 if [[ -n "${EXTRA_ARGS:-}" ]]; then

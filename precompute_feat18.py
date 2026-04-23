@@ -110,6 +110,31 @@ def _install_signal_handlers() -> None:
             pass
 
 
+class MeshTimeoutError(Exception):
+    """Raised by the SIGALRM handler when a single mesh exceeds the
+    per-mesh wall-time budget. We treat it like an OOM: write a
+    `.failed` sentinel for the sha, shut the worker pool down, free
+    CUDA, and move on to the next mesh.
+    """
+
+
+def _install_mesh_timeout_handler() -> None:
+    """Install a SIGALRM handler that raises MeshTimeoutError.
+
+    Only installed in the main process; fork-pool workers inherit the
+    default SIGALRM disposition (ignore), so arming a timer in the
+    parent does not crash children. The timer is armed / disarmed
+    around each `encode_one` call via `signal.setitimer(ITIMER_REAL,
+    timeout_s)` and `signal.setitimer(ITIMER_REAL, 0)` respectively.
+    """
+    def _handler(signum, frame):
+        raise MeshTimeoutError("per-mesh timeout")
+    try:
+        signal.signal(signal.SIGALRM, _handler)
+    except (ValueError, OSError):
+        pass
+
+
 # Substrings that indicate the CUDA context itself is now corrupted and
 # cannot be reused. Empirically, once we see one of these, every
 # subsequent kernel launch fails the same way even for tiny tensors —
@@ -329,6 +354,19 @@ def parse_args():
             "global mean/std. Turns a 5-10min resume scan into <5s."
         ),
     )
+    p.add_argument(
+        "--per_mesh_timeout_s",
+        type=float,
+        default=0.0,
+        help=(
+            "Abort a single mesh's encode after N wall-seconds, mark it "
+            "as failed (`.failed` sentinel + rank log entry + failed_rank*.txt), "
+            "and move on to the next mesh. Default 0 = disabled. "
+            "Useful to stop one pathological long-tail sample from "
+            "stalling a rank for hours inside the OOM retry / shrinking "
+            "budget loop. Typical value: 180 (3 min) for res=512 work."
+        ),
+    )
     return p.parse_args()
 
 
@@ -336,6 +374,8 @@ def main():
     args = parse_args()
 
     _install_signal_handlers()
+    if args.per_mesh_timeout_s > 0:
+        _install_mesh_timeout_handler()
 
     out_dir = args.out_dir or os.path.join(
         args.dataset_root, f"feat18_{args.resolution}"
@@ -477,6 +517,12 @@ def main():
         )
         t_enc = time.time()
 
+        # Arm per-mesh timeout (SIGALRM) before encode. The handler raises
+        # MeshTimeoutError which is caught below; finally-block disarms the
+        # timer so a subsequent successful encode is not interrupted.
+        if args.per_mesh_timeout_s > 0:
+            signal.setitimer(signal.ITIMER_REAL, args.per_mesh_timeout_s)
+
         try:
             cube_indices, feats, num_boundary = encode_one(
                 mesh_path, args.resolution, device, num_workers=num_workers,
@@ -516,6 +562,20 @@ def main():
             # Drop references to the big arrays before the next iteration so
             # that gc.collect below can actually reclaim their memory.
             del cube_indices, feats, num_boundary, f64
+        except MeshTimeoutError:
+            # Disarm immediately; the handler already fired, but we do
+            # not want another spurious SIGALRM mid-cleanup.
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            dt_t = time.time() - t_enc
+            msg = f"TIMEOUT: exceeded {args.per_mesh_timeout_s:.0f}s (wall={dt_t:.0f}s)"
+            failed.append((sha, msg))
+            tqdm.write(f"[tout] {sha} {msg}")
+            _write_failure_line(out_dir, args.rank, sha, msg)
+            _mark_failed_sentinel(sentinel_path, msg)
+            # Tear down the fork pool — a worker mid-task when the signal
+            # arrived may be in an inconsistent state. A fresh pool is
+            # cheaper than the risk of a wedged worker on the next mesh.
+            _shutdown_pool_safely()
         except torch.cuda.OutOfMemoryError as e:
             msg = f"OOM: {str(e)[:120]}"
             failed.append((sha, msg))
@@ -557,6 +617,10 @@ def main():
                 _free_cuda_memory()
                 _restart_self()
         finally:
+            # Disarm the per-mesh timer (no-op if it already fired or was
+            # never armed).
+            if args.per_mesh_timeout_s > 0:
+                signal.setitimer(signal.ITIMER_REAL, 0)
             # Release cached CUDA memory and Python-level tensor refs after
             # every mesh — success or failure — so peak memory tracks the
             # current mesh rather than the largest one ever seen.
