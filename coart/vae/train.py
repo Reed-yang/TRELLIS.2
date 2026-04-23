@@ -137,25 +137,87 @@ def train(cfg: VaeTrainConfig) -> None:
         worker_init_fn=worker_init_fn,
     )
 
+    # ---------------- detect mode: base training vs resume ----------------
+    # Base mode:    load pretrained TRELLIS.2 weights + warm-start IO + honour
+    #               freeze_backbone_steps warmup. Used for the first run.
+    # Resume mode:  load a coart ckpt (encoder/decoder/optimizer/EMA/RNG) and
+    #               continue from that step. Used after preempt / OOM restart.
+    # Auto-detected from `resume_from` and presence of an existing ckpt.
+    resume_info = None  # tuple[path, step] | None
+    if cfg.resume_from != "none":
+        if cfg.resume_from == "latest":
+            found = find_latest_ckpt(cfg.output_dir, prefix="ckpt")
+            if found is not None:
+                resume_info = found
+        else:
+            st = int(cfg.resume_from.split("_step")[-1].split(".pt")[0])
+            resume_info = (cfg.resume_from, st)
+    mode = "resume" if resume_info is not None else "base"
+    _log(
+        f"[mode] {mode}"
+        + (f" (from step {resume_info[1]})" if resume_info else "")
+    )
+
     # ---------------- build models ----------------
     encoder, decoder = build_models(
         latent_channels=cfg.latent_channels,
         device=device, io_arch=cfg.io_arch,
     )
-    if cfg.from_pretrained:
-        load_pretrained_into(
-            encoder, decoder,
-            enc_path=cfg.enc_pretrained, dec_path=cfg.dec_pretrained,
-            io_arch=cfg.io_arch, warmstart_io=cfg.warmstart_io,
-            verbose=is_master,
-        )
-
-    if cfg.freeze_backbone_steps > 0:
-        _set_backbone_requires_grad(encoder, decoder, requires_grad=False)
     _log(f"[model] {sum(p.numel() for p in encoder.parameters())/1e6:.2f}M enc "
          f"+ {sum(p.numel() for p in decoder.parameters())/1e6:.2f}M dec params")
 
-    # ---------------- EMA before DDP wrap ----------------
+    # ---------------- mode-specific init ----------------
+    # We need to decide the trainable param set BEFORE building the optimizer
+    # so that optimizer.load_state_dict() matches saved param groups.
+    step = 0
+    start_epoch = 0
+    if mode == "base":
+        # Load pretrained TRELLIS.2 weights + optional warm-start IO stems.
+        if cfg.from_pretrained:
+            load_pretrained_into(
+                encoder, decoder,
+                enc_path=cfg.enc_pretrained, dec_path=cfg.dec_pretrained,
+                io_arch=cfg.io_arch, warmstart_io=cfg.warmstart_io,
+                verbose=is_master,
+            )
+        # Freeze backbone for the warmup window (train IO + KL stems only).
+        if cfg.freeze_backbone_steps > 0:
+            _set_backbone_requires_grad(encoder, decoder, requires_grad=False)
+            unfrozen = False
+            step_at_unfreeze: int | None = None
+        else:
+            unfrozen = True
+            step_at_unfreeze = 0
+    else:
+        # Resume: peek misc checkpoint to restore the exact trainable state
+        # that existed when the ckpt was saved, so optimizer.load_state_dict
+        # finds matching param groups.
+        resume_path, resume_step = resume_info
+        misc_path = resume_path.replace("ckpt_step", "misc_step")
+        saved_unfrozen: bool
+        saved_step_at_unfreeze: int | None
+        if os.path.exists(misc_path):
+            # weights_only=False because misc contains numpy RNG state; we trust our own ckpt.
+            misc_peek = torch.load(misc_path, map_location="cpu", weights_only=False)
+            saved_unfrozen = bool(
+                misc_peek.get("unfrozen", resume_step >= cfg.freeze_backbone_steps)
+            )
+            saved_step_at_unfreeze = misc_peek.get("step_at_unfreeze")
+        else:
+            saved_unfrozen = resume_step >= cfg.freeze_backbone_steps
+            saved_step_at_unfreeze = (
+                cfg.freeze_backbone_steps if saved_unfrozen else None
+            )
+        if not saved_unfrozen:
+            _set_backbone_requires_grad(encoder, decoder, requires_grad=False)
+        unfrozen = saved_unfrozen
+        step_at_unfreeze = saved_step_at_unfreeze
+        _log(
+            f"[resume] trainable state @ ckpt: unfrozen={unfrozen}, "
+            f"step_at_unfreeze={step_at_unfreeze}"
+        )
+
+    # ---------------- EMA (before DDP wrap) ----------------
     ema = EMAModel(encoder, decay=cfg.ema_rate) if cfg.use_ema else None
     ema_dec = EMAModel(decoder, decay=cfg.ema_rate) if cfg.use_ema else None
 
@@ -171,50 +233,45 @@ def train(cfg: VaeTrainConfig) -> None:
         max_norm=cfg.grad_clip_max, clip_percentile=cfg.grad_clip_pct,
     )
 
-    # ---------------- resume ----------------
-    step = 0
-    start_epoch = 0
-    if cfg.resume_from != "none":
-        resume_path = None
-        if cfg.resume_from == "latest":
-            latest = find_latest_ckpt(cfg.output_dir, prefix="ckpt")
-            if latest is not None:
-                resume_path, step = latest
-        else:
-            resume_path = cfg.resume_from
-            step = int(resume_path.split("_step")[-1].split(".pt")[0])
+    # ---------------- resume: load state dicts into the freshly-built modules ----------------
+    if mode == "resume":
+        resume_path, resume_step = resume_info
+        _log(f"[resume] loading {resume_path} (step {resume_step})")
+        ck = torch.load(resume_path, map_location=device, weights_only=False)
+        unwrap(encoder).load_state_dict(ck["encoder"])
+        unwrap(decoder).load_state_dict(ck["decoder"])
+        optimizer.load_state_dict(ck["optimizer"])
+        step = resume_step
 
-        if resume_path is not None and os.path.exists(resume_path):
-            _log(f"[resume] loading {resume_path} (step {step})")
-            ck = torch.load(resume_path, map_location=device)
-            unwrap(encoder).load_state_dict(ck["encoder"])
-            unwrap(decoder).load_state_dict(ck["decoder"])
-            optimizer.load_state_dict(ck["optimizer"])
-
-            misc_path = resume_path.replace("ckpt_step", "misc_step")
-            if os.path.exists(misc_path):
-                misc = torch.load(misc_path, map_location="cpu")
-                start_epoch = int(misc.get("epoch", 0))
-                rng_np = misc.get("rng_np")
-                rng_torch = misc.get("rng_torch")
-                if rng_np is not None:
-                    np.random.set_state(rng_np)
-                if rng_torch is not None:
-                    torch.set_rng_state(rng_torch.cpu())
-            if cfg.use_ema:
-                enc_ema = resume_path.replace("ckpt_step", f"ema_{cfg.ema_rate}_enc_step")
-                dec_ema = resume_path.replace("ckpt_step", f"ema_{cfg.ema_rate}_dec_step")
-                if os.path.exists(enc_ema):
-                    ema.load_state_dict(torch.load(enc_ema, map_location="cpu"))
-                if os.path.exists(dec_ema):
-                    ema_dec.load_state_dict(torch.load(dec_ema, map_location="cpu"))
-            _log(f"[resume] ok — resumed at step {step}, epoch {start_epoch}")
+        misc_path = resume_path.replace("ckpt_step", "misc_step")
+        if os.path.exists(misc_path):
+            misc = torch.load(misc_path, map_location="cpu", weights_only=False)
+            start_epoch = int(misc.get("epoch", 0))
+            rng_np = misc.get("rng_np")
+            rng_torch = misc.get("rng_torch")
+            if rng_np is not None:
+                np.random.set_state(rng_np)
+            if rng_torch is not None:
+                torch.set_rng_state(rng_torch.cpu())
+        if cfg.use_ema:
+            enc_ema = resume_path.replace(
+                "ckpt_step", f"ema_{cfg.ema_rate}_enc_step"
+            )
+            dec_ema = resume_path.replace(
+                "ckpt_step", f"ema_{cfg.ema_rate}_dec_step"
+            )
+            if os.path.exists(enc_ema):
+                ema.load_state_dict(
+                    torch.load(enc_ema, map_location="cpu", weights_only=False)
+                )
+            if os.path.exists(dec_ema):
+                ema_dec.load_state_dict(
+                    torch.load(dec_ema, map_location="cpu", weights_only=False)
+                )
+        _log(f"[resume] ok — step={step}, epoch={start_epoch}, unfrozen={unfrozen}")
 
     # ---------------- TB logger ----------------
     logger = CoartTBLogger(cfg.output_dir, is_master=is_master)
-
-    unfrozen = cfg.freeze_backbone_steps == 0
-    step_at_unfreeze: int | None = 0 if unfrozen else None
 
     pbar = tqdm(total=cfg.max_steps, initial=step, desc="coart.vae",
                 dynamic_ncols=True, disable=not is_master)
@@ -254,7 +311,7 @@ def train(cfg: VaeTrainConfig) -> None:
 
             optimizer.zero_grad()
             loss.backward()
-            grad_clipper.apply(trainable)
+            grad_clipper(trainable)
 
             # LR unfreeze warmup: linear ramp 0 -> cfg.lr across cfg.lr_unfreeze_warmup_steps
             if (not unfrozen) or step_at_unfreeze is None:
@@ -316,6 +373,9 @@ def train(cfg: VaeTrainConfig) -> None:
                               prefix=f"ema_{cfg.ema_rate}_dec")
                 misc = {
                     "epoch": epoch,
+                    "step": step,
+                    "unfrozen": unfrozen,
+                    "step_at_unfreeze": step_at_unfreeze,
                     "rng_np": np.random.get_state(),
                     "rng_torch": torch.get_rng_state(),
                 }
