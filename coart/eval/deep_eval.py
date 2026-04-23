@@ -44,23 +44,36 @@ def _load_golden_manifest():
         return json.load(fh)
 
 
+def _to_trellis_mesh(mesh):
+    """Convert trimesh.Trimesh → trellis2.representations.Mesh on CUDA."""
+    import torch as _t
+    from trellis2.representations import Mesh as TrellisMesh
+    v = _t.from_numpy(np.asarray(mesh.vertices, dtype=np.float32)).cuda()
+    f = _t.from_numpy(np.asarray(mesh.faces, dtype=np.int64)).cuda()
+    return TrellisMesh(vertices=v, faces=f)
+
+
 def _render_normal_4view_side_by_side(recon_mesh, gt_mesh_path: str) -> np.ndarray:
     """Render 4-view normal maps of (GT | recon) and concatenate into one PNG.
 
     Returns HxWx3 uint8. If rendering fails, returns a solid gray placeholder
-    so the logger doesn't crash.
+    so the logger doesn't crash. Input `recon_mesh` is a trimesh.Trimesh;
+    scripts/eval renderer expects trellis2.representations.Mesh, so convert.
     """
     try:
         import trimesh
-        gt_mesh = trimesh.load(gt_mesh_path, force="mesh")
+        gt_tri = trimesh.load(gt_mesh_path, force="mesh")
         sys.path.insert(0, str(_REPO / "scripts" / "eval"))
         from eval_metrics import render_normal_maps_paper_config
-        gt_imgs = render_normal_maps_paper_config(gt_mesh)
-        recon_imgs = render_normal_maps_paper_config(recon_mesh)
-        row_gt = np.concatenate(list(gt_imgs), axis=1)
-        row_recon = np.concatenate(list(recon_imgs), axis=1)
+        gt_imgs = render_normal_maps_paper_config(_to_trellis_mesh(gt_tri))
+        recon_imgs = render_normal_maps_paper_config(_to_trellis_mesh(recon_mesh))
+        # Each img is a CHW float tensor in [0,1]; stack to HW(3) uint8 grid
+        def _t2np(t):
+            return (t.permute(1, 2, 0).cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+        row_gt = np.concatenate([_t2np(t) for t in gt_imgs], axis=1)
+        row_recon = np.concatenate([_t2np(t) for t in recon_imgs], axis=1)
         grid = np.concatenate([row_gt, row_recon], axis=0)
-        return grid.astype(np.uint8)
+        return grid
     except Exception as e:
         print(f"[deep_eval] render failed: {e}", file=sys.stderr)
         return np.full((256, 1024, 3), 128, dtype=np.uint8)
