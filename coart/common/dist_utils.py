@@ -43,7 +43,14 @@ def wrap_ddp(model, local_rank):
     """Wrap model in DDP with canonical settings.
 
     - bucket_cap_mb=128: coalesce grad all-reduce buckets at 128MB
-    - find_unused_parameters=False: all params receive grad every step
+    - find_unused_parameters=True: MUST be True for sparse-conv models.
+        SparseTensor autograd graphs are input-shape dependent (sparse
+        conv rulebook varies with voxel count), so different ranks may
+        produce different autograd topologies on the same step. With
+        find_unused_parameters=False the ranks deadlock at DDP backward's
+        reduction-order all-reduce. Empirically 5-10% step overhead vs
+        False, but the only option that actually completes on 8-GPU DDP
+        with bucket_sampler sending assorted asset sizes per rank.
     - gradient_as_bucket_view=True: bucket zero-copy (saves one grad alloc per step)
     - broadcast_buffers=False: model has no BN, skip per-step buffer sync
     """
@@ -52,7 +59,7 @@ def wrap_ddp(model, local_rank):
         device_ids=[local_rank],
         output_device=local_rank,
         bucket_cap_mb=128,
-        find_unused_parameters=False,
+        find_unused_parameters=True,
         gradient_as_bucket_view=True,
         broadcast_buffers=False,
     )
