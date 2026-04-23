@@ -103,28 +103,27 @@ class CoartTBLogger:
         self._buf.setdefault(tag, []).append(float(value))
 
     def flush_if_due(self, step: int, i_log: int) -> None:
+        """Rank-0-local flush. DO NOT add all_reduce here: not every rank
+        has the same set of tags in its buffer (master logs extras like
+        deep_eval/render/val scalars), so a collective op would deadlock
+        on shape mismatch. Training loss averaging is already handled by
+        DDP backward; per-rank values are fine for dashboards.
+        """
+        if not self.is_master:
+            return
         if step % i_log != 0 or not self._buf:
             return
         tags = sorted(self._buf.keys())
-        vals = torch.tensor(
-            [sum(self._buf[t]) / len(self._buf[t]) for t in tags],
-            dtype=torch.float32,
-            device="cuda" if torch.cuda.is_available() else "cpu",
-        )
-        if dist.is_available() and dist.is_initialized():
-            dist.all_reduce(vals, op=dist.ReduceOp.AVG)
-        if self.is_master:
-            for t, v in zip(tags, vals.tolist()):
-                if self._writer is not None:
-                    self._writer.add_scalar(t, v, step)
-            if self._wandb is not None:
-                try:
-                    self._wandb.log(
-                        {t: v for t, v in zip(tags, vals.tolist())},
-                        step=step,
-                    )
-                except Exception as e:
-                    print(f"[logger] wandb.log failed ({e})", file=sys.stderr)
+        vals = {t: sum(self._buf[t]) / len(self._buf[t]) for t in tags}
+        for t, v in vals.items():
+            if self._writer is not None:
+                self._writer.add_scalar(t, float(v), step)
+        if self._wandb is not None:
+            try:
+                self._wandb.log({t: float(v) for t, v in vals.items()},
+                                step=step)
+            except Exception as e:
+                print(f"[logger] wandb.log failed ({e})", file=sys.stderr)
         self._buf.clear()
 
     def image(self, tag: str, np_img: np.ndarray, step: int) -> None:
