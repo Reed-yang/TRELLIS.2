@@ -77,6 +77,26 @@ class CoartTBLogger:
                     )
                     self._wandb = None
 
+                # Inject baseline reference data via wandb.config so panels can
+                # render horizontal reference lines.
+                if self._wandb is not None:
+                    try:
+                        import json as _json
+                        baseline_path = os.path.join(
+                            os.path.dirname(os.path.dirname(
+                                os.path.dirname(os.path.abspath(__file__)))),
+                            "coart", "eval", "golden_baseline.json",
+                        )
+                        if os.path.exists(baseline_path):
+                            with open(baseline_path) as _fh:
+                                self._wandb.config.update(
+                                    {"golden_baseline": _json.load(_fh)},
+                                    allow_val_change=True,
+                                )
+                    except Exception as e:
+                        print(f"[logger] baseline config inject skipped ({e})",
+                              file=sys.stderr)
+
     def scalar(self, tag: str, value: float, step: int) -> None:
         if not self.is_master:
             return
