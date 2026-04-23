@@ -285,12 +285,27 @@ def train(cfg: VaeTrainConfig) -> None:
                 )
         _log(f"[resume] ok — step={step}, epoch={start_epoch}, unfrozen={unfrozen}")
 
-    # ---------------- TB logger ----------------
-    logger = CoartTBLogger(cfg.output_dir, is_master=is_master)
+    # ---------------- TB + wandb logger ----------------
+    from dataclasses import asdict
+    logger = CoartTBLogger(
+        cfg.output_dir,
+        is_master=is_master,
+        use_wandb=cfg.use_wandb,
+        wandb_project=cfg.wandb_project,
+        wandb_mode=cfg.wandb_mode,
+        wandb_run_name=cfg.run_tag,
+        wandb_tags=[
+            cfg.io_arch,
+            "warmstart_io" if cfg.warmstart_io else "scratch",
+            f"res{cfg.resolution}",
+        ],
+        config=asdict(cfg),
+    )
 
     pbar = tqdm(total=cfg.max_steps, initial=step, desc="coart.vae",
                 dynamic_ncols=True, disable=not is_master)
     t0 = time.time()
+    _step_t0 = time.monotonic()
     epoch = start_epoch
 
     while step < cfg.max_steps:
@@ -326,7 +341,11 @@ def train(cfg: VaeTrainConfig) -> None:
 
             optimizer.zero_grad()
             loss.backward()
-            grad_clipper(trainable)
+            _grad_pre_clip = float(grad_clipper(trainable))
+            _grad_p95 = (float(grad_clipper._max_norm)
+                         if grad_clipper._max_norm is not None else 0.0)
+            _grad_post_clip = (min(_grad_pre_clip, _grad_p95)
+                               if _grad_p95 > 0 else _grad_pre_clip)
 
             # LR unfreeze warmup: linear ramp 0 -> cfg.lr across cfg.lr_unfreeze_warmup_steps
             if (not unfrozen) or step_at_unfreeze is None:
@@ -348,11 +367,43 @@ def train(cfg: VaeTrainConfig) -> None:
             step += 1
             pbar.update(1)
 
-            for k in ("total", "recon", "recon_p1", "recon_p2", "recon_ef", "kl", "subdiv"):
-                logger.scalar(f"loss/{k}", losses[k].detach().item(), step)
-            logger.scalar("misc/lr", cur_lr, step)
-            logger.scalar("misc/voxels", float(x.feats.shape[0]), step)
-            logger.scalar("misc/it_per_s", step / max(time.time() - t0, 1e-3), step)
+            # Per-component loss scalars (TB + wandb)
+            for k in ("total", "recon", "recon_p1", "recon_p2", "recon_ef",
+                      "kl", "subdiv"):
+                logger.scalar(f"train/loss/{k}",
+                              losses[k].detach().item(), step)
+
+            # Throughput
+            _step_dt = time.monotonic() - _step_t0
+            _step_t0 = time.monotonic()
+            _batch_nv = int(x.feats.shape[0])
+            logger.scalar("throughput/step_s", _step_dt, step)
+            logger.scalar("throughput/samples_s_per_gpu",
+                          1.0 / max(_step_dt, 1e-6), step)
+            logger.scalar("throughput/voxels_s_per_gpu",
+                          _batch_nv / max(_step_dt, 1e-6), step)
+            logger.scalar("throughput/avg_batch_voxels", float(_batch_nv), step)
+
+            # Grad-norm / clip stats
+            logger.scalar("train/grad/norm_pre_clip", _grad_pre_clip, step)
+            logger.scalar("train/grad/norm_post_clip", _grad_post_clip, step)
+            logger.scalar(
+                "train/grad/clip_ratio",
+                _grad_post_clip / max(_grad_pre_clip, 1e-8), step,
+            )
+            logger.scalar("train/grad/p95_rolling", _grad_p95, step)
+
+            # Scheduler state
+            logger.scalar("train/sched/lr", float(cur_lr), step)
+            logger.scalar("train/sched/unfrozen",
+                          1.0 if unfrozen else 0.0, step)
+            logger.scalar(
+                "train/sched/steps_since_unfreeze",
+                float(step - step_at_unfreeze)
+                if step_at_unfreeze is not None else 0.0,
+                step,
+            )
+
             logger.flush_if_due(step, cfg.i_log)
 
             # Unfreeze
