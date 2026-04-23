@@ -170,6 +170,13 @@ def _one_asset(
             f"deep_eval/online/per_asset/{name}/status_failed", 1.0, step,
         )
         return {}
+    finally:
+        # Defensive: release any CUDA arenas held by the failed asset so the
+        # next asset / training step starts from a clean slate.
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
 
 
 def run_deep_eval(
@@ -188,50 +195,64 @@ def run_deep_eval(
     """
     rank = dist.get_rank() if (dist.is_available() and dist.is_initialized()) \
         else 0
+    _has_dist = dist.is_available() and dist.is_initialized()
+
     if rank != 0:
-        if dist.is_available() and dist.is_initialized():
+        if _has_dist:
             dist.barrier()
         return {}
 
-    if not _GOLDEN_LIST.exists():
-        print(f"[deep_eval] {_GOLDEN_LIST} missing; skipping deep-eval",
-              file=sys.stderr)
-        if dist.is_available() and dist.is_initialized():
-            dist.barrier()
-        return {}
-
-    manifest = _load_golden_manifest()
+    # All rank-0 logic wrapped in try/finally so barrier ALWAYS fires, even on
+    # unhandled exception (manifest load, aggregation bug, etc). Without this,
+    # a single rank-0 bug would deadlock DDP forever.
     results: Dict[str, Dict[str, float]] = {}
-    stats_mean = stats["mean"]
-    stats_std = stats["std"]
-    for asset in manifest:
-        m = _one_asset(
-            asset, encoder, decoder, stats_mean, stats_std,
-            step, cfg.resolution, cfg.n_dump_names, logger,
-        )
-        results[asset["name"]] = m
+    try:
+        if not _GOLDEN_LIST.exists():
+            print(f"[deep_eval] {_GOLDEN_LIST} missing; skipping deep-eval",
+                  file=sys.stderr)
+            return {}
 
-    successful = [m for m in results.values() if m]
-    if successful:
-        keys = ["cd", "nc", "f005", "f01", "f05",
-                "n_components", "euler", "n_boundary_edges", "is_watertight"]
-        for k in keys:
-            vals = [m[k] for m in successful if k in m]
-            if vals:
-                logger.scalar(
-                    f"deep_eval/online/mean/{k}",
-                    float(sum(vals) / len(vals)),
-                    step,
-                )
-        wt_rate = sum(
-            1 for m in successful if m.get("is_watertight", 0) >= 0.5
-        ) / len(successful)
-        logger.scalar(
-            "deep_eval/online/mean/watertight_rate",
-            float(wt_rate),
-            step,
-        )
+        first_step = int(getattr(cfg, "first_deep_eval_step", 0))
+        if step < first_step:
+            print(f"[deep_eval] step={step} < first_deep_eval_step={first_step}; "
+                  f"skipping", file=sys.stderr)
+            return {}
 
-    if dist.is_available() and dist.is_initialized():
-        dist.barrier()
+        manifest = _load_golden_manifest()
+        stats_mean = stats["mean"]
+        stats_std = stats["std"]
+        for asset in manifest:
+            m = _one_asset(
+                asset, encoder, decoder, stats_mean, stats_std,
+                step, cfg.resolution, cfg.n_dump_names, logger,
+            )
+            results[asset["name"]] = m
+
+        successful = [m for m in results.values() if m]
+        if successful:
+            keys = ["cd", "nc", "f005", "f01", "f05",
+                    "n_components", "euler", "n_boundary_edges", "is_watertight"]
+            for k in keys:
+                vals = [m[k] for m in successful if k in m]
+                if vals:
+                    logger.scalar(
+                        f"deep_eval/online/mean/{k}",
+                        float(sum(vals) / len(vals)),
+                        step,
+                    )
+            wt_rate = sum(
+                1 for m in successful if m.get("is_watertight", 0) >= 0.5
+            ) / len(successful)
+            logger.scalar(
+                "deep_eval/online/mean/watertight_rate",
+                float(wt_rate),
+                step,
+            )
+    except Exception as e:
+        traceback.print_exc()
+        print(f"[deep_eval] run_deep_eval rank-0 crashed at step {step}: {e!r}",
+              file=sys.stderr)
+    finally:
+        if _has_dist:
+            dist.barrier()
     return results

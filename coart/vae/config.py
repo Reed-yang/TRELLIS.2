@@ -84,6 +84,7 @@ class VaeTrainConfig:
     # Deep-eval / dump
     log_3d: bool
     n_dump_names: list
+    first_deep_eval_step: int
 
 
 def _build_output_dir(output_dir: Optional[str], run_tag: str) -> str:
@@ -188,6 +189,9 @@ def parse_args() -> VaeTrainConfig:
     p.add_argument("--n_dump_names", nargs="+",
                    default=["helmet", "val_p95"],
                    help="asset names for normal-map renders in wandb")
+    p.add_argument("--first_deep_eval_step", type=int, default=10000,
+                   help="skip deep-eval until step >= this (avoids noise "
+                        "from untrained ef channels failing feature_to_mesh)")
 
     args = p.parse_args()
 
