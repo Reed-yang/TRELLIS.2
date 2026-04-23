@@ -53,8 +53,13 @@ def compute_vae_loss(
     kl = 0.5 * torch.mean(mu_f.pow(2) + logvar_f.exp() - logvar_f - 1)
 
     if len(subs) > 0:
+        # subs: list[SparseTensor] predicted logits — take .feats for raw tensor.
+        # subs_gt: list[Tensor] ground-truth bitmaps (already raw tensors).
+        # Accept raw tensors too so unit tests can pass plain tensors.
+        def _raw(t):
+            return t.feats if hasattr(t, "feats") else t
         subdiv = sum(
-            F.binary_cross_entropy_with_logits(s.float(), g.float())
+            F.binary_cross_entropy_with_logits(_raw(s).float(), _raw(g).float())
             for s, g in zip(subs, subs_gt)
         ) / len(subs)
     else:
