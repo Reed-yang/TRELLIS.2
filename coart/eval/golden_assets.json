@@ -1,0 +1,66 @@
+[
+  {
+    "name": "helmet",
+    "sha": null,
+    "rank": -1,
+    "tier": -1,
+    "local_path_gt": "/mnt/novita2/siyuan/workspace/TRELLIS.2/datasets/sketchfab_hard/early_medieval_nasal_helmet.glb",
+    "npz_path": "datasets/coart_golden/helmet.npz"
+  },
+  {
+    "name": "triple_sphere",
+    "sha": null,
+    "rank": -1,
+    "tier": -1,
+    "local_path_gt": "/mnt/novita2/siyuan/workspace/TRELLIS.2/datasets/coart_golden/triple_sphere.glb",
+    "npz_path": "datasets/coart_golden/triple_sphere.npz"
+  },
+  {
+    "name": "val_p10",
+    "sha": "0d7f0398edbc5599e311b31091f258ed452cae772921b7e20cd26fbfcc2577a0",
+    "rank": 5118,
+    "tier": 0,
+    "local_path_gt": "/mnt/novita2/data/video_obj/ObjaverseXL_sketchfab/raw/hf-objaverse-v1/glbs/000-120/b4bcb48dbd964b37b30bf1388bb96eed.glb",
+    "npz_path": "datasets/coart_golden/val_p10.npz"
+  },
+  {
+    "name": "val_p25",
+    "sha": "bbbbc1a822407ee1b04a37ce53774bcac9220f5144f034abfb79f9be649347f5",
+    "rank": 11330,
+    "tier": 1,
+    "local_path_gt": "/mnt/novita2/data/video_obj/ObjaverseXL_sketchfab/raw/hf-objaverse-v1/glbs/000-053/51121ac99de345ee8a8f0cbf66278b15.glb",
+    "npz_path": "datasets/coart_golden/val_p25.npz"
+  },
+  {
+    "name": "val_p40",
+    "sha": "d0f17978b8e0c1eb22495876c8f1e01903e3415cb1af9d51031b36a109a28807",
+    "rank": 16315,
+    "tier": 1,
+    "local_path_gt": "/mnt/novita2/data/video_obj/ObjaverseXL_sketchfab/raw/hf-objaverse-v1/glbs/000-072/f287f538ea4c43f2a606377433645531.glb",
+    "npz_path": "datasets/coart_golden/val_p40.npz"
+  },
+  {
+    "name": "val_p60",
+    "sha": "b5e3da18398a1ce2e3321978739d2e336a848fb62846a647952a836886e4c9e8",
+    "rank": 26128,
+    "tier": 1,
+    "local_path_gt": "/mnt/novita2/data/video_obj/ObjaverseXL_sketchfab/raw/hf-objaverse-v1/glbs/000-055/9c0c7f28625c46fba2043be78be0fa76.glb",
+    "npz_path": "datasets/coart_golden/val_p60.npz"
+  },
+  {
+    "name": "val_p80",
+    "sha": "57440230bb3a312c82ca7b7f3b0b35a8c0623f3597588ba48e2189435f15432a",
+    "rank": 36484,
+    "tier": 1,
+    "local_path_gt": "/mnt/novita2/data/video_obj/ObjaverseXL_sketchfab/raw/hf-objaverse-v1/glbs/000-107/6d16384c9ef542eba5a57b45cb65f488.glb",
+    "npz_path": "datasets/coart_golden/val_p80.npz"
+  },
+  {
+    "name": "val_p95",
+    "sha": "15499368803d9344fe005a25ad1490b89ffc42db6880e867dbc4fbd8c4c93036",
+    "rank": 44949,
+    "tier": 1,
+    "local_path_gt": "/mnt/novita2/data/video_obj/ObjaverseXL_sketchfab/raw/hf-objaverse-v1/glbs/000-021/e75ca8262e0944b29f480d9186c48ca1.glb",
+    "npz_path": "datasets/coart_golden/val_p95.npz"
+  }
+]

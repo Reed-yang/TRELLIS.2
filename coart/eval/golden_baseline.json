@@ -1,0 +1,46 @@
+{
+  "helmet": {
+    "layer_v": {
+      "cd": 1.2908307326142676e-05,
+      "nc": 0.7730708122253418,
+      "f_0.005": 0.8634670972824097,
+      "f_0.001": 0.055654510855674744,
+      "f_0.05": null,
+      "n_components": 208348,
+      "euler": 4523,
+      "n_boundary_edges": 146102,
+      "is_watertight": 0.0
+    }
+  },
+  "triple_sphere": {
+    "layer_v": {
+      "cd": 1.2484781109378673e-05,
+      "nc": 0.9995467066764832,
+      "f_0.005": 0.8656343221664429,
+      "f_0.001": 0.07622464001178741,
+      "f_0.05": null,
+      "n_components": 22,
+      "euler": 5,
+      "n_boundary_edges": 18,
+      "is_watertight": 0.0
+    }
+  },
+  "val_p10": {
+    "layer_v": null
+  },
+  "val_p25": {
+    "layer_v": null
+  },
+  "val_p40": {
+    "layer_v": null
+  },
+  "val_p60": {
+    "layer_v": null
+  },
+  "val_p80": {
+    "layer_v": null
+  },
+  "val_p95": {
+    "layer_v": null
+  }
+}
