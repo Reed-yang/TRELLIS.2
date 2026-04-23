@@ -302,6 +302,9 @@ def train(cfg: VaeTrainConfig) -> None:
         config=asdict(cfg),
     )
 
+    from coart.eval.watchdog import Watchdog
+    watchdog = Watchdog(cfg.output_dir, logger)
+
     pbar = tqdm(total=cfg.max_steps, initial=step, desc="coart.vae",
                 dynamic_ncols=True, disable=not is_master)
     t0 = time.time()
@@ -404,7 +407,19 @@ def train(cfg: VaeTrainConfig) -> None:
                 step,
             )
 
+            # Feed watchdog with this step's signals (cheap)
+            watchdog.update_train(
+                step=step,
+                grad_pre=_grad_pre_clip,
+                grad_post=_grad_post_clip,
+                grad_p95=_grad_p95,
+                loss_ef=float(losses["recon_ef"].detach().item()),
+                lr=float(cur_lr),
+            )
+
             logger.flush_if_due(step, cfg.i_log)
+            if step % cfg.i_log == 0:
+                watchdog.check_train(step)
 
             # Unfreeze
             if (not unfrozen) and step >= cfg.freeze_backbone_steps:
@@ -466,7 +481,12 @@ def train(cfg: VaeTrainConfig) -> None:
                             level="ERROR",
                         )
                     _deep_results = {}
-                # _deep_results is consumed by Watchdog hook (added in Task 13)
+                # Feed Watchdog with helmet NC from deep_eval (None if missing)
+                _helmet_metrics = _deep_results.get("helmet", {})
+                watchdog.update_helmet(
+                    step=step,
+                    helmet_nc=_helmet_metrics.get("nc") if _helmet_metrics else None,
+                )
 
             # Val MSE pass
             if is_master and val_set is not None and (
