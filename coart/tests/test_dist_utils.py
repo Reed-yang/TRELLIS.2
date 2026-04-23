@@ -43,7 +43,8 @@ def test_wrap_ddp_flags_applied():
             assert kwargs.get("gradient_as_bucket_view") is True
             assert kwargs.get("broadcast_buffers") is False
             assert kwargs.get("bucket_cap_mb") == 128
-            assert kwargs.get("find_unused_parameters") is True
+            assert kwargs.get("find_unused_parameters") is False
+            assert kwargs.get("static_graph") is True
     finally:
         # Destroy process group so subsequent tests don't observe gloo state
         # (ReduceOp.AVG is unsupported on gloo → breaks logger.flush_if_due).
