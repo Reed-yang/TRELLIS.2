@@ -9,7 +9,7 @@ Layout expected under ``roots`` (passed positionally to ``__init__``):
       instances_10k.csv          # sha256, aesthetic_score, ...
       manifest.csv               # sha256, render_done, dino_done, slat_done, ...
       dino_l16_s512/<sha>.npz    # features (16, T, 1024) fp16, view_idx (16,)
-      slat/<vae_tag>/<sha>.npz   # coords (N, 3) int16 @ res=512, feats (M, 32) fp16
+      slat/<vae_tag>/<sha>.npz   # coords (N_latent, 3) int16 @ res=32, feats (N_latent, 32) fp16
 
 Notes:
   * The cached SLat npz stores the *input* surface-voxel coords at the input
@@ -188,22 +188,18 @@ class CachedImageConditionedSLatShape(Dataset):
             return self.__getitem__(np.random.randint(0, len(self)))
 
     def _get_instance(self, root: str, sha: str) -> Dict[str, Any]:
-        # 1) latent + reconstructed latent coords
+        # 1) latent coords + feats (both at latent res 32^3, saved by cache_slat
+        # after the 16x downsample).
         slat_p = os.path.join(root, self.slat_dir, f"{sha}.npz")
         with np.load(slat_p) as z:
-            input_coords = z["coords"].astype(np.int32)  # (N, 3) at input grid
-            feats = z["feats"].astype(np.float32)  # (M, 32)
-
-        # Downsample input coords -> latent coords (sort order matches
-        # SparseDownsample: torch.unique on encoded codes returns sorted).
-        latent_coords_np = np.unique(input_coords // self.latent_factor, axis=0)
-        if latent_coords_np.shape[0] != feats.shape[0]:
+            coords_np = z["coords"].astype(np.int32)  # (N_latent, 3) at res 32
+            feats = z["feats"].astype(np.float32)     # (N_latent, 32)
+        if coords_np.shape[0] != feats.shape[0]:
             raise RuntimeError(
-                f"latent coord count mismatch for {sha}: "
-                f"got {latent_coords_np.shape[0]} unique downsampled coords "
-                f"vs {feats.shape[0]} cached feats"
+                f"slat cache shape mismatch for {sha}: "
+                f"coords {coords_np.shape} vs feats {feats.shape}"
             )
-        coords = torch.from_numpy(latent_coords_np).int()
+        coords = torch.from_numpy(coords_np).int()
         feats_t = torch.from_numpy(feats)
         if self.mean is not None and self.std is not None:
             feats_t = (feats_t - self.mean) / self.std

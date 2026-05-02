@@ -39,7 +39,13 @@ INSTANCES_REL="${INSTANCES:-instances_10k.csv}"
 INSTANCES="${COART_DATA_ROOT}/${INSTANCES_REL}"
 NODES="${NODES:-117 118 119}"
 NUM_GPUS_PER_NODE="${NUM_GPUS_PER_NODE:-8}"
-PYTHON="${PYTHON:-.venv/bin/python}"
+# Resolve PYTHON to absolute path so it works after `cd` in stage templates.
+_PYTHON_DEFAULT=".venv/bin/python"
+PYTHON="${PYTHON:-${_PYTHON_DEFAULT}}"
+case "${PYTHON}" in
+    /*) ;;  # already absolute
+    *)  PYTHON="${REPO_ROOT}/${PYTHON}" ;;
+esac
 LIMIT="${LIMIT:-}"
 LIMIT_ARG=""
 [ -n "${LIMIT}" ] && LIMIT_ARG="--limit ${LIMIT}"
@@ -88,7 +94,13 @@ case "${STAGE}" in
     render)
         SHA_LIST="${COART_DATA_ROOT}/_render_sha_list.txt"
         cut -d, -f1 "${INSTANCES}" | tail -n +2 > "${SHA_LIST}"
-        TPL="cd ${REPO_ROOT}/data_toolkit && CUDA_VISIBLE_DEVICES=%s ${PYTHON} render_cond.py ObjaverseXL --root ${DATASET_ROOT} --download_root ${DATASET_ROOT} --render_cond_root ${COART_DATA_ROOT} --rank %s --world_size %s --num_cond_views 16 --instances ${SHA_LIST}"
+        # --max_workers 1: each rank runs ONE Blender at a time. With 24 ranks
+        # cluster-wide and Blender CYCLES eating all CPU cores by default, more
+        # workers per rank causes thread-oversubscription on 128-core boxes
+        # (192-way oversubscription dropped throughput to 13/min instead of the
+        # uncontended 19/min). Override via MAX_WORKERS env if needed.
+        MAX_WORKERS_ARG="--max_workers ${MAX_WORKERS:-1}"
+        TPL="cd ${REPO_ROOT}/data_toolkit && CUDA_VISIBLE_DEVICES=%s ${PYTHON} render_cond.py ObjaverseXL --root ${DATASET_ROOT} --download_root ${DATASET_ROOT} --render_cond_root ${COART_DATA_ROOT} --rank %s --world_size %s --num_cond_views 16 ${MAX_WORKERS_ARG} --instances ${SHA_LIST}"
         dispatch_python_per_rank "${TPL}" "render"
         ;;
     dino)

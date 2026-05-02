@@ -20,9 +20,15 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import pathlib
 import sys
 import time
 from typing import Optional
+
+# Make coart / trellis2 importable when invoked via `python scripts/.../foo.py`.
+_REPO = pathlib.Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
 import numpy as np
 import pandas as pd
@@ -139,17 +145,29 @@ def process_one(
     )
     with autocast_ctx:
         z_out = encoder(x, sample_posterior=False)
+
+    # SparseUnetVae downsamples 16x: input (N_input, 3) at res 512
+    # -> latent (N_latent, 3) at res 32. Save the latent coords + feats so the
+    # downstream DiT trainer can reconstruct the SparseTensor without needing
+    # to know the encoder's downsampling pattern. z_out.coords is (N_latent, 4)
+    # with batch_idx in col 0; we strip it.
+    latent_coords = z_out.coords[:, 1:4].detach().cpu().numpy().astype(np.int16)
     mu = z_out.feats.detach().to(torch.float16).cpu().numpy()
+    N_latent = mu.shape[0]
+    assert latent_coords.shape == (N_latent, 3), (
+        f"latent_coords {latent_coords.shape} mismatch feats {mu.shape}"
+    )
 
     atomic_savez(
         out_path,
-        coords=cube_indices.astype(np.int16),
+        coords=latent_coords,
         feats=mu,
-        num_voxels=np.int32(N),
+        num_voxels=np.int32(N_latent),
+        num_input_voxels=np.int32(N),  # provenance: how many feat18 cubes fed in
         vae_ckpt_rel=np.array(vae_ckpt_rel),
         vae_io_arch=np.array(vae_io_arch),
     )
-    return True, f"ok N={N}"
+    return True, f"ok N_in={N} N_lat={N_latent}"
 
 
 def run(
