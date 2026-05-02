@@ -138,6 +138,26 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
         """No-op: SparseTensor sample output has no .contiguous()."""
         pass
 
+    # ---------------------------------------------------------------- profiler
+    def profile(self, wait=2, warmup=3, active=5):
+        """Override broken upstream basic.py:898-911 — original calls
+        self.run_step() with no args, but run_step requires data_list.
+        Mirror the run() loop's pattern: load_data() then run_step(data_list)."""
+        import os as _os
+        with torch.profiler.profile(
+            schedule=torch.profiler.schedule(
+                wait=wait, warmup=warmup, active=active, repeat=1),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                _os.path.join(self.output_dir, "profile")),
+            profile_memory=True,
+            with_stack=True,
+            record_shapes=True,
+        ) as prof:
+            for _ in range(wait + warmup + active):
+                data_list = self.load_data()
+                self.run_step(data_list)
+                prof.step()
+
     # ---------------------------------------------------------------- load wrap
     def load_data(self):
         """Wrap base load_data to record dataloader wait time."""
