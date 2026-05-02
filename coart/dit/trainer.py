@@ -82,23 +82,34 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
             if _wandb is None:
                 print("[wandb] not installed — skipping mirror.")
             else:
-                self._wandb_run = _wandb.init(
-                    project=wandb_project,
-                    entity=wandb_entity,
-                    name=wandb_run_name or os.path.basename(self.output_dir.rstrip("/")),
-                    dir=self.output_dir,
-                    config={
-                        "output_dir": self.output_dir,
-                        "step_at_init": int(self.step),
-                        "world_size": int(self.world_size),
-                        "batch_size": int(self.batch_size),
-                        "batch_size_per_gpu": int(self.batch_size_per_gpu),
-                        "batch_split": int(self.batch_split),
-                        "ema_rate": list(map(float, self.ema_rate)),
-                    },
-                    resume="allow",
-                    mode=wandb_mode,
-                )
+                try:
+                    self._wandb_run = _wandb.init(
+                        project=wandb_project,
+                        entity=wandb_entity,
+                        name=wandb_run_name or os.path.basename(self.output_dir.rstrip("/")),
+                        dir=self.output_dir,
+                        config={
+                            "output_dir": self.output_dir,
+                            "step_at_init": int(self.step),
+                            "world_size": int(self.world_size),
+                            "batch_size": int(self.batch_size),
+                            "batch_size_per_gpu": int(self.batch_size_per_gpu),
+                            "batch_split": int(self.batch_split),
+                            "ema_rate": list(map(float, self.ema_rate)),
+                        },
+                        resume="allow",
+                        mode=wandb_mode,
+                    )
+                except Exception as e:
+                    # No API key, network down, project quota — never let it
+                    # take down the whole DDP training run. tb_logs + log.txt
+                    # always work without wandb.
+                    print(
+                        f"[wandb] init failed ({type(e).__name__}: {e}); "
+                        f"continuing with tb-only logging.",
+                        flush=True,
+                    )
+                    self._wandb_run = None
 
     # -------------------------------------------------------------- model init
     def _init_image_cond_model(self) -> None:
