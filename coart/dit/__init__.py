@@ -28,6 +28,10 @@ from . import trainer as _trainer  # noqa: F401
 # No-op when the env is unset, so safe to always import.
 from . import fused_rope_patch as _rope_patch  # noqa: F401
 
+# Optional batched-index-select modulation patch (gated by COART_FUSE_MODULATION=1).
+# Eliminates the indexing_backward 55%-of-GPU-time bottleneck. No-op when unset.
+from . import fused_modulation_patch as _mod_patch  # noqa: F401
+
 from .config import (
     COART_DIT_DATA_ROOT,
     DEFAULT_VAE_TAG,
