@@ -40,8 +40,11 @@ PY="${PY:-${REPO_ROOT}/.venv/bin/python}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/trellis2_triton_cache}"
 mkdir -p "${TRITON_CACHE_DIR}" "${OUTPUT_DIR}"
 
-# Make sure `import coart.dit` works in subprocesses spawned by torchrun.
+# Make sure `import coart.dit` works in subprocesses spawned by mp.spawn.
+# The .pth file at .venv/lib/python3.10/site-packages/coart_dit_autoload.pth
+# auto-imports coart.dit on every Python startup when this env var is set.
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+export COART_AUTO_REGISTER_DIT=1
 
 echo "[run] repo        = ${REPO_ROOT}"
 echo "[run] data_root   = ${DATA_ROOT}"
@@ -53,21 +56,23 @@ echo "[run] nproc       = ${NPROC}"
 echo "[run] triton cache= ${TRITON_CACHE_DIR}"
 
 # Build train.py CLI args. Using arrays keeps quoting sane.
+# IMPORTANT: train.py manages its own multiprocessing via torch.multiprocessing
+# spawn (see train.py:143 `mp.spawn(main, args=(cfg,), nprocs=cfg.num_gpus)`),
+# so we must NOT wrap it in torchrun — running both produces a port conflict
+# at master_port=12345 (train.py default) vs torchrun's random standalone port.
+# Pass --num_gpus directly and let train.py handle the rest.
 TRAIN_ARGS=(
     --config "${CONFIG}"
     --output_dir "${OUTPUT_DIR}"
     --data_dir "${DATA_ROOT}"
     --auto_retry "${AUTO_RETRY}"
+    --num_gpus "${NPROC}"
 )
 if [[ -n "${LOAD_DIR}" ]]; then
     TRAIN_ARGS+=(--load_dir "${LOAD_DIR}" --ckpt "${CKPT}")
 fi
 TRAIN_ARGS+=("$@")
 
-# Side-effect-import coart.dit before train.py's `from trellis2 import ...`
-# so our dataset + trainer classes are registered in the trellis2 namespaces.
-SHIM='import sys, runpy; import coart.dit; sys.argv[0] = "train.py"; runpy.run_path("train.py", run_name="__main__")'
-
-exec torchrun --standalone --nproc_per_node="${NPROC}" \
-    --no-python \
-    "${PY}" -c "${SHIM}" "${TRAIN_ARGS[@]}"
+# Use the entry wrapper that registers coart.dit classes in BOTH the parent
+# process AND each mp.spawn worker (workers don't inherit parent imports).
+exec "${PY}" "${REPO_ROOT}/scripts/coart_train_dit_entry.py" "${TRAIN_ARGS[@]}"

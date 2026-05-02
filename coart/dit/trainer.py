@@ -63,6 +63,15 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
             )
         return image
 
+    # ---------------------------------------------------------------- snapshot
+    def snapshot_dataset(self, num_samples=100, batch_size=4):
+        """No-op: trellis2 BasicTrainer.snapshot_dataset stacks all dataset
+        samples with `torch.stack`, but our dataset emits SparseTensor for
+        ``x_0`` which can't be stacked that way. Skip this debug snapshot —
+        actual training step doesn't need it. The base ``snapshot()`` (model
+        sample-quality probe) still runs at i_sample intervals."""
+        pass
+
 
 # ---------------------------------------------------------------------- registration
 def _register() -> None:
