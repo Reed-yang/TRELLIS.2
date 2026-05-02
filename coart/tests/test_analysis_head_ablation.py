@@ -63,3 +63,21 @@ def test_unknown_condition_raises():
 def test_pred_target_shape_mismatch_raises():
     with pytest.raises(ValueError):
         apply_head_substitution(torch.randn(4, 18), torch.randn(5, 18), "oracle_ef")
+
+
+from coart.analysis.head_ablation import label_head_status
+
+
+def test_label_dead_when_zero_delta_below_threshold():
+    label = label_head_status(delta_zero=0.01, delta_oracle=-0.50)
+    assert label == "dead"
+
+
+def test_label_undertrained_when_oracle_helps_a_lot():
+    label = label_head_status(delta_zero=0.20, delta_oracle=-0.40)
+    assert label == "undertrained"
+
+
+def test_label_alive_when_zero_hurts_oracle_doesnt_help_much():
+    label = label_head_status(delta_zero=0.20, delta_oracle=-0.10)
+    assert label == "alive"
