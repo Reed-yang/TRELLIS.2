@@ -1,0 +1,48 @@
+# Example sweep config for scripts/profiling/profile_sweep.py
+#
+# Each run produces logs/profile_results/{name}_{ts}.json. The first run
+# is treated as baseline by profile_compare; place your baseline first.
+#
+# Override paths use dotted-JSON notation; values are JSON-decoded
+# (so 0.82 -> float, [1,2] -> list, true -> bool, "x" -> str).
+
+base_config: coart/dit/configs/coart_dit_shape_512_ft.json
+
+defaults:
+  warmup_steps: 30
+  active_steps: 100
+  num_gpus: 8
+  # Run each cell on an idle node; profile must NEVER share GPUs with the
+  # production training run.
+  host: host-10-240-99-118
+
+runs:
+  # 1. baseline = current production config (no overrides)
+  - name: baseline_v4
+    overrides: {}
+
+  # 2. lower target_ratio (less memory, more checkpointing -> slower)
+  - name: target_065
+    overrides:
+      trainer.args.elastic.args.target_ratio: 0.65
+
+  # 3. higher target_ratio (more memory, less checkpointing -> faster, OOM risk)
+  - name: target_088
+    overrides:
+      trainer.args.elastic.args.target_ratio: 0.88
+
+  # 4. drop max_tokens further (P95 cap)
+  - name: max_tokens_4096
+    overrides:
+      dataset.args.max_tokens: 4096
+
+  # 5. raise batch_size_per_gpu (likely OOM; demonstrates upper-bound scan)
+  - name: bs_per_gpu_12
+    overrides:
+      trainer.args.batch_size_per_gpu: 12
+      trainer.args.elastic.args.target_ratio: 0.65   # extra ckpt headroom
+
+  # 6. revert batch_split (compare vs current default split=1)
+  - name: batch_split_2
+    overrides:
+      trainer.args.batch_split: 2
