@@ -116,6 +116,9 @@ def main():
                     help="Repeatable: dotted.json.path=jsonValue. Values JSON-decoded.")
     ap.add_argument("--host", default=None,
                     help="If set, run via ssh on this host (e.g. host-10-240-99-118)")
+    ap.add_argument("--cuda-visible-devices", default=None,
+                    help="Comma-separated GPU indices, e.g. '0,1,2,3'. Lets you profile "
+                         "on a node where some GPUs are busy. Pair with --num-gpus matching count.")
     ap.add_argument("--keep-eval", action="store_true",
                     help="Don't suppress i_eval (default: suppressed since profile is short)")
     ap.add_argument("--keep-save", action="store_true",
@@ -177,17 +180,22 @@ def main():
     env["COART_AUTO_REGISTER_DIT"] = "1"
     env["TRITON_CACHE_DIR"] = env.get("TRITON_CACHE_DIR", "/tmp/trellis2_triton_cache")
     env["PYTHONFAULTHANDLER"] = "1"
+    if args.cuda_visible_devices:
+        env["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
 
     if args.host:
         # Pack command as a remote bash invocation. We chain `cd` + env vars so
         # the relative paths in the entry script (it does its own cd via repo
         # root resolution) work uniformly.
-        env_str = " ".join(f"{k}={v!r}" for k, v in [
+        env_pairs = [
             ("PYTHONPATH", env["PYTHONPATH"]),
             ("COART_AUTO_REGISTER_DIT", env["COART_AUTO_REGISTER_DIT"]),
             ("TRITON_CACHE_DIR", env["TRITON_CACHE_DIR"]),
             ("PYTHONFAULTHANDLER", env["PYTHONFAULTHANDLER"]),
-        ])
+        ]
+        if args.cuda_visible_devices:
+            env_pairs.append(("CUDA_VISIBLE_DEVICES", args.cuda_visible_devices))
+        env_str = " ".join(f"{k}={v!r}" for k, v in env_pairs)
         remote_cmd = f"cd {REPO} && env {env_str} " + " ".join(_shquote(c) for c in cmd)
         full = ["ssh", args.host, remote_cmd]
     else:
