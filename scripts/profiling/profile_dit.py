@@ -119,6 +119,9 @@ def main():
     ap.add_argument("--cuda-visible-devices", default=None,
                     help="Comma-separated GPU indices, e.g. '0,1,2,3'. Lets you profile "
                          "on a node where some GPUs are busy. Pair with --num-gpus matching count.")
+    ap.add_argument("--extra-env", action="append", default=[],
+                    help="Repeatable: KEY=VALUE env vars to forward to the remote worker. "
+                         "Required for SPARSE_ATTN_BACKEND, PYTORCH_CUDA_ALLOC_CONF, etc.")
     ap.add_argument("--keep-eval", action="store_true",
                     help="Don't suppress i_eval (default: suppressed since profile is short)")
     ap.add_argument("--keep-save", action="store_true",
@@ -182,6 +185,13 @@ def main():
     env["PYTHONFAULTHANDLER"] = "1"
     if args.cuda_visible_devices:
         env["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
+    extra_env: List[tuple[str, str]] = []
+    for kv in args.extra_env:
+        if "=" not in kv:
+            raise SystemExit(f"--extra-env expects KEY=VALUE, got {kv!r}")
+        k, v = kv.split("=", 1)
+        env[k] = v
+        extra_env.append((k, v))
 
     if args.host:
         # Pack command as a remote bash invocation. We chain `cd` + env vars so
@@ -195,6 +205,7 @@ def main():
         ]
         if args.cuda_visible_devices:
             env_pairs.append(("CUDA_VISIBLE_DEVICES", args.cuda_visible_devices))
+        env_pairs.extend(extra_env)
         env_str = " ".join(f"{k}={v!r}" for k, v in env_pairs)
         remote_cmd = f"cd {REPO} && env {env_str} " + " ".join(_shquote(c) for c in cmd)
         full = ["ssh", args.host, remote_cmd]
