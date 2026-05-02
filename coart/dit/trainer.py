@@ -68,8 +68,16 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
         """No-op: trellis2 BasicTrainer.snapshot_dataset stacks all dataset
         samples with `torch.stack`, but our dataset emits SparseTensor for
         ``x_0`` which can't be stacked that way. Skip this debug snapshot —
-        actual training step doesn't need it. The base ``snapshot()`` (model
-        sample-quality probe) still runs at i_sample intervals."""
+        actual training step doesn't need it."""
+        pass
+
+    def snapshot(self, suffix=None, num_samples=64, batch_size=4, verbose=False):
+        """No-op: BasicTrainer.snapshot calls ``.contiguous()`` on sample
+        outputs and then ``dist.gather`` of the dense tensor. Our sparse
+        flow-matching sampler emits SparseTensor, which has no
+        ``.contiguous()`` method. Skip the periodic image probe — the loss
+        curves + EMA ckpts are sufficient training signal; quality eval
+        runs offline against the saved EMA ckpt."""
         pass
 
 
