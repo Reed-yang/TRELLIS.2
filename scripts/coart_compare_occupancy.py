@@ -13,8 +13,14 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import pathlib
 import sys
 from typing import Optional
+
+# Make corep_fast / o_voxel importable when invoked via `python scripts/foo.py`.
+_REPO = pathlib.Path(__file__).resolve().parents[1]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
 import numpy as np
 import trimesh

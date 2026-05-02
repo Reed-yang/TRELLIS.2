@@ -26,6 +26,15 @@ from PIL import Image
 from tqdm import tqdm
 
 DINO_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+DINO_LOCAL_PATH = "/mnt/novita2/siyuan/workspace/TRELLIS.2/pretrained/dinov3-vitl16-pretrain-lvd1689m/facebook/dinov3-vitl16-pretrain-lvd1689m"
+
+
+def _resolve_dinov3_path(model_id: str) -> str:
+    """Prefer local ckpt over HF hub (gated repo workaround). Return canonical
+    model_id if local path lacks config.json."""
+    if os.path.isdir(DINO_LOCAL_PATH) and os.path.isfile(os.path.join(DINO_LOCAL_PATH, "config.json")):
+        return DINO_LOCAL_PATH
+    return model_id
 
 
 def stable_shard(sha: str, world_size: int, rank: int) -> bool:
@@ -44,7 +53,8 @@ def atomic_savez(out_path: str, **arrays) -> None:
 def build_extractor(image_size: int):
     """Build the real DinoV3 extractor (lazy import; called only at production time)."""
     from trellis2.modules.image_feature_extractor import DinoV3FeatureExtractor
-    extractor = DinoV3FeatureExtractor(model_name=DINO_MODEL_ID, image_size=image_size)
+    path = _resolve_dinov3_path(DINO_MODEL_ID)
+    extractor = DinoV3FeatureExtractor(model_name=path, image_size=image_size)
     extractor.cuda()
     return extractor
 

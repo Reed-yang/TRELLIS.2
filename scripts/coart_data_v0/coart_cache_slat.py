@@ -48,18 +48,44 @@ def _nullctx():
 
 
 def load_encoder(vae_ckpt: str, vae_io_arch: str, stats_npz: str, device: str = "cuda"):
-    """Build encoder via coart.vae.build, load EMA ckpt, return (encoder, mean, std)."""
+    """Build encoder via coart.vae.build, load EMA or raw ckpt, return (encoder, mean, std).
+
+    EMA ckpts are wrapped: {'decay': float, 'shadow': list[Tensor in
+    model.parameters() order]} and require coart.common.ema.EMAModel to apply
+    them (shadow is a list aligned with model.parameters(), NOT a state_dict).
+    Raw ckpts are flat state_dicts loaded via encoder.load_state_dict.
+    """
     from coart.vae.build import build_models
     from coart.data.stats import load_stats
+    from coart.common.ema import EMAModel
 
     encoder, _decoder = build_models(io_arch=vae_io_arch, device=device)
     state = torch.load(vae_ckpt, map_location=device, weights_only=True)
-    missing, unexpected = encoder.load_state_dict(state, strict=False)
-    if missing or unexpected:
+
+    is_ema = (
+        isinstance(state, dict)
+        and set(state.keys()) == {"decay", "shadow"}
+        and isinstance(state["shadow"], list)
+    )
+    if is_ema:
+        ema = EMAModel(encoder, decay=float(state["decay"]))
+        ema.load_state_dict(state)
+        ema.copy_to(encoder)
         print(
-            f"[slat] encoder load: missing={len(missing)} unexpected={len(unexpected)}",
+            f"[slat] EMA ckpt loaded (decay={state['decay']}, n_params={len(state['shadow'])})",
             file=sys.stderr,
         )
+    else:
+        missing, unexpected = encoder.load_state_dict(state, strict=False)
+        print(
+            f"[slat] raw ckpt loaded (missing={len(missing)} unexpected={len(unexpected)})",
+            file=sys.stderr,
+        )
+        if len(missing) > 10:
+            raise RuntimeError(
+                f"too many missing keys ({len(missing)}); ckpt format mismatch. "
+                f"first missing: {missing[:5]}"
+            )
     encoder.eval()
     mean, std = load_stats(stats_npz, torch.device(device), verbose=True)
     return encoder, mean, std
