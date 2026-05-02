@@ -52,3 +52,38 @@ def test_mean_row_cosine_orthogonal_rows_gives_zero():
     b = torch.zeros(2)
     m = compute_drift_metrics(W_rotated, b, W_ref, b)
     assert abs(m["mean_row_cosine"]) < 1e-6
+
+
+from coart.analysis.weight_drift import (
+    TARGET_LINEARS,
+    extract_io_linear_weights,
+)
+
+
+def test_target_linears_constant():
+    assert TARGET_LINEARS == [
+        ("encoder", "p1_branch"),
+        ("encoder", "p2_branch"),
+        ("encoder", "ef_branch"),
+        ("decoder", "p1_head"),
+        ("decoder", "p2_head"),
+        ("decoder", "ef_head"),
+    ]
+
+
+def test_extract_io_linear_weights_from_state_dict():
+    sd = {
+        "input_layer.p1_branch.weight": torch.zeros(64, 3),
+        "input_layer.p1_branch.bias": torch.zeros(64),
+        "input_layer.p2_branch.weight": torch.zeros(64, 3),
+        "input_layer.p2_branch.bias": torch.zeros(64),
+        "input_layer.ef_branch.weight": torch.zeros(64, 12),
+        "input_layer.ef_branch.bias": torch.zeros(64),
+        "blocks.0.weight": torch.randn(64, 64),  # noise
+    }
+    extracted = extract_io_linear_weights(sd, side="encoder")
+    assert set(extracted.keys()) == {"p1_branch", "p2_branch", "ef_branch"}
+    for name in ("p1_branch", "p2_branch", "ef_branch"):
+        W, b = extracted[name]
+        assert W.shape[0] == 64
+        assert b.shape == (64,)
