@@ -29,6 +29,7 @@ _REPO = pathlib.Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
+import numpy as np
 import torch
 from safetensors.torch import load_file
 
@@ -111,9 +112,12 @@ def run(config_path: str, out_dir: str, src_safetensors: str) -> None:
         # on the first step.
         misc["elastic_controller"] = {"params": (0.0, 0.0)}
     if "grad_clip" in trainer_args:
-        # AdaptiveGradClipper.load_state_dict expects 4 keys; init empty buffer.
+        # AdaptiveGradClipper.load_state_dict overwrites self._grad_norm with
+        # state_dict['grad_norm']; the runtime then does
+        # `self._grad_norm[buffer_ptr] = grad_norm` which requires an indexable
+        # ndarray, NOT a scalar.  See trellis2/utils/grad_clip_utils.py:21,74.
         misc["grad_clip"] = {
-            "grad_norm": 0.0,
+            "grad_norm": np.zeros(1000, dtype=np.float32),
             "max_norm": float(trainer_args["grad_clip"]["args"].get("max_norm", 1.0)),
             "buffer_ptr": 0,
             "buffer_length": 0,
