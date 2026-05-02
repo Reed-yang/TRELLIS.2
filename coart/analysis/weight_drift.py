@@ -158,6 +158,52 @@ def reconstruct_step0_state_dicts(
     return enc.state_dict(), dec.state_dict()
 
 
+def _overlay_ema_shadow(model: torch.nn.Module, ema_blob: Dict[str, object]) -> None:
+    """Overlay EMA shadow tensors onto `model.parameters()` in place.
+
+    EMA file schema (saved by `coart.common.ema.EMAModel.state_dict`):
+    `{"decay": float, "shadow": [Tensor, ...]}` where `shadow` is ordered to
+    match `model.parameters()` at construction time. Mirrors the reference
+    `_overlay_ema_params` in `scripts/coart_ema_eval.py`.
+    """
+    shadow = ema_blob["shadow"]
+    live_params = list(model.parameters())
+    if len(shadow) != len(live_params):
+        raise RuntimeError(
+            f"EMA shadow count mismatch: shadow={len(shadow)} live={len(live_params)}"
+        )
+    with torch.no_grad():
+        for s, p in zip(shadow, live_params):
+            p.data.copy_(s.data.to(p.device, dtype=p.dtype))
+
+
+def _build_models_from_cfg(
+    ckpt_dir: str,
+    seed: int = 0,
+) -> Tuple[torch.nn.Module, torch.nn.Module]:
+    """Build encoder + decoder on CPU using `<ckpt_dir>/config.json` cfg.
+
+    Pins torch CPU/CUDA RNG seeds so the xavier-initialised IO branches are
+    reproducible across analysis runs. Does NOT load pretrained backbone —
+    the caller overlays trained weights (online state_dict or EMA shadow)
+    over every parameter slot, which covers all learnt tensors.
+    """
+    from coart.vae.build import build_models
+
+    cfg_path = os.path.join(ckpt_dir, "config.json")
+    with open(cfg_path) as fh:
+        cfg = json.load(fh)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    enc, dec = build_models(
+        latent_channels=cfg.get("latent_channels", 32),
+        device="cpu",
+        io_arch=cfg.get("io_arch", "three_branch"),
+    )
+    return enc, dec
+
+
 def _load_ckpt_state_dicts(
     ckpt_path: str,
     use_ema: bool,
@@ -165,22 +211,26 @@ def _load_ckpt_state_dicts(
     step: int,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
     """Return (enc_sd, dec_sd) from either the online combined ckpt or the
-    EMA-shadow split ckpts at `step`.
+    EMA shadow split ckpts at `step`.
 
-    Online ckpt schema (per coart.vae.train.save_ckpt): a single .pt with
+    Online ckpt schema (per `coart.vae.train.save_ckpt`): a single .pt with
     keys {"encoder", "decoder", "optimizer", ...}; encoder/decoder are full
     state_dicts.
-    EMA schema: separate `ema_<rate>_enc_step<STEP>.pt` /
-    `ema_<rate>_dec_step<STEP>.pt`, each is the encoder/decoder state_dict
-    directly (no nesting).
+    EMA schema (per `coart.common.ema.EMAModel.state_dict`): separate
+    `ema_<rate>_{enc,dec}_step<STEP>.pt`, each `{"decay": float, "shadow":
+    [tensor, ...]}` where shadow matches `model.parameters()` order. We
+    build a fresh model via `_build_models_from_cfg`, overlay shadow onto
+    its parameters, and return the resulting state_dict.
     """
     if use_ema:
-        ema_enc = os.path.join(ckpt_dir, f"ema_0.9999_enc_step{step:07d}.pt")
-        ema_dec = os.path.join(ckpt_dir, f"ema_0.9999_dec_step{step:07d}.pt")
-        return (
-            torch.load(ema_enc, map_location="cpu", weights_only=True),
-            torch.load(ema_dec, map_location="cpu", weights_only=True),
-        )
+        ema_enc_path = os.path.join(ckpt_dir, f"ema_0.9999_enc_step{step:07d}.pt")
+        ema_dec_path = os.path.join(ckpt_dir, f"ema_0.9999_dec_step{step:07d}.pt")
+        ema_enc_blob = torch.load(ema_enc_path, map_location="cpu", weights_only=True)
+        ema_dec_blob = torch.load(ema_dec_path, map_location="cpu", weights_only=True)
+        enc, dec = _build_models_from_cfg(ckpt_dir)
+        _overlay_ema_shadow(enc, ema_enc_blob)
+        _overlay_ema_shadow(dec, ema_dec_blob)
+        return enc.state_dict(), dec.state_dict()
     blob = torch.load(
         os.path.join(ckpt_dir, f"ckpt_step{step:07d}.pt"),
         map_location="cpu",
