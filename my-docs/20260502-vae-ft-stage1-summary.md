@@ -336,9 +336,26 @@ Pattern (consistent across all 8 assets):
 - **However**, none of these per-block losses revealed the dead-p2 / topology-blind-ef problems — they require *causal* probing (zero / oracle ablation) and *conditional* statistics (conditional MSE on ef ≠ 0).
 - **Implication**: continue per-block logging in Stage-2; **add periodic in-loop eval of conditional MSE** (cheap) and **periodic head-ablation deep-eval** (run our diagnostic CLI at every i_save × 5 cadence).
 
-### L6. Infrastructure is solid
-- Resume / atomic save / EMA + online-split rolling ckpts / wandb auto-resume / bucket sampler / max_voxels cap all worked as designed across multiple session restarts. No data loss, no divergent runs (after the date-drift bug fixed earlier on the branch), no OOMs.
-- Same diagnostic methodology and 8-GPU launcher will transfer to Stage-2 unchanged.
+### L6. Infrastructure is solid (after fighting 5 critical bugs early on)
+- **Final state**: resume / atomic save / EMA + online-split rolling ckpts / wandb auto-resume / bucket sampler / max_voxels cap all work across multiple session restarts. No data loss, no divergent runs (after the date-drift bug fixed earlier on the branch), no OOMs.
+- **Path to here**: 5 production-blocking bugs were navigated during launch (April 2026). Each cost hours-to-days of debug time and the *fixes* are non-obvious; they should NOT be re-derived in Stage-2. Full DDP / collective config preserved in **Appendix A**; the bug summary table is below for posterity.
+
+| # | Symptom | Root cause | Fix commit | Lesson |
+|---|---|---|---|---|
+| 1 | resume "optimizer param-group size mismatch" | base mode saved with all params unfrozen; resume rebuilt optim while still frozen | `db437ad` | resume must peek `misc_step*.pt` to recover trainable state before optim init |
+| 2 | NCCL ALLREDUCE timeout (SeqNum=224, NumelIn=18 vs 34962) | `logger.flush_if_due` called all-reduce only on rank-0; other ranks early-exit → shape-mismatched collectives forever | `ecf30e2` | every collective op must run on every rank; logger went rank-0-local |
+| 3 | step 5342 epoch-boundary silent deadlock (all ranks stuck in `loss.backward()`) | DDP `find_unused_parameters=False` + `output_layer.ef_head` referenced multiple times in forward (final feats + subdivision head share path) → reducer marks param-ready twice → undefined behavior | `a86d9e9` (after `dc85c6f`, `10ced5b`) | sparse conv + multi-use param requires **`static_graph=True`**. `find_unused=True` raises clear error; `find_unused=False` deadlocks silently. Neither is acceptable without `static_graph`. |
+| 4 | step-time wildly unstable under `bucket_sort_mode=shuffle` (0.5s ↔ 150s); triton autotune 60–70 % CPU long-tail | voxel count jumps across steps → triton recompiles new shapes constantly | `--bucket_sort_mode ascending` CLI | sampler.py docstring already noted: ascending is JIT-friendly; default was wrong |
+| 5 | NCCL default 10-min timeout too tight for cold JIT / large-asset forward | inherent | `10ced5b` (1h timeout) | multi-rank cold JIT can take 15–50 min; default timeout misclassifies as fault |
+
+The working DDP construction:
+```python
+DDP(model, device_ids=[local_rank], output_device=local_rank,
+    bucket_cap_mb=128, find_unused_parameters=False, static_graph=True,
+    gradient_as_bucket_view=True, broadcast_buffers=False)
+dist.init_process_group("nccl", timeout=timedelta(hours=1))
+```
+- Same diagnostic methodology and 8-GPU launcher transfer to Stage-2 unchanged.
 
 ### L7. 8-GPU sharded analysis is fast
 - Smoke (n_val=8): ~30 min wall (rank 0 stuck on helmet's mesh ablation).
@@ -350,6 +367,19 @@ Pattern (consistent across all 8 assets):
 ## 8. Stage-2 action guide
 
 Numbered for cross-reference. Each item lists the *change*, *why* (linked to a Stage-1 lesson), *expected effect*, and *risk*.
+
+### 8.0 — Hard constraints from downstream DiT (must NOT break)
+
+The Stage-1 VAE is the input to a downstream DiT finetune. Stage-2 changes must preserve the API contract so the DiT does not have to retrain from scratch:
+
+| Invariant | Why | Stage-2 implication |
+|---|---|---|
+| `latent_channels = 32` | DiT's bottleneck dimension is fixed | do not change |
+| `μ / σ` distribution near `N(0, I)` | DiT was conditioned to expect this prior | tighten KL (8.4) is *good*; don't introduce schemes that re-shape the latent (e.g. flow priors) |
+| Decoder output 18-ch `[p1(3), p2(3), edge(6), face(6)]` | downstream `feature_to_mesh` expects this layout | **if 8.1 drops p2 → 15-ch output requires an upstream `corep_fast` change too**; treat as coordinated upgrade, not a Stage-2-internal-only change |
+| EMA decoder is the published artifact | DiT ingests the EMA, not the online ckpt | `--use_ema --ema_rate 0.9999` stays |
+
+**Stage-2 architectural changes (8.1) that touch the 18-ch interface require a coordinated `corep_fast` schema bump and a downstream DiT migration plan.** Do not ship a 15-ch decoder until the DiT side is ready.
 
 ### 8.1 — Decide p2 fate: **drop it** (recommended)
 - **Why** L1: p2 is dead weight; 97.79 % of cubes never use it.
@@ -521,3 +551,121 @@ coart/tests/
 | Date | Change |
 |---|---|
 | 2026-05-02 | Initial draft — Stage-1 retrospective + Stage-2 action guide. Author: siyuan + Claude (vae-finetune branch, post step-155k analysis). |
+| 2026-05-02 | Merged content from archived `20260423-coart-vae-finetune-full-summary.md`: added §8.0 DiT API invariants, §L6 expanded with 5-bug history, Appendix A DDP config, Appendix B `coart/` module tree, Appendix C operational pitfalls. |
+
+---
+
+## Appendix A — Stage-1 final DDP / collective configuration
+
+The DDP construction below is the result of debugging the 5 bugs in §L6. Stage-2 should reuse this verbatim unless there is a specific reason to deviate.
+
+```python
+# coart/common/dist_utils.py
+from datetime import timedelta
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+dist.init_process_group(
+    "nccl",
+    timeout=timedelta(hours=1),  # default 10 min misclassifies cold JIT as fault
+)
+
+model = DDP(
+    model,
+    device_ids=[local_rank],
+    output_device=local_rank,
+    bucket_cap_mb=128,                  # grad bucket coalescing size
+    find_unused_parameters=False,       # required: every param must be used every step
+    static_graph=True,                  # required: ef_head is referenced multiple times
+                                        # in forward (final feats + subdivision head)
+    gradient_as_bucket_view=True,       # zero-copy bucket
+    broadcast_buffers=False,            # model has no BN running stats
+)
+```
+
+Mandatory cooperating settings:
+- `--bucket_sort_mode ascending` (CLI flag): voxel count monotonically increases per epoch → triton autotune compiles each shape once. `shuffle` mode caused step-time variance 0.5s ↔ 150s (bug #4).
+- Logger may NOT call collective ops (all_reduce / all_gather) inside its rank-0 buffer-flush path — use rank-0-local writes (bug #2 fix).
+- Resume must peek `misc_step*.pt` to restore trainable-param mask before constructing the optimizer (bug #1 fix).
+
+Cold-JIT timing for first launch on 8 ranks: **15–50 min** (each rank runs independent triton autotune; NFS triton cache partially shared via `coart/__init__.py:TRITON_CACHE_DIR`). **Do not kill a stalled-looking launcher in the first hour.** Use `py-spy dump --pid <PID>` to distinguish triton-autotune-loop from genuine NCCL deadlock (bug #5 fix raised the fault threshold to 1 h, but py-spy is still useful for diagnosis).
+
+---
+
+## Appendix B — `coart/` module map (orientation for new contributors)
+
+The Stage-1 code is organised task-first (`vae/`, `dit/`, `eval/` are sibling tasks; shared infra in `common/` and `data/`). This is intentional so the Stage-2 changes (which are mostly in `vae/`) do not touch shared modules.
+
+```
+coart/
+├── __init__.py                 # sets TRITON_CACHE_DIR=<repo>/.cache/triton (NFS-shared)
+├── README.md                   # module-level Chinese docs
+├── common/
+│   ├── flex_gemm_patch.py      # SubMConv3dFunction.backward fix for frozen weights
+│   ├── dist_utils.py           # init_dist (1h timeout), unwrap, wrap_ddp (static_graph=True)
+│   ├── ema.py                  # EMAModel shadow params + state_dict {decay, shadow}
+│   ├── checkpoint.py           # atomic_save + rolling-K per-prefix
+│   └── logging.py              # CoartTBLogger (rank-0-only, wandb+TB+image+object3d+alert)
+├── data/
+│   ├── feat18_dataset.py       # Feat18Dataset (sha-hash val split, max_voxels cap, dict return)
+│   ├── stats.py                # normalize/denormalize + load_stats
+│   └── samplers.py             # BucketedDistributedSampler (ascending mode mandatory)
+├── vae/
+│   ├── io_stems.py             # Feat18EncIO / Feat18DecIO three-branch
+│   ├── build.py                # build_models + load_pretrained_into + warm-start
+│   ├── config.py               # @dataclass VaeTrainConfig + argparse + output-dir resolver
+│   ├── loss.py                 # compute_vae_loss (no render; per-block recon)
+│   ├── sampling.py             # dump_samples (eval-time mesh export)
+│   ├── train.py                # main loop (base/resume mode, unfreeze schedule, deep-eval hook, watchdog)
+│   └── __main__.py             # CLI entry: python -m coart.vae
+├── eval/
+│   ├── golden_assets.json      # 8-asset static manifest
+│   ├── golden_baseline.json    # Layer V baseline (helmet / triple_sphere EXP-5 hardcoded)
+│   ├── normalization.py        # corep_to_exp5_vertices, normalize_mesh_exp5_inplace
+│   ├── metrics.py              # wraps scripts/eval/{eval_metrics, ovoxel_repr_test}
+│   ├── deep_eval.py            # run_deep_eval() — encoder→decoder→feature_to_mesh→metrics
+│   └── watchdog.py             # 3 alert conditions (grad_spike / ef_diverge / helmet_bad)
+├── analysis/                   # ADDED in this analysis (Stage-1 retrospective tooling)
+│   ├── weight_drift.py
+│   ├── activation_stats.py
+│   ├── head_ablation.py
+│   └── report.py
+├── dit/                        # placeholder for downstream DiT
+└── tests/
+    ├── test_build_warmstart.py / test_io_stems.py / test_loss.py / test_ema.py / ... (53 tests)
+    └── test_analysis_*.py      (26 analysis tests)
+
+scripts/
+├── launch_coart.sh                    # production launcher (sources .coart.env, exec torchrun)
+├── coart_analyze_finetune.py          # diagnostic CLI (this analysis)
+├── run_analyze_finetune_8gpu.sh       # 8-GPU sharded launcher (this analysis)
+├── coart_ema_eval.py                  # one-off EMA deep-eval
+├── coart_build_golden.py              # build/refresh golden_assets NPZs
+└── coart_renormalize_golden.py        # bring legacy NPZs to exp5 schema
+```
+
+---
+
+## Appendix C — Stage-1 operational pitfalls (battle-tested)
+
+These are not bugs — they are environmental gotchas that cost time during Stage-1 launch and will likely recur in Stage-2 if not anticipated.
+
+1. **8-GPU DDP cold-JIT is 15–50 min on first launch.** Each rank runs independent triton autotune; the NFS cache (`<repo>/.cache/triton`) helps after the first run but the very first launch is slow. **Do not kill the launcher** in the first hour even if logs appear frozen.
+
+2. **`nvidia-smi` 100 % util + 0 % mem util** can mean either NCCL-blocking-on-collective *or* a triton-autotune busy loop. Distinguish via `py-spy dump --pid <PID>` (needs sudo); if you see `pyfunctorch` / `triton.runtime` frames it is autotune; if `_C.NCCL_*` frames it is a collective deadlock (debug bug #2 / #3 territory).
+
+3. **`~/.netrc` is per-node-local.** wandb auth needs `~/.netrc` (or `WANDB_API_KEY` env) on *every* training node. Multi-node runs require either symlinking via NFS or env-var injection in `launch_coart.sh`.
+
+4. **`WANDB_MODE=offline` still validates the API key on first init.** Setting only `WANDB_MODE=offline` without prior `wandb login` raises during `wandb.init()`. Either run `wandb login` once on each node or set `WANDB_API_KEY` in the launcher env.
+
+5. **Sparse-conv + DDP MUST use `static_graph=True`.** `output_layer.ef_head` is referenced twice in forward (final feats + subdivision head share path). With `find_unused_parameters=False` this silently deadlocks at the next epoch boundary; with `find_unused_parameters=True` this raises "marked ready twice". Only `static_graph=True` makes it work. See bug #3 in §L6.
+
+6. **bf16 autocast is fine for forward, but loss / KL must be fp32.** `compute_vae_loss` calls `.float()` on inputs internally — Stage-2 should preserve this pattern.
+
+7. **`max_voxels=500000` is a guard, not a typical value.** Single-asset peak voxels is ~499 885 (helmet); typical is 75k–250k. Lowering this for a "smaller batch" experiment risks dropping helmet-class assets entirely from training, which will degrade the deep-eval helmet score.
+
+8. **`bs=1` is intentional and not casually upgradable.** bs=2 forces `max_voxels` down to ~250k and *would* drop the heaviest assets; gradient-accumulation gives effective bs=N at 1/N the step-rate but sparse-conv VAE has no measurable bs benefit over bs=1×8-rank DDP (verified empirically in Stage-1 early experiments).
+
+9. **The helmet asset dominates wall-time on every eval / ablation pass.** Its predicted mesh has ~600k components — `feature_to_mesh` and `compute_topo_metrics` are slow on this scale. Stage-1's 8-GPU sharded analysis took ~30 min wall, ~25 min of which was rank-0's helmet ablation. If wall-time matters, distribute assets by `n_voxels`-balanced bin-packing instead of round-robin.
+
+10. **Atomic ckpt save (`tmp → rename`) is not optional.** Stage-1 saw multiple session preemptions; the rolling-K (3 online, 1 EMA) plus atomic save ensured no run was ever lost. Stage-2 reuses the same `coart/common/checkpoint.py`.
