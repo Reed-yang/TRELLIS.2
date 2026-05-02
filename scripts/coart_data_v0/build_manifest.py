@@ -26,12 +26,20 @@ def _check_render(renders_dir: str, sha: str) -> tuple[bool, int]:
 
 
 def _check_dino(dino_dir: str, sha: str) -> bool:
+    """Existence + lightweight integrity check.
+
+    Avoid decompressing the (large) ``features`` array. Prior version called
+    ``z['features'].shape`` which forces a full decompression of the 16x1029x1024
+    fp16 tensor (~33MB). At 10K assets that's ~340GB of NFS read and runs for
+    many minutes. ``n_tokens`` is a 0-d int32 scalar — cheap to decompress and
+    its presence with value > 0 confirms the npz was written successfully.
+    """
     p = os.path.join(dino_dir, f"{sha}.npz")
     if not os.path.isfile(p):
         return False
     try:
         with np.load(p) as z:
-            return z["features"].shape[0] == 16
+            return int(z["n_tokens"]) > 0
     except (KeyError, ValueError, OSError):
         return False
 
