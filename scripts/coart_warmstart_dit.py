@@ -66,8 +66,19 @@ def run(config_path: str, out_dir: str, src_safetensors: str) -> None:
     # Model state_dict; the trainer loads via model.load_state_dict(...) so we
     # save the raw state_dict (no wrapping).
     denoiser_path = os.path.join(ckpt_dir, "denoiser_step0000000.pt")
-    torch.save(denoiser.state_dict(), denoiser_path)
+    state_dict = denoiser.state_dict()
+    torch.save(state_dict, denoiser_path)
     print(f"[warmstart] wrote {denoiser_path} ({os.path.getsize(denoiser_path)/1e6:.1f}MB)")
+
+    # Also save EMA copies of the denoiser at each ema_rate the trainer config
+    # declares — trellis2/trainers/basic.py:339 loads
+    # `<name>_ema<rate>_step<step:07d>.pt` for each rate. At warmstart there's
+    # no real EMA history, so we initialise EMA = online weights (decay=0).
+    ema_rates = cfg["trainer"]["args"].get("ema_rate", [])
+    for r in ema_rates:
+        ema_path = os.path.join(ckpt_dir, f"denoiser_ema{r}_step0000000.pt")
+        torch.save(state_dict, ema_path)
+        print(f"[warmstart] wrote {ema_path} ({os.path.getsize(ema_path)/1e6:.1f}MB)")
 
     # Misc stub: only the keys read by trellis2/trainers/basic.py:344-358.
     # `optimizer` and `data_sampler` must be valid state_dicts (load_state_dict
@@ -88,8 +99,25 @@ def run(config_path: str, out_dir: str, src_safetensors: str) -> None:
     misc = {
         "step": 0,
         "optimizer": fresh_optim.state_dict(),  # well-formed empty state
-        "data_sampler": {},                     # tolerated by BalancedResumableSampler
+        # BalancedResumableSampler.load_state_dict expects {epoch, idx} per
+        # trellis2/utils/data_utils.py:151-153.
+        "data_sampler": {"epoch": 0, "idx": 0},
     }
+    # Conditional state dicts the trainer's load() expects only when configured.
+    trainer_args = cfg["trainer"]["args"]
+    if "elastic" in trainer_args:
+        # LinearMemoryController.load_state_dict expects {'params': (k, b)}.
+        # Empty (0, 0) means "no calibration yet" — controller will recalibrate
+        # on the first step.
+        misc["elastic_controller"] = {"params": (0.0, 0.0)}
+    if "grad_clip" in trainer_args:
+        # AdaptiveGradClipper.load_state_dict expects 4 keys; init empty buffer.
+        misc["grad_clip"] = {
+            "grad_norm": 0.0,
+            "max_norm": float(trainer_args["grad_clip"]["args"].get("max_norm", 1.0)),
+            "buffer_ptr": 0,
+            "buffer_length": 0,
+        }
     misc_path = os.path.join(ckpt_dir, "misc_step0000000.pt")
     torch.save(misc, misc_path)
     print(f"[warmstart] wrote {misc_path} ({os.path.getsize(misc_path)/1e3:.1f}KB)")

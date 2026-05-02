@@ -117,16 +117,20 @@ class CachedImageConditionedSLatShape(Dataset):
             self.std = None
 
         self.instances: List[Tuple[str, str]] = []  # (root, sha)
+        # Per-instance token count (for BalancedResumableSampler load balancing).
+        # Mirrors trellis2.datasets.structured_latent.SLat.loads protocol.
+        self.loads: List[int] = []
         self._stats: Dict[str, Dict[str, int]] = {}
         for root in self.roots:
             stats: Dict[str, int] = {}
-            shas = self._enumerate_root(root, stats)
+            shas, loads = self._enumerate_root(root, stats)
             self._stats[os.path.basename(root.rstrip("/"))] = stats
             self.instances.extend((root, sha) for sha in shas)
+            self.loads.extend(loads)
 
     # ------------------------------------------------------------------ enumeration
 
-    def _enumerate_root(self, root: str, stats: Dict[str, int]) -> List[str]:
+    def _enumerate_root(self, root: str, stats: Dict[str, int]) -> Tuple[List[str], List[int]]:
         """Filesystem-driven eligibility: keep sha with both DINO and SLat caches.
 
         Aesthetic filtering uses ``instances_csv`` if present; otherwise we just
@@ -152,6 +156,7 @@ class CachedImageConditionedSLatShape(Dataset):
         slat_root = os.path.join(root, self.slat_dir)
 
         kept: List[str] = []
+        kept_loads: List[int] = []
         n_token_drop = 0
         for sha in candidate_shas:
             dino_p = os.path.join(dino_root, f"{sha}.npz")
@@ -169,10 +174,11 @@ class CachedImageConditionedSLatShape(Dataset):
                 n_token_drop += 1
                 continue
             kept.append(sha)
+            kept_loads.append(n_tokens)
 
         stats["Has dino + slat caches"] = len(kept) + n_token_drop
         stats[f"latent tokens <= {self.max_tokens}"] = len(kept)
-        return kept
+        return kept, kept_loads
 
     # ------------------------------------------------------------------ accessors
 
