@@ -24,6 +24,10 @@ from __future__ import annotations
 from . import dataset as _dataset  # noqa: F401
 from . import trainer as _trainer  # noqa: F401
 
+# Optional flash_attn-fused RoPE backward (gated by env COART_FUSE_ROPE=1).
+# No-op when the env is unset, so safe to always import.
+from . import fused_rope_patch as _rope_patch  # noqa: F401
+
 from .config import (
     COART_DIT_DATA_ROOT,
     DEFAULT_VAE_TAG,
