@@ -88,20 +88,36 @@ def _build_tldr_table(
         # Causal label.
         good = ablation_df[~ablation_df["skipped"].astype(bool)]
         kind = "ef" if head == "ef_head" else "p2"
-        if good.empty or "cd" not in good.columns:
+        if ablation_df.empty or "condition" not in ablation_df.columns:
             causal_label = "n/a"
         else:
-            full = good[good["condition"] == "full"]["cd"].mean()
-            zero_h = good[good["condition"] == f"zero_{kind}"]["cd"].mean()
-            oracle_h = good[good["condition"] == f"oracle_{kind}"]["cd"].mean()
-            if pd.isna(full) or pd.isna(zero_h) or pd.isna(oracle_h) or full == 0:
+            zero_rows = ablation_df[ablation_df["condition"] == f"zero_{kind}"]
+            zero_skipped_empty = zero_rows[
+                zero_rows["skipped"].astype(bool)
+                & (zero_rows.get("reason", "").astype(str) == "mesh_empty")
+            ] if not zero_rows.empty else zero_rows
+            if (
+                not zero_rows.empty
+                and len(zero_skipped_empty) == len(zero_rows)
+            ):
+                # zero_<head> produced empty mesh on every asset -> the head
+                # is essential for mesh extraction (the strongest possible
+                # "alive" signal a causal probe can give).
+                causal_label = "alive"
+            elif good.empty or "cd" not in good.columns:
                 causal_label = "n/a"
             else:
-                from coart.analysis.head_ablation import label_head_status
-                causal_label = label_head_status(
-                    delta_zero=(zero_h - full) / full,
-                    delta_oracle=(oracle_h - full) / full,
-                )
+                full = good[good["condition"] == "full"]["cd"].mean()
+                zero_h = good[good["condition"] == f"zero_{kind}"]["cd"].mean()
+                oracle_h = good[good["condition"] == f"oracle_{kind}"]["cd"].mean()
+                if pd.isna(full) or pd.isna(zero_h) or pd.isna(oracle_h) or full == 0:
+                    causal_label = "n/a"
+                else:
+                    from coart.analysis.head_ablation import label_head_status
+                    causal_label = label_head_status(
+                        delta_zero=(zero_h - full) / full,
+                        delta_oracle=(oracle_h - full) / full,
+                    )
         valid = [l for l in (drift_label, func_label, causal_label) if l != "n/a"]
         combined = derive_combined_label(valid) if valid else "n/a"
         lines.append(
