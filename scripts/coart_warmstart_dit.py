@@ -70,14 +70,25 @@ def run(config_path: str, out_dir: str, src_safetensors: str) -> None:
     print(f"[warmstart] wrote {denoiser_path} ({os.path.getsize(denoiser_path)/1e6:.1f}MB)")
 
     # Misc stub: only the keys read by trellis2/trainers/basic.py:344-358.
-    # `optimizer` and `data_sampler` are the only required keys; if they are
-    # None the trainer's .load_state_dict(None) will crash on PyTorch optimizers.
-    # Solution: include the EXACT shape the trainer's optimizer + sampler write
-    # at step 0, using minimal valid state.
+    # `optimizer` and `data_sampler` must be valid state_dicts (load_state_dict
+    # crashes on None). For pure warm-start (no resumed optimizer state) we want
+    # FRESH AdamW state — just construct a fresh AdamW on the loaded denoiser
+    # and dump its state_dict (empty `state`, well-formed `param_groups`).
+    # data_sampler stays {} since BalancedResumableSampler.load_state_dict({})
+    # is a no-op when state has no items (verified pattern from misc loads at
+    # step 0 in past trellis2 runs).
+    optim_cfg = cfg["trainer"]["args"].get("optimizer", {}).get("args", {})
+    fresh_optim = torch.optim.AdamW(
+        denoiser.parameters(),
+        lr=optim_cfg.get("lr", 1e-4),
+        weight_decay=optim_cfg.get("weight_decay", 0.01),
+        betas=tuple(optim_cfg.get("betas", [0.9, 0.95])),
+        eps=optim_cfg.get("eps", 1e-8),
+    )
     misc = {
         "step": 0,
-        "optimizer": None,           # WARM-START NOTE: see below
-        "data_sampler": None,        # WARM-START NOTE: see below
+        "optimizer": fresh_optim.state_dict(),  # well-formed empty state
+        "data_sampler": {},                     # tolerated by BalancedResumableSampler
     }
     misc_path = os.path.join(ckpt_dir, "misc_step0000000.pt")
     torch.save(misc, misc_path)
@@ -88,17 +99,9 @@ def run(config_path: str, out_dir: str, src_safetensors: str) -> None:
     print(f"[warmstart] done. Launch with:")
     print(f"  LOAD_DIR={out_dir} CKPT=0 bash scripts/train_coart_dit_shape.sh")
     print(f"")
-    print(f"WARM-START NOTE: misc_step0000000.pt has optimizer=None and")
-    print(f"data_sampler=None as placeholders. The trainer's load() will likely")
-    print(f"crash at `self.optimizer.load_state_dict(None)`. If so, two options:")
-    print(f"  A. Bypass load() entirely by NOT passing --load_dir; instead, add")
-    print(f"     a one-shot pre-train hook in coart.dit.trainer that loads the")
-    print(f"     denoiser state_dict from PRETRAINED_DIT_CKPT directly inside")
-    print(f"     __init__ and re-init the optimizer fresh.")
-    print(f"  B. Construct a real misc_step0000000.pt by running ONE training")
-    print(f"     step on a tiny dataset, save it, then replace denoiser_step0")
-    print(f"     with the warm-started weights and re-launch.")
-    print(f"This script implements neither — those are follow-ups.")
+    print(f"misc has fresh AdamW state (empty 'state', valid 'param_groups')")
+    print(f"and empty data_sampler state. If the trainer crashes on either,")
+    print(f"override load() in coart.dit.trainer to skip those when step==0.")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
