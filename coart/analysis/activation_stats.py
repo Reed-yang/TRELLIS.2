@@ -167,8 +167,15 @@ def run_val_forward_pass(
     n_items: int,
     device: torch.device,
     seed: int = 0,
+    indices=None,
 ) -> Dict[str, object]:
     """Forward N val items in fp32 with hooks; return raw captures.
+
+    Args:
+        indices: optional explicit list/array of dataset indices to forward.
+            If None, generates `rng.permutation(len(val_dataset))[:n_items]`.
+            Used by multi-rank sharding to give each rank a deterministic
+            disjoint slice.
 
     Returns dict with: pred_norm (Tensor (Σ N_i, 18)), target_norm (Tensor),
     p1_contrib, p2_contrib, ef_contrib (each (Σ N_i, c_model)),
@@ -188,8 +195,9 @@ def run_val_forward_pass(
     enc_tap = _EncIOTap(enc_io)
     dec_tap = _DecIOTap(dec_io)
 
-    rng = np.random.default_rng(seed)
-    indices = rng.permutation(len(val_dataset))[:n_items]
+    if indices is None:
+        rng = np.random.default_rng(seed)
+        indices = rng.permutation(len(val_dataset))[:n_items]
 
     pred_chunks: List[torch.Tensor] = []
     target_chunks: List[torch.Tensor] = []
