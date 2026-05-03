@@ -74,6 +74,14 @@ def init_after_super(trainer, **kwargs):
         fully_shard(blk, mp_policy=mp, reshard_after_forward=reshard)
     fully_shard(inner, mp_policy=mp, reshard_after_forward=reshard)
 
+    # W4: schedule fwd/bwd prefetch so per-block reduce_scatter overlaps with
+    # adjacent block compute. W3 trace showed comm_hidden_ratio = 0.286 without
+    # these hints — adding them should restore overlap to 0.7-0.9 range.
+    for i in range(len(inner.blocks) - 1):
+        inner.blocks[i].set_modules_to_forward_prefetch([inner.blocks[i + 1]])
+    for i in range(1, len(inner.blocks)):
+        inner.blocks[i].set_modules_to_backward_prefetch([inner.blocks[i - 1]])
+
     # Replace training_models["denoiser"] with the FSDP2-wrapped inner module
     # (no DDP wrap). Upstream BasicTrainer.init_models_and_more already DDP-wrapped
     # it; we drop that wrap and use FSDP2 instead.
