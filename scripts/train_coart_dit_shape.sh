@@ -37,6 +37,9 @@ NPROC="${NPROC:-8}"
 AUTO_RETRY="${AUTO_RETRY:-3}"
 PY="${PY:-${REPO_ROOT}/.venv/bin/python}"
 
+# NFS triton cache races on concurrent kernel writes from 8 mp.spawn workers
+# (Errno 39 ENOTEMPTY in atomic_rename). Use local FS; export a persistent
+# local path explicitly (e.g. /var/tmp/...) for cross-reboot reuse.
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/trellis2_triton_cache}"
 mkdir -p "${TRITON_CACHE_DIR}" "${OUTPUT_DIR}"
 

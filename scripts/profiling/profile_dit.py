@@ -181,7 +181,10 @@ def main():
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", str(REPO))
     env["COART_AUTO_REGISTER_DIT"] = "1"
-    env["TRITON_CACHE_DIR"] = env.get("TRITON_CACHE_DIR", "/tmp/trellis2_triton_cache")
+    # NOTE: TRITON_CACHE_DIR is NOT set here on purpose. coart/__init__.py
+    # picks a per-rank NFS subdir (avoids atomic-rename races) at worker
+    # import time. If you want to override, export TRITON_CACHE_DIR before
+    # invoking profile_dit and we'll forward it via env_pairs below.
     env["PYTHONFAULTHANDLER"] = "1"
     if args.cuda_visible_devices:
         env["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
@@ -200,9 +203,10 @@ def main():
         env_pairs = [
             ("PYTHONPATH", env["PYTHONPATH"]),
             ("COART_AUTO_REGISTER_DIT", env["COART_AUTO_REGISTER_DIT"]),
-            ("TRITON_CACHE_DIR", env["TRITON_CACHE_DIR"]),
             ("PYTHONFAULTHANDLER", env["PYTHONFAULTHANDLER"]),
         ]
+        if "TRITON_CACHE_DIR" in env:
+            env_pairs.append(("TRITON_CACHE_DIR", env["TRITON_CACHE_DIR"]))
         if args.cuda_visible_devices:
             env_pairs.append(("CUDA_VISIBLE_DEVICES", args.cuda_visible_devices))
         env_pairs.extend(extra_env)

@@ -32,6 +32,17 @@ from . import fused_rope_patch as _rope_patch  # noqa: F401
 # Eliminates the indexing_backward 55%-of-GPU-time bottleneck. No-op when unset.
 from . import fused_modulation_patch as _mod_patch  # noqa: F401
 
+# Optional eltwise fusion patch (gated by COART_FUSE_ELTWISE=1).
+# Layered on top of fused_modulation: LN bf16-native + addcmul mod/gate.
+# Targets the residual eltwise 39% (460 ms) bottleneck. No-op when unset.
+from . import eltwise_patch as _elt_patch  # noqa: F401
+
+# DEPRECATED: torch.compile path — dynamic shape × inductor partitioner ×
+# trellis2 gradient checkpointing causes min_cut_rematerialization_partition
+# to hang for 30+ min per kernel. Kept as a no-op import for tooling that
+# may still set COART_COMPILE=1; superseded by eltwise_patch (manual ops).
+from . import compile_patch as _compile_patch  # noqa: F401
+
 from .config import (
     COART_DIT_DATA_ROOT,
     DEFAULT_VAE_TAG,

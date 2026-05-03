@@ -1,0 +1,112 @@
+# Full sweep matrix — 12 cells exploring (target_ratio × batch_split × max_tokens × FA3 × BS).
+# Each cell is 30 warmup + 50 active = 80 steps.
+# Designed to identify the OOM frontier and quantify each individual lever.
+#
+# Wave 1 cells were launched manually (116/115/119 in parallel).
+# Wave 2-4 to be launched after wave 1 completes & we know which configs OOM.
+
+base_config: coart/dit/configs/coart_dit_shape_512_ft.json
+
+defaults:
+  warmup_steps: 30
+  active_steps: 50
+  num_gpus: 8
+
+runs:
+  # =================================
+  # Tier 1: SAFE / KNOWN-WORKING configs
+  # =================================
+  - name: v3_full_revert
+    # Old v3 config that ran for 1500 steps without OOM.
+    overrides:
+      dataset.args.max_tokens: 8192
+      trainer.args.batch_split: 2
+      trainer.args.elastic.args.target_ratio: 0.75
+
+  - name: v3_with_fa3
+    overrides:
+      dataset.args.max_tokens: 8192
+      trainer.args.batch_split: 2
+      trainer.args.elastic.args.target_ratio: 0.75
+    extra_env:
+      SPARSE_ATTN_BACKEND: flash_attn_3
+
+  # =================================
+  # Tier 2: Single-variable from v3
+  # =================================
+  - name: only_max6144     # v3 + max_tokens 6144 (rest unchanged)
+    overrides:
+      dataset.args.max_tokens: 6144
+      trainer.args.batch_split: 2
+      trainer.args.elastic.args.target_ratio: 0.75
+
+  - name: only_split1      # v3 + batch_split 1 (rest unchanged) — RISK: ~2x activation
+    overrides:
+      dataset.args.max_tokens: 8192
+      trainer.args.batch_split: 1
+      trainer.args.elastic.args.target_ratio: 0.75
+
+  - name: only_target082   # v3 + target_ratio 0.82 (rest unchanged)
+    overrides:
+      dataset.args.max_tokens: 8192
+      trainer.args.batch_split: 2
+      trainer.args.elastic.args.target_ratio: 0.82
+
+  # =================================
+  # Tier 3: Pair combos (intermediate frontier)
+  # =================================
+  - name: max6144_split1_target075   # v4b_safer
+    overrides:
+      dataset.args.max_tokens: 6144
+      trainer.args.batch_split: 1
+      trainer.args.elastic.args.target_ratio: 0.75
+
+  - name: max6144_split2_target082   # v4b_split2
+    overrides:
+      dataset.args.max_tokens: 6144
+      trainer.args.batch_split: 2
+      trainer.args.elastic.args.target_ratio: 0.82
+
+  # =================================
+  # Tier 4: FA3 with safe configs
+  # =================================
+  - name: max6144_split2_target082_fa3
+    overrides:
+      dataset.args.max_tokens: 6144
+      trainer.args.batch_split: 2
+      trainer.args.elastic.args.target_ratio: 0.82
+    extra_env:
+      SPARSE_ATTN_BACKEND: flash_attn_3
+
+  - name: v4b_safer_fa3
+    overrides:
+      dataset.args.max_tokens: 6144
+      trainer.args.batch_split: 1
+      trainer.args.elastic.args.target_ratio: 0.75
+    extra_env:
+      SPARSE_ATTN_BACKEND: flash_attn_3
+
+  # =================================
+  # Tier 5: Diagnostic
+  # =================================
+  - name: max4096_p95cap   # tightest cap (P95 -> ~96% of samples)
+    overrides:
+      dataset.args.max_tokens: 4096
+      trainer.args.batch_split: 1
+      trainer.args.elastic.args.target_ratio: 0.82
+
+  - name: nworkers_8       # halve dataloader workers (vs default ~12)
+    overrides:
+      dataset.args.max_tokens: 6144
+      trainer.args.batch_split: 1
+      trainer.args.elastic.args.target_ratio: 0.75
+    # Note: num_workers is set in trainer prepare_dataloader; cannot override
+    # via JSON config alone. This cell is a placeholder; needs trainer flag.
+
+  - name: alloc_expandable   # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    overrides:
+      dataset.args.max_tokens: 6144
+      trainer.args.batch_split: 1
+      trainer.args.elastic.args.target_ratio: 0.82
+    extra_env:
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"

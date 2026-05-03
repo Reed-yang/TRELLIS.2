@@ -31,6 +31,7 @@ MAX_STEPS="${MAX_STEPS:-50000}"
 MAX_VOXELS="${MAX_VOXELS:-1500000}"
 NPROC="${NPROC:-8}"
 
+# See note in train_coart_dit_shape.sh — NFS triton cache races between ranks.
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/trellis2_triton_cache}"
 mkdir -p "${TRITON_CACHE_DIR}" "${OUTPUT_DIR}"
 

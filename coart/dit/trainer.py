@@ -58,8 +58,16 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
         eval_n: int = 64,
         ckpt_keep_last_n: int = 5,
         ckpt_milestone_every: int = 20000,
+        # Override upstream BasicTrainer's hardcoded num_workers (=cpu/gpus = 16/rank).
+        # 16x8=128 spawn-method dataloader children re-import trellis2 over NFS,
+        # causing 10+ min spawn cascade hang. 4/rank is plenty for cached .npz IO.
+        num_workers: Optional[int] = None,
         **kwargs,
     ):
+        # Set BEFORE super().__init__ — BasicTrainer.__init__ calls our
+        # prepare_dataloader override, which reads _num_workers_override.
+        self._num_workers_override = num_workers
+
         # Forward a dummy image_cond_model dict to satisfy the base mixin's
         # __init__ signature. The dict is never read because we override
         # ``_init_image_cond_model`` and ``encode_image`` below.
@@ -137,6 +145,36 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
     def snapshot(self, suffix=None, num_samples=64, batch_size=4, verbose=False):
         """No-op: SparseTensor sample output has no .contiguous()."""
         pass
+
+    # --------------------------------------------------------- dataloader override
+    def prepare_dataloader(self, **kwargs):
+        """Override upstream basic.py:271 to make num_workers configurable.
+        Upstream hardcodes ``ceil(cpu_count / device_count) = 16/rank`` which
+        × 8 ranks = 128 spawn-method dataloader children. Each re-imports
+        trellis2 + coart.dit over NFS, causing 10+ min spawn cascade hangs.
+        For our cached .npz IO, num_workers=4/rank is plenty.
+        Honors ``trainer.args.num_workers`` from JSON config; falls back to
+        the upstream formula if unset."""
+        from trellis2.utils.data_utils import ResumableSampler, cycle as _cycle
+        from torch.utils.data import DataLoader as _DataLoader
+        nw = self._num_workers_override
+        if nw is None:
+            import os as _os
+            import torch as _torch
+            import numpy as _np
+            nw = int(_np.ceil(_os.cpu_count() / max(_torch.cuda.device_count(), 1)))
+        self.data_sampler = ResumableSampler(self.dataset, shuffle=True)
+        self.dataloader = _DataLoader(
+            self.dataset,
+            batch_size=self.batch_size_per_gpu,
+            num_workers=nw,
+            pin_memory=True,
+            drop_last=True,
+            persistent_workers=(nw > 0),
+            collate_fn=getattr(self.dataset, "collate_fn", None),
+            sampler=self.data_sampler,
+        )
+        self.data_iterator = _cycle(self.dataloader)
 
     # ---------------------------------------------------------------- profiler
     def profile(self, wait=2, warmup=3, active=5):
