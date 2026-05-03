@@ -64,11 +64,19 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
         num_workers: Optional[int] = None,
         # W2.1: parallelism dispatch — "ddp" (default) | "zro1" | "fsdp2_zero2".
         parallel_mode: str = "ddp",
+        # W2.2: optional FSDP2 sub-config; consumed by parallel/fsdp2.py.
+        # Not forwarded to super() — upstream BasicTrainer doesn't accept it.
+        fsdp2: Optional[dict] = None,
         **kwargs,
     ):
         # Set BEFORE super().__init__ — BasicTrainer.__init__ calls our
         # prepare_dataloader override, which reads _num_workers_override.
         self._num_workers_override = num_workers
+
+        # W2.2: Stash FSDP2 sub-config BEFORE super().__init__ so that
+        # init_models_and_more (called from super) can read it via
+        # trainer.fsdp2_config when dispatcher init_after_super runs.
+        self.fsdp2_config = fsdp2 or {}
 
         # NOTE on parallel_mode propagation:
         # Upstream BasicTrainer.__init__ already declares parallel_mode='ddp'
@@ -380,24 +388,117 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
         its save block, all ranks have already incremented self.step (the
         increment happens in run() between run_step return and the save
         check). Run consolidate on all ranks when the next save will trigger.
+
+        W2.2 extension: for fsdp2_zero2 mode, also (a) update EMA on every
+        rank (upstream only updates on rank 0; we want per-rank shard EMA),
+        and (b) drive the DCP collective save on all ranks here, then have
+        the rank-0 save() override skip the actual write (rotation only).
         """
-        result = super().run_step(data_list)
+        # FSDP2: suppress the rank-0-only EMA update inside upstream run_step
+        # (we drive the all-rank distributed EMA explicitly below). The flag
+        # is honored by our update_ema override.
+        if self.parallel_mode == "fsdp2_zero2":
+            self._suppress_inner_ema = True
+            try:
+                result = super().run_step(data_list)
+            finally:
+                self._suppress_inner_ema = False
+            # All ranks update their local EMA shard.
+            self.update_ema()
+        else:
+            result = super().run_step(data_list)
+
         # self.step has NOT been incremented yet at this point — run() does
         # the +=1 after run_step returns. So check (step + 1).
         if self.world_size > 1 and (self.step + 1) % self.i_save == 0:
             from .parallel import get_dispatcher
-            get_dispatcher(self.parallel_mode).consolidate_for_save(self)
+
+            dispatcher = get_dispatcher(self.parallel_mode)
+            dispatcher.consolidate_for_save(self)
+            # FSDP2: do the DCP collective save here (all ranks). The rank-0
+            # save() override is a no-op write (rotation only) in this mode.
+            if self.parallel_mode == "fsdp2_zero2":
+                from .parallel.fsdp2 import save_state
+
+                next_step = self.step + 1
+                path = os.path.join(
+                    self.output_dir, "ckpts", f"denoiser_step{next_step:07d}.pt"
+                )
+                save_state(self, path)
         return result
+
+    # ---------------------------------------------------------------- update_ema
+    def update_ema(self):
+        """Dispatch EMA update.
+
+        DDP / ZRO: upstream rank-0-only EMA on `master_params`/`ema_params`.
+        FSDP2:     per-rank distributed EMA on local DTensor shards.
+
+        For FSDP2 the rank-0-only EMA call inside upstream run_step is
+        suppressed via `_suppress_inner_ema`; the explicit per-rank update
+        is driven from our run_step override after super() returns.
+        """
+        if getattr(self, "_suppress_inner_ema", False):
+            return
+        if self.parallel_mode == "fsdp2_zero2":
+            from .parallel.fsdp2 import update_ema as _fsdp_update_ema
+
+            _fsdp_update_ema(self)
+            return
+        super().update_ema()
+
+    # ---------------------------------------------------------------- check_ddp
+    def check_ddp(self):
+        """Skip consistency check for FSDP2 — params are sharded DTensors and
+        all_gather on master_params would not be meaningful."""
+        if self.parallel_mode == "fsdp2_zero2":
+            return
+        return super().check_ddp()
 
     # ---------------------------------------------------------------- save
     def save(self, non_blocking=True):
         """Delegate to base then rotate. consolidate_for_save runs from
         run_step on all ranks (see run_step docstring) — save() runs only
         on rank 0 per upstream's `if self.is_master:` gate at basic.py:860.
+
+        For fsdp2_zero2: the actual DCP write happened in run_step on all
+        ranks; here on rank 0 we only rotate the on-disk ckpt set.
         """
+        if self.parallel_mode == "fsdp2_zero2":
+            if self.is_master:
+                self._rotate_ckpts()
+            return
         super().save(non_blocking=non_blocking)
         if self.is_master:
             self._rotate_ckpts()
+
+    # ---------------------------------------------------------------- load
+    def load(self, load_dir, step=0):
+        """For fsdp2_zero2 use the DCP path; otherwise upstream tensor load."""
+        if self.parallel_mode == "fsdp2_zero2":
+            from .parallel.fsdp2 import load_state
+
+            path = os.path.join(load_dir, "ckpts", f"denoiser_step{step:07d}.pt")
+            load_state(self, path)
+            self.step = step
+            return
+        return super().load(load_dir, step=step)
+
+    # -------------------------------------------------------- finetune_from
+    def finetune_from(self, finetune_ckpt):
+        """For fsdp2_zero2 dispatch to DCP load (broadcast_from_rank0 handles
+        the DDP→FSDP2 reshard automatically). Otherwise upstream behavior."""
+        if self.parallel_mode == "fsdp2_zero2":
+            from .parallel.fsdp2 import load_state
+
+            path = (
+                finetune_ckpt["denoiser"]
+                if isinstance(finetune_ckpt, dict)
+                else finetune_ckpt
+            )
+            load_state(self, path)
+            return
+        return super().finetune_from(finetune_ckpt)
 
     def _rotate_ckpts(self):
         """Keep: last N steps + every milestone step + step 0 warmstart."""

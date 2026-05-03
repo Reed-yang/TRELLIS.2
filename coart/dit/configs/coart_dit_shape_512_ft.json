@@ -100,7 +100,12 @@
                 "args": {}
             },
             "sigma_min": 1e-5,
-            "parallel_mode": "ddp"
+            "parallel_mode": "ddp",
+            "fsdp2": {
+                "param_dtype": "bfloat16",
+                "reduce_dtype": "float32",
+                "reshard_after_forward": false
+            }
         }
     }
 }
