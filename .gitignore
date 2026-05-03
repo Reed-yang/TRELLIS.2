@@ -224,6 +224,12 @@ project
 tmp
 docs
 
+# logs/: track only markdown findings/decisions/progress notes; ignore
+# transient slurm/profile/dispatcher .out + .log artifacts.
+logs/*
+!logs/*.md
+!logs/.gitkeep
+
 # CoReP-Fast profiling outputs (large JSON, session-local)
 profiling/runs/
 
