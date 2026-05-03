@@ -1,0 +1,28 @@
+{
+  "trace_path": "results/profile_dit_runs/chrome_trace_fused_mod_231103/profile/host-10-240-99-116_3950290.1777763671472563300.pt.trace.json",
+  "n_steps": 5,
+  "wall_us": 7053302.236816406,
+  "compute_stream_busy_us": 5683688.755371094,
+  "comm_stream_busy_us": 274949.56103515625,
+  "comm_hidden_ratio": 0.9610183213757677,
+  "buckets_us": {
+    "eltwise": 2302336.363999992,
+    "memcpy": 37223.71799999994,
+    "other": 663929.0070000123,
+    "reduce": 393368.8089999996,
+    "gemm": 1094681.3640000015,
+    "layernorm": 137701.15900000022,
+    "flash_attn": 1054448.7229999998,
+    "nccl": 274949.561
+  },
+  "buckets_ms_per_step": {
+    "eltwise": 460.4672727999984,
+    "memcpy": 7.444743599999988,
+    "other": 132.78580140000247,
+    "reduce": 78.67376179999992,
+    "gemm": 218.93627280000027,
+    "layernorm": 27.540231800000043,
+    "flash_attn": 210.88974459999994,
+    "nccl": 54.98991219999999
+  }
+}
