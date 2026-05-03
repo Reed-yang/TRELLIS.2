@@ -99,7 +99,8 @@
                 "name": "uniform",
                 "args": {}
             },
-            "sigma_min": 1e-5
+            "sigma_min": 1e-5,
+            "parallel_mode": "ddp"
         }
     }
 }

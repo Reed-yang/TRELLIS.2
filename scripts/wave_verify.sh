@@ -8,9 +8,8 @@
 #     so the wave's JSON lands under logs/wave_verify/<wave>_<ts>/.
 #   * The result file is named <label>_<ts>.json (not result.json) — see
 #     scripts/profiling/profile_dit.py main() step 7.
-#   * --mode is currently a no-op: trainer.args.parallel_mode is not yet a
-#     recognized config key. It will be wired up in W2.1; until then MODE is
-#     accepted (for forward-compat CLI stability) but the override is omitted.
+#   * --mode propagates as trainer.args.parallel_mode override (W2.1+).
+#     Valid: "ddp" (default), "zro1", "fsdp2_zero2".
 set -euo pipefail
 WAVE="${1:?wave name required}"; shift
 STEPS=30; BS=8; MODE=ddp; HOST=host-10-240-99-119
@@ -31,6 +30,7 @@ mkdir -p "$OUT"
     --warmup-steps 5 --active-steps "${STEPS}" \
     --override "trainer.args.batch_split=2" \
     --override "trainer.args.batch_size_per_gpu=${BS}" \
+    --override "trainer.args.parallel_mode=${MODE}" \
     --extra-env SPARSE_ATTN_BACKEND=flash_attn_3 \
     --extra-env NCCL_BUCKET_CAP_MB="${NCCL_BUCKET_CAP_MB:-50}" \
     --result-dir "${OUT}"
@@ -45,4 +45,4 @@ else
   echo "[wave_verify] WARN: no ${WAVE}_*.json found in ${OUT}" >&2
   exit 1
 fi
-echo "[wave_verify] (mode=${MODE} requested; parallel_mode override deferred to W2.1)"
+echo "[wave_verify] mode=${MODE} (trainer.args.parallel_mode=${MODE})"

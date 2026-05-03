@@ -62,11 +62,23 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
         # 16x8=128 spawn-method dataloader children re-import trellis2 over NFS,
         # causing 10+ min spawn cascade hang. 4/rank is plenty for cached .npz IO.
         num_workers: Optional[int] = None,
+        # W2.1: parallelism dispatch — "ddp" (default) | "zro1" | "fsdp2_zero2".
+        parallel_mode: str = "ddp",
         **kwargs,
     ):
         # Set BEFORE super().__init__ — BasicTrainer.__init__ calls our
         # prepare_dataloader override, which reads _num_workers_override.
         self._num_workers_override = num_workers
+
+        # NOTE on parallel_mode propagation:
+        # Upstream BasicTrainer.__init__ already declares parallel_mode='ddp'
+        # as an explicit kwarg and sets self.parallel_mode from it. Our
+        # subclass also declares parallel_mode (so we can document it +
+        # default it cleanly), but we MUST forward the value to super(),
+        # otherwise super resets self.parallel_mode back to its default 'ddp'.
+        # Passing it via super().__init__(parallel_mode=parallel_mode, ...)
+        # is the single source of truth — super sets self.parallel_mode and
+        # then calls init_models_and_more, which reads it.
 
         # Forward a dummy image_cond_model dict to satisfy the base mixin's
         # __init__ signature. The dict is never read because we override
@@ -74,6 +86,7 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
         super().__init__(
             *args,
             image_cond_model=image_cond_model or {"name": "_unused", "args": {}},
+            parallel_mode=parallel_mode,
             **kwargs,
         )
 
@@ -182,36 +195,21 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
         self.dataloader = _DataLoader(self.dataset, **_dl_kwargs)
         self.data_iterator = _cycle(self.dataloader)
 
-    # ---------------------------------------------------------------- DDP wrap
+    # ----------------------------------------------------------- parallel hook
     def init_models_and_more(self, *args, **kwargs):
-        """C4: enable gradient_as_bucket_view=True on the DDP wrap.
+        """W2.1: dispatch parallel-mode setup after base model + optimizer init.
 
-        Saves ~2% memory for grad buckets and avoids an extra grad copy by
-        making .grad a view into the allreduce bucket. Bit-equivalent.
+        - mode="ddp": apply C4 (gradient_as_bucket_view=True) on DDP wraps.
+        - mode="zro1": replace optimizer with ZeroRedundancyOptimizer.
+        - mode="fsdp2_zero2": (W2.2) — FSDP2 wrap.
 
-        NOTE: temporary monkey-patch via override; will move into
-        coart/dit/parallel/ddp.py when the W2.1 dispatch architecture lands.
-        Guarded by isinstance(DDP) so FSDP1/FSDP2 wraps are untouched.
+        The previous inline C4 monkey-patch lived here; that logic now lives in
+        coart/dit/parallel/ddp.py and is invoked via the dispatcher.
         """
         super().init_models_and_more(*args, **kwargs)
-        import torch.nn.parallel as _tnp
-        for name, m in getattr(self, "training_models", {}).items():
-            if isinstance(m, _tnp.DistributedDataParallel):
-                try:
-                    m.gradient_as_bucket_view = True
-                    if self.is_master:
-                        print(
-                            f"[c4_nccl_bucket] gradient_as_bucket_view=True "
-                            f"set on DDP({name})",
-                            flush=True,
-                        )
-                except Exception as e:
-                    if self.is_master:
-                        print(
-                            f"[c4_nccl_bucket] warn: cannot set "
-                            f"gradient_as_bucket_view on {name} ({e})",
-                            flush=True,
-                        )
+        from .parallel import get_dispatcher
+        dispatcher = get_dispatcher(self.parallel_mode)
+        dispatcher.init_after_super(self, **kwargs)
 
     # ---------------------------------------------------------------- profiler
     def profile(self, wait=2, warmup=3, active=5):
@@ -369,9 +367,34 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
             if self.is_master:
                 print(f"[eval] failed at step {self.step}: {type(e).__name__}: {e}")
 
+    # ---------------------------------------------------------------- run_step
+    def run_step(self, data_list):
+        """Wrap base run_step to inject the per-rank pre-save collective.
+
+        Upstream basic.py:885-886 invokes self.save() ONLY from rank 0 (gated
+        by `if self.is_master:` at line 860). But ZeroRedundancyOptimizer's
+        consolidate_state_dict is a COLLECTIVE that requires participation
+        from all ranks. We therefore cannot put consolidation inside save().
+
+        Hook here: after the actual training step, before the master enters
+        its save block, all ranks have already incremented self.step (the
+        increment happens in run() between run_step return and the save
+        check). Run consolidate on all ranks when the next save will trigger.
+        """
+        result = super().run_step(data_list)
+        # self.step has NOT been incremented yet at this point — run() does
+        # the +=1 after run_step returns. So check (step + 1).
+        if self.world_size > 1 and (self.step + 1) % self.i_save == 0:
+            from .parallel import get_dispatcher
+            get_dispatcher(self.parallel_mode).consolidate_for_save(self)
+        return result
+
     # ---------------------------------------------------------------- save
     def save(self, non_blocking=True):
-        """Delegate to base then rotate."""
+        """Delegate to base then rotate. consolidate_for_save runs from
+        run_step on all ranks (see run_step docstring) — save() runs only
+        on rank 0 per upstream's `if self.is_master:` gate at basic.py:860.
+        """
         super().save(non_blocking=non_blocking)
         if self.is_master:
             self._rotate_ckpts()
