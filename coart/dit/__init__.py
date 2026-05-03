@@ -20,28 +20,16 @@ Pretrained weights and the default JSON config path live in
 """
 from __future__ import annotations
 
-# Side-effect imports register classes into trellis2.{datasets,trainers}.
-from . import dataset as _dataset  # noqa: F401
-from . import trainer as _trainer  # noqa: F401
-
-# Optional flash_attn-fused RoPE backward (gated by env COART_FUSE_ROPE=1).
-# No-op when the env is unset, so safe to always import.
-from . import fused_rope_patch as _rope_patch  # noqa: F401
-
-# Optional batched-index-select modulation patch (gated by COART_FUSE_MODULATION=1).
-# Eliminates the indexing_backward 55%-of-GPU-time bottleneck. No-op when unset.
-from . import fused_modulation_patch as _mod_patch  # noqa: F401
-
-# Optional eltwise fusion patch (gated by COART_FUSE_ELTWISE=1).
-# Layered on top of fused_modulation: LN bf16-native + addcmul mod/gate.
-# Targets the residual eltwise 39% (460 ms) bottleneck. No-op when unset.
-from . import eltwise_patch as _elt_patch  # noqa: F401
-
-# DEPRECATED: torch.compile path — dynamic shape × inductor partitioner ×
-# trellis2 gradient checkpointing causes min_cut_rematerialization_partition
-# to hang for 30+ min per kernel. Kept as a no-op import for tooling that
-# may still set COART_COMPILE=1; superseded by eltwise_patch (manual ops).
-from . import compile_patch as _compile_patch  # noqa: F401
+# Side-effect imports register classes into trellis2.{datasets,trainers,models}.
+# - dataset:  CachedImageConditionedSLatShape -> trellis2.datasets
+# - trainer:  CachedImageConditionedSparseFlowMatchingCFGTrainer -> trellis2.trainers
+# - modeling: CoartElasticSLatFlowModel + CoartSLatFlowModel -> trellis2.models
+#             (Coart blocks bake in W1's fused_modulation + C1 fp32 RMSNorm scale,
+#              superseding the deleted fused_modulation_patch / fused_rope_patch /
+#              eltwise_patch / compile_patch monkey-patches.)
+from . import dataset as _dataset      # noqa: F401
+from . import trainer as _trainer      # noqa: F401
+from . import modeling as _modeling    # noqa: F401
 
 from .config import (
     COART_DIT_DATA_ROOT,

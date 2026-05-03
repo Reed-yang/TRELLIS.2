@@ -1,7 +1,7 @@
 {
     "models": {
         "denoiser": {
-            "name": "ElasticSLatFlowModel",
+            "name": "CoartElasticSLatFlowModel",
             "args": {
                 "resolution": 32,
                 "in_channels": 32,
