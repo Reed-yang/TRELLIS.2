@@ -35,6 +35,12 @@ NPROC="${NPROC:-8}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/trellis2_triton_cache}"
 mkdir -p "${TRITON_CACHE_DIR}" "${OUTPUT_DIR}"
 
+# C3: FA3 default-on for self-attn (cross-attn still FA2 — see F5 future work).
+export SPARSE_ATTN_BACKEND="${SPARSE_ATTN_BACKEND:-flash_attn_3}"
+
+# C4: larger NCCL bucket reduces #allreduce calls (DDP path).
+export NCCL_BUCKET_CAP_MB="${NCCL_BUCKET_CAP_MB:-50}"
+
 echo "[run] repo        = ${REPO_ROOT}"
 echo "[run] data_root   = ${DATA_ROOT}"
 echo "[run] output_dir  = ${OUTPUT_DIR}"

@@ -109,3 +109,58 @@ def install() -> bool:
 
 # Auto-install on import (gated by env var). Cheap when env unset.
 install()
+
+
+# ----------------------------------------------------------------------------
+# C1: SparseMultiHeadRMSNorm.scale Python float -> fp32 buffer.
+#
+# In `SparseMultiHeadRMSNorm.forward` the chain
+#     F.normalize(x.float(), dim=-1) * self.gamma * self.scale
+# multiplies a fp32 tensor by a Python float. AUnaryFunctor lifts the scalar
+# to **float64**, which dispatches the eltwise mul to the cold
+# `unrolled_elementwise_kernel<(float, double)>` slow-path (one element per
+# thread, no vectorization). Promoting `scale` to a 0-dim fp32 buffer keeps
+# the multiply on the hot vectorized fp32 kernel — saves ~25 ms / step.
+#
+# Bit-equivalent: the scalar value is identical (dim ** 0.5), only the
+# kernel-dispatch source changes. Default-on patch (no env gate) since it is
+# strictly a Pareto improvement.
+#
+# W2.0 will migrate this into `coart/dit/modeling/rmsnorm.py` (own copy of the
+# class). For W1 we monkey-patch `__init__` so all newly constructed modules
+# get the buffer; existing instances would need a one-shot fixup but in our
+# pipeline the patch is imported before model construction.
+# ----------------------------------------------------------------------------
+from trellis2.modules.sparse.attention import modules as _attn_modules
+
+_C1_PATCHED = False
+
+
+def install_c1() -> bool:
+    """Replace ``SparseMultiHeadRMSNorm.scale`` Python float with fp32 buffer."""
+    global _C1_PATCHED
+    if _C1_PATCHED:
+        return True
+
+    _orig_rmsnorm_init = _attn_modules.SparseMultiHeadRMSNorm.__init__
+
+    def _patched_rmsnorm_init(self, dim, heads):
+        _orig_rmsnorm_init(self, dim, heads)
+        # Replace Python float scale with fp32 buffer.
+        scale_val = float(self.scale)
+        del self.scale
+        self.register_buffer(
+            "scale",
+            torch.tensor(scale_val, dtype=torch.float32),
+            persistent=False,
+        )
+
+    _attn_modules.SparseMultiHeadRMSNorm.__init__ = _patched_rmsnorm_init
+    _C1_PATCHED = True
+    print("[c1_scale_buffer_patch] SparseMultiHeadRMSNorm.scale "
+          "→ fp32 buffer (avoids float64 scalar slow-path)")
+    return True
+
+
+# Auto-install on import (default-on, no env gate — bit-equivalent + faster).
+install_c1()

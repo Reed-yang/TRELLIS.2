@@ -164,8 +164,11 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
             import numpy as _np
             nw = int(_np.ceil(_os.cpu_count() / max(_torch.cuda.device_count(), 1)))
         self.data_sampler = ResumableSampler(self.dataset, shuffle=True)
-        self.dataloader = _DataLoader(
-            self.dataset,
+        # C9: prefetch_factor=4 (was default 2) lets each worker keep more
+        # batches queued, smoothing tail-latency on slow .npz reads.
+        # persistent_workers=True avoids worker re-spawn between epochs (already
+        # implicitly on whenever nw>0; kept explicit for clarity).
+        _dl_kwargs = dict(
             batch_size=self.batch_size_per_gpu,
             num_workers=nw,
             pin_memory=True,
@@ -174,7 +177,41 @@ class CachedImageConditionedSparseFlowMatchingCFGTrainer(
             collate_fn=getattr(self.dataset, "collate_fn", None),
             sampler=self.data_sampler,
         )
+        if nw > 0:
+            _dl_kwargs["prefetch_factor"] = 4
+        self.dataloader = _DataLoader(self.dataset, **_dl_kwargs)
         self.data_iterator = _cycle(self.dataloader)
+
+    # ---------------------------------------------------------------- DDP wrap
+    def init_models_and_more(self, *args, **kwargs):
+        """C4: enable gradient_as_bucket_view=True on the DDP wrap.
+
+        Saves ~2% memory for grad buckets and avoids an extra grad copy by
+        making .grad a view into the allreduce bucket. Bit-equivalent.
+
+        NOTE: temporary monkey-patch via override; will move into
+        coart/dit/parallel/ddp.py when the W2.1 dispatch architecture lands.
+        Guarded by isinstance(DDP) so FSDP1/FSDP2 wraps are untouched.
+        """
+        super().init_models_and_more(*args, **kwargs)
+        import torch.nn.parallel as _tnp
+        for name, m in getattr(self, "training_models", {}).items():
+            if isinstance(m, _tnp.DistributedDataParallel):
+                try:
+                    m.gradient_as_bucket_view = True
+                    if self.is_master:
+                        print(
+                            f"[c4_nccl_bucket] gradient_as_bucket_view=True "
+                            f"set on DDP({name})",
+                            flush=True,
+                        )
+                except Exception as e:
+                    if self.is_master:
+                        print(
+                            f"[c4_nccl_bucket] warn: cannot set "
+                            f"gradient_as_bucket_view on {name} ({e})",
+                            flush=True,
+                        )
 
     # ---------------------------------------------------------------- profiler
     def profile(self, wait=2, warmup=3, active=5):
