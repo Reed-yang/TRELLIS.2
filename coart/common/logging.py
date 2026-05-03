@@ -52,24 +52,48 @@ class CoartTBLogger:
         wandb_run_name: Optional[str] = None,
         wandb_tags: Optional[List[str]] = None,
         config: Optional[Dict[str, Any]] = None,
+        wandb_run_id: Optional[str] = None,
+        wandb_resume: str = "auto",
     ):
         self.is_master = is_master
         self._buf: Dict[str, list[float]] = {}
         self._writer: Optional[SummaryWriter] = None
         self._wandb = None
+        # Effective wandb run id (set after init succeeds). Callers should
+        # persist it to the ckpt / sidecar so later resumes can continue the
+        # same run.
+        self.wandb_run_id: Optional[str] = None
         if is_master:
             os.makedirs(os.path.join(output_dir, "tb_logs"), exist_ok=True)
             self._writer = SummaryWriter(os.path.join(output_dir, "tb_logs"))
             if use_wandb and wandb is not None:
+                init_kwargs = dict(
+                    project=wandb_project,
+                    name=wandb_run_name,
+                    tags=wandb_tags or [],
+                    config=config or {},
+                    mode=wandb_mode,
+                    dir=output_dir,
+                )
+                # Continue-run semantics: if caller supplied a run_id and
+                # wandb_resume != "never", attach to the existing run so
+                # curves stitch together at the current step. resume="allow"
+                # falls back to a fresh run if the id doesn't exist (e.g.
+                # deleted in the wandb UI), instead of hard-failing.
+                if wandb_run_id and wandb_resume != "never":
+                    init_kwargs["id"] = wandb_run_id
+                    init_kwargs["resume"] = "allow"
                 try:
-                    self._wandb = wandb.init(
-                        project=wandb_project,
-                        name=wandb_run_name,
-                        tags=wandb_tags or [],
-                        config=config or {},
-                        mode=wandb_mode,
-                        dir=output_dir,
-                    )
+                    self._wandb = wandb.init(**init_kwargs)
+                    if self._wandb is not None:
+                        self.wandb_run_id = str(self._wandb.id)
+                        if wandb_run_id and self.wandb_run_id != wandb_run_id:
+                            print(
+                                f"[logger] wandb resume id mismatch "
+                                f"(requested {wandb_run_id!r}, got {self.wandb_run_id!r}); "
+                                f"a new run was created.",
+                                file=sys.stderr,
+                            )
                 except Exception as e:
                     print(
                         f"[logger] wandb.init failed ({e}); falling back to TB-only",

@@ -20,6 +20,7 @@ import contextlib
 import json
 import os
 import time
+from typing import Optional
 
 import numpy as np
 import torch
@@ -46,6 +47,42 @@ from .build import build_models, load_pretrained_into
 from .config import VaeTrainConfig
 from .loss import compute_vae_loss
 from .sampling import dump_samples
+
+
+_WANDB_RUN_ID_SIDECAR = ".wandb_run_id"
+
+
+def _read_wandb_sidecar(output_dir: str) -> Optional[str]:
+    """Read the persisted wandb run id from <output_dir>/.wandb_run_id, if any."""
+    path = os.path.join(output_dir, _WANDB_RUN_ID_SIDECAR)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as fh:
+            rid = fh.read().strip()
+        return rid or None
+    except OSError:
+        return None
+
+
+def _write_wandb_sidecar(output_dir: str, run_id: str) -> None:
+    """Persist the wandb run id atomically so a later resume can find it.
+
+    Written post-init so the sidecar only ever holds an id that wandb has
+    actually accepted.
+    """
+    if not run_id:
+        return
+    path = os.path.join(output_dir, _WANDB_RUN_ID_SIDECAR)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            fh.write(str(run_id))
+        os.replace(tmp, path)
+    except OSError as e:
+        import sys
+        print(f"[train] sidecar write failed ({e}); continue w/o persistence",
+              file=sys.stderr)
 
 
 def _build_optimizer(trainable_params, lr: float) -> torch.optim.Optimizer:
@@ -186,6 +223,9 @@ def train(cfg: VaeTrainConfig) -> None:
     # so that optimizer.load_state_dict() matches saved param groups.
     step = 0
     start_epoch = 0
+    # Best-val tracking: loaded from misc_best.pt on resume if present.
+    best_val_loss = float("inf")
+    best_val_step = -1
     if mode == "base":
         # Load pretrained TRELLIS.2 weights + optional warm-start IO stems.
         if cfg.from_pretrained:
@@ -249,6 +289,7 @@ def train(cfg: VaeTrainConfig) -> None:
     )
 
     # ---------------- resume: load state dicts into the freshly-built modules ----------------
+    wandb_resume_id: Optional[str] = None
     if mode == "resume":
         resume_path, resume_step = resume_info
         _log(f"[resume] loading {resume_path} (step {resume_step})")
@@ -268,6 +309,28 @@ def train(cfg: VaeTrainConfig) -> None:
                 np.random.set_state(rng_np)
             if rng_torch is not None:
                 torch.set_rng_state(rng_torch.cpu())
+            wandb_resume_id = misc.get("wandb_run_id")
+
+        # Sidecar takes precedence when present: the ckpt-embedded id only
+        # appears on misc files written AFTER the continue-run feature
+        # landed, whereas the sidecar is refreshed at every logger init.
+        if is_master:
+            sidecar_id = _read_wandb_sidecar(cfg.output_dir)
+            if sidecar_id:
+                wandb_resume_id = sidecar_id
+
+        # Restore best-val tracking state so a second-stint resume doesn't
+        # forget the already-discovered minimum.
+        best_misc_path = os.path.join(cfg.output_dir, "misc_best.pt")
+        if os.path.exists(best_misc_path):
+            try:
+                bm = torch.load(best_misc_path, map_location="cpu", weights_only=False)
+                best_val_loss = float(bm.get("val_loss", float("inf")))
+                best_val_step = int(bm.get("step", -1))
+                _log(f"[resume] loaded best-val state: "
+                     f"val={best_val_loss:.4f} @ step {best_val_step}")
+            except Exception as e:
+                _log(f"[resume] failed to load best-val state ({e}); starting fresh")
         if cfg.use_ema:
             enc_ema = resume_path.replace(
                 "ckpt_step", f"ema_{cfg.ema_rate}_enc_step"
@@ -300,7 +363,15 @@ def train(cfg: VaeTrainConfig) -> None:
             f"res{cfg.resolution}",
         ],
         config=asdict(cfg),
+        wandb_run_id=wandb_resume_id if cfg.wandb_resume != "never" else None,
+        wandb_resume=cfg.wandb_resume,
     )
+    # Persist the effective run id so any later resume can continue this run
+    # even if we crash before the next misc ckpt is written. Master-only.
+    if is_master and logger.wandb_run_id:
+        _write_wandb_sidecar(cfg.output_dir, logger.wandb_run_id)
+        _log(f"[wandb] run id = {logger.wandb_run_id} "
+             f"(resumed from sidecar/misc: {bool(wandb_resume_id)})")
 
     from coart.eval.watchdog import Watchdog
     watchdog = Watchdog(cfg.output_dir, logger)
@@ -459,6 +530,7 @@ def train(cfg: VaeTrainConfig) -> None:
                     "step_at_unfreeze": step_at_unfreeze,
                     "rng_np": np.random.get_state(),
                     "rng_torch": torch.get_rng_state(),
+                    "wandb_run_id": logger.wandb_run_id,
                 }
                 save_ckpt(misc, cfg.output_dir, step,
                           keep_k=cfg.rolling_ckpts, prefix="misc")
@@ -497,6 +569,55 @@ def train(cfg: VaeTrainConfig) -> None:
                 if logger._writer is not None:
                     logger._writer.add_scalar("val/loss_recon", val_loss, step)
                 _log(f"[val] step={step} recon={val_loss:.4f}")
+
+                # Best-val ckpt: exempt from rolling-K eviction. Overwrite on
+                # improvement so only one "best" ckpt (+ its EMA, if enabled)
+                # ever lives on disk. This guards against the rolling bug
+                # where the val-minimum ckpt gets discarded when training
+                # overfits past its optimum (hit once at step 110k → lost).
+                if val_loss < best_val_loss - 1e-6:
+                    best_val_loss = val_loss
+                    best_val_step = step
+                    best_path = os.path.join(
+                        cfg.output_dir, "ckpt_best.pt",
+                    )
+                    best_misc_path = os.path.join(
+                        cfg.output_dir, "misc_best.pt",
+                    )
+                    atomic_save({
+                        "step": step,
+                        "val_loss": val_loss,
+                        "encoder": unwrap(encoder).state_dict(),
+                        "decoder": unwrap(decoder).state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                    }, best_path)
+                    atomic_save({
+                        "step": step,
+                        "val_loss": val_loss,
+                        "epoch": epoch,
+                        "unfrozen": unfrozen,
+                        "step_at_unfreeze": step_at_unfreeze,
+                        "rng_np": np.random.get_state(),
+                        "rng_torch": torch.get_rng_state(),
+                        "wandb_run_id": logger.wandb_run_id,
+                    }, best_misc_path)
+                    if cfg.use_ema:
+                        atomic_save(
+                            ema.state_dict(),
+                            os.path.join(
+                                cfg.output_dir,
+                                f"ema_{cfg.ema_rate}_enc_best.pt",
+                            ),
+                        )
+                        atomic_save(
+                            ema_dec.state_dict(),
+                            os.path.join(
+                                cfg.output_dir,
+                                f"ema_{cfg.ema_rate}_dec_best.pt",
+                            ),
+                        )
+                    _log(f"[val] NEW BEST @ step {step}: "
+                         f"val_loss={val_loss:.4f} (prev best @ step {best_val_step})")
 
             # Mesh dump
             sample_at_1 = (step == 1) and cfg.sample_at_step_one

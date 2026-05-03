@@ -34,6 +34,10 @@ from coart.eval.metrics import (
     normal_consistency,
     sample_surface,
 )
+from coart.eval.normalization import (
+    corep_to_exp5_vertices,
+    normalize_mesh_exp5_inplace,
+)
 
 _REPO = Path("/mnt/novita2/siyuan/workspace/TRELLIS.2")
 _GOLDEN_LIST = _REPO / "coart" / "eval" / "golden_assets.json"
@@ -57,12 +61,22 @@ def _render_normal_4view_side_by_side(recon_mesh, gt_mesh_path: str) -> np.ndarr
     """Render 4-view normal maps of (GT | recon) and concatenate into one PNG.
 
     Returns HxWx3 uint8. If rendering fails, returns a solid gray placeholder
-    so the logger doesn't crash. Input `recon_mesh` is a trimesh.Trimesh;
-    scripts/eval renderer expects trellis2.representations.Mesh, so convert.
+    so the logger doesn't crash. Input `recon_mesh` is a trimesh.Trimesh
+    already in EXP-5 [-0.5, 0.5]^3 space (transformed by the caller);
+    scripts/eval renderer expects trellis2.representations.Mesh and assumes
+    the mesh is centered at origin with ~unit extent (r=10, fov=6).
     """
     try:
         import trimesh
         gt_tri = trimesh.load(gt_mesh_path, force="mesh")
+        if isinstance(gt_tri, trimesh.Scene):
+            geoms = [g for g in gt_tri.geometry.values() if isinstance(g, trimesh.Trimesh)]
+            gt_tri = trimesh.util.concatenate(geoms) if geoms else gt_tri
+        # Canonicalize gt mesh to EXP-5 [-0.5, 0.5]^3 so the renderer's
+        # r=10/fov=6 camera frames it correctly. Without this, non-unit glb
+        # meshes (e.g. val_p25 at center (2491, 937, -54)) fall outside the
+        # view frustum entirely.
+        normalize_mesh_exp5_inplace(gt_tri)
         sys.path.insert(0, str(_REPO / "scripts" / "eval"))
         from eval_metrics import render_normal_maps_paper_config
         gt_imgs = render_normal_maps_paper_config(_to_trellis_mesh(gt_tri))
@@ -94,6 +108,22 @@ def _one_asset(
     try:
         npz_path = _REPO / asset["npz_path"]
         d = np.load(npz_path, allow_pickle=True)
+
+        # Coordinate-system schema gate. gt_points must live in EXP-5
+        # [-0.5, 0.5]^3 space so it matches the pred mesh (transformed
+        # below) and the Layer-V baseline values. Older NPZs built before
+        # this fix have raw glb coordinates; refuse to compute CD on them.
+        meta_obj = d["meta"].item() if "meta" in d.files else {}
+        norm_schema = meta_obj.get("normalization") if isinstance(meta_obj, dict) else None
+        if norm_schema != "exp5":
+            print(f"[deep_eval] {name}: NPZ normalization={norm_schema!r} != 'exp5'; "
+                  f"rebuild via scripts/coart_renormalize_golden.py. Skipping.",
+                  file=sys.stderr)
+            logger.scalar(
+                f"deep_eval/online/per_asset/{name}/status_failed", 1.0, step,
+            )
+            return {}
+
         cube_indices = torch.from_numpy(d["cube_indices"].astype(np.int32)).cuda()
         feats_raw = torch.from_numpy(d["feats"].astype(np.float32)).cuda()
         feats_n = normalize(feats_raw, stats_mean, stats_std)
@@ -134,6 +164,14 @@ def _one_asset(
                 f"deep_eval/online/per_asset/{name}/status_failed", 1.0, step,
             )
             return {}
+
+        # feature_to_mesh vertices live in CoReP [0, 1]^3 offset space (via
+        # MeshTensors.from_trimesh); gt_points live in EXP-5 [-0.5, 0.5]^3
+        # (schema checked above). Apply the constant affine so CD/NC/F-score
+        # and the render all see pred in the same canonical space as gt.
+        mesh.vertices = corep_to_exp5_vertices(
+            np.asarray(mesh.vertices, dtype=np.float32)
+        )
 
         pts, nrms = sample_surface(mesh, num_points=100000)
         gt_pts = d["gt_points"]

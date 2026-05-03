@@ -41,6 +41,7 @@ sys.path.insert(0, str(REPO / "scripts" / "eval"))
 
 from coart.data.feat18_dataset import _is_val_sha  # noqa: E402
 from coart.eval.metrics import compute_topo_metrics, sample_surface  # noqa: E402
+from coart.eval.normalization import normalize_mesh_exp5_inplace  # noqa: E402
 
 
 def _percentile_indices(n: int, pcts: List[float]) -> List[int]:
@@ -87,11 +88,26 @@ def _gt_cache_and_save(
 ) -> None:
     d = np.load(feat18_src_npz)
     mesh = trimesh.load(gt_mesh_path, force="mesh")
+    # Handle Scene (multi-geometry glb) by merging into a single Trimesh; some
+    # Objaverse assets (e.g. val_p25) load as Scene and without this the
+    # subsequent vertex operations fail.
+    if isinstance(mesh, trimesh.Scene):
+        geoms = [g for g in mesh.geometry.values() if isinstance(g, trimesh.Trimesh)]
+        if not geoms:
+            raise ValueError(f"{gt_mesh_path}: Scene has no Trimesh geometry")
+        mesh = trimesh.util.concatenate(geoms)
+    # Canonicalize gt to EXP-5 [-0.5, 0.5]^3 space BEFORE sampling. Matches
+    # Layer-V baseline space (golden_baseline.json) and matches the pred-space
+    # transform applied in coart/eval/deep_eval.py.
+    bbox_min, bbox_max = normalize_mesh_exp5_inplace(mesh)
     pts, nrms = sample_surface(mesh, num_points=100000)
     topo = compute_topo_metrics(mesh)
     meta = {
         "asset_name": asset_name,
         "local_path_gt": str(gt_mesh_path),
+        "bbox_min_raw": bbox_min.tolist(),
+        "bbox_max_raw": bbox_max.tolist(),
+        "normalization": "exp5",
         **meta_extra,
     }
     np.savez_compressed(
@@ -105,7 +121,8 @@ def _gt_cache_and_save(
         meta=np.array(meta, dtype=object),
     )
     print(f"[build_golden] wrote {out_npz} (N_cubes={len(d['cube_indices'])}, "
-          f"GT components={topo['n_components']})")
+          f"GT components={topo['n_components']}, "
+          f"gt range x[{pts[:,0].min():+.3f},{pts[:,0].max():+.3f}])")
 
 
 def _precompute_feat18_via_csv(

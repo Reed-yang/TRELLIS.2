@@ -77,6 +77,7 @@ class VaeTrainConfig:
     use_wandb: bool
     wandb_project: str
     wandb_mode: str        # "online" / "offline" / "disabled"
+    wandb_resume: str      # "auto" = continue prior run on --resume_from ; "never" = always new
 
     # EMA ckpt rolling (split from rolling_ckpts so EMA doesn't waste disk)
     rolling_ckpts_ema: int
@@ -87,12 +88,64 @@ class VaeTrainConfig:
     first_deep_eval_step: int
 
 
-def _build_output_dir(output_dir: Optional[str], run_tag: str) -> str:
-    """If `output_dir` None: auto-build `results/coart_feat18_{YYYYMMDD}_{run_tag}`."""
+def _build_output_dir(
+    output_dir: Optional[str],
+    run_tag: str,
+    resume_from: str,
+    search_root: str = "results",
+) -> str:
+    """Select or build the output directory.
+
+    Precedence:
+      1. Caller-supplied ``--output_dir`` wins unchanged.
+      2. Else, scan ``{search_root}/coart_feat18_*_{run_tag}/`` for existing
+         dirs that actually contain ``ckpt_step*.pt``:
+           - ``resume_from != "none"``: must find at least one; if multiple,
+             pick the most recently modified (and warn).
+           - ``resume_from == "none"``: proceed to step 3 regardless; the
+             caller's downstream check (train.py:91-94) will refuse to
+             overwrite any accidental match.
+      3. Fresh dir using today's date: ``{search_root}/coart_feat18_{YYYYMMDD}_{run_tag}``.
+
+    Why this exists: the original implementation always stamped today's
+    date into a freshly-built path. Resuming across midnight picked up a
+    new-day directory, which ``find_latest_ckpt`` then saw as empty → the
+    trainer silently fell back to base mode and started a parallel run
+    from scratch, created a new wandb run, and diverged the checkpoint
+    stream. Matching against existing dirs containing real checkpoints
+    eliminates that class of bug without forcing callers to thread
+    ``--output_dir`` through every launcher invocation.
+    """
+    import glob
+    import sys
+
     if output_dir:
         return output_dir
+
+    if resume_from != "none":
+        pattern = os.path.join(search_root, f"coart_feat18_*_{run_tag}")
+        candidates = sorted(glob.glob(pattern))
+        with_ckpt = [
+            c for c in candidates
+            if glob.glob(os.path.join(c, "ckpt_step*.pt"))
+        ]
+        if not with_ckpt:
+            raise RuntimeError(
+                f"--resume_from={resume_from!r} but no {pattern}/ckpt_step*.pt "
+                f"exists. Pass --output_dir explicitly, or drop --resume_from "
+                f"to start a fresh run."
+            )
+        if len(with_ckpt) > 1:
+            with_ckpt.sort(key=os.path.getmtime, reverse=True)
+            print(
+                f"[coart] multiple matches for run_tag={run_tag!r}: "
+                f"{with_ckpt}; picking most recent: {with_ckpt[0]}",
+                file=sys.stderr,
+            )
+        return with_ckpt[0]
+
     ts = datetime.datetime.now().strftime("%Y%m%d")
-    return f"results/coart_feat18_{ts}_{run_tag}"
+    return os.path.join(search_root, f"coart_feat18_{ts}_{run_tag}")
 
 
 def parse_args() -> VaeTrainConfig:
@@ -168,7 +221,7 @@ def parse_args() -> VaeTrainConfig:
     p.add_argument("--use_ema", action="store_true", default=True)
     p.add_argument("--no_ema", action="store_false", dest="use_ema")
     p.add_argument("--ema_rate", type=float, default=0.9999)
-    p.add_argument("--rolling_ckpts", type=int, default=3)
+    p.add_argument("--rolling_ckpts", type=int, default=5)
     p.add_argument("--resume_from", default="latest",
                    help='"none", "latest", or explicit ckpt path')
 
@@ -178,6 +231,10 @@ def parse_args() -> VaeTrainConfig:
     p.add_argument("--wandb_project", default="coart-vae")
     p.add_argument("--wandb_mode", choices=["online", "offline", "disabled"],
                    default="online")
+    p.add_argument("--wandb_resume", choices=["auto", "never"], default="auto",
+                   help="auto: when --resume_from loads a ckpt, continue the same "
+                        "wandb run (lookup id from misc ckpt / "
+                        "<output_dir>/.wandb_run_id). never: always create a fresh run.")
 
     # EMA rolling split
     p.add_argument("--rolling_ckpts_ema", type=int, default=1,
@@ -200,6 +257,8 @@ def parse_args() -> VaeTrainConfig:
             f"--run_tag must match ^[a-zA-Z0-9_-]+$, got {args.run_tag!r}"
         )
 
-    args.output_dir = _build_output_dir(args.output_dir, args.run_tag)
+    args.output_dir = _build_output_dir(
+        args.output_dir, args.run_tag, args.resume_from,
+    )
 
     return VaeTrainConfig(**vars(args))

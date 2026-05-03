@@ -15,9 +15,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import pathlib
 import sys
 import time
 from typing import Optional
+
+# Make trellis2 importable when invoked via `python scripts/.../foo.py`.
+_REPO = pathlib.Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
 import numpy as np
 import pandas as pd
