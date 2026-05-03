@@ -7,14 +7,23 @@ tolerance, < 1e-3) — the refactor only:
   * folds in the W1 fused_modulation patch (already verified bf16-ULP equiv)
   * swaps qk_rms_norm to CoartSparseMultiHeadRMSNorm (only __init__ differs
     — scale becomes fp32 buffer, mathematically identical scalar value)
+
+C7 (W5) note: ``COART_DISABLE_FUSED_RMSNORM=1`` is set so this test still
+compares the unfused path (bit-equivalent vs upstream). Numerical
+equivalence of the fused path is covered by ``test_w5_fused_rmsnorm_ulp``.
 """
+import os
 import pytest
 import torch
 
 
-def test_coart_block_matches_upstream():
+def test_coart_block_matches_upstream(monkeypatch):
     if not torch.cuda.is_available():
         pytest.skip("requires GPU")
+    # C7: force unfused RMSNorm so this regression test still compares
+    # against the bit-equivalent path. Fused path is gated by its own
+    # ULP test (test_w5_fused_rmsnorm_ulp).
+    monkeypatch.setenv("COART_DISABLE_FUSED_RMSNORM", "1")
     torch.manual_seed(42)
     from trellis2.modules.sparse import SparseTensor
     from trellis2.modules.sparse.transformer.modulated import (
